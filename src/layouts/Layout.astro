@@ -1,0 +1,50 @@
+---
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="ca">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content="Astro description" />
+    <meta name="viewport" content="width=device-width" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.7/dist/cdn.min.js"
+    ></script>
+    <title>{title}</title>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
+
+<style is:global>
+  @font-face {
+    font-family: "Mona Sans";
+    src: url("/MonaSans-Regular.woff2") format("woff2");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Inter Regular";
+    src: url("/Inter-Regular.woff2") format("woff2");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Inter Medium";
+    src: url("/Inter-Medium.woff2") format("woff2");
+    font-weight: 600;
+  }
+  html {
+    font-family: "Inter Regular", sans-serif;
+  }
+  h1 {
+    font-family: "Mona Sans", sans-serif;
+  }
+  img {
+    -webkit-user-drag: none;
+  }
+</style>
