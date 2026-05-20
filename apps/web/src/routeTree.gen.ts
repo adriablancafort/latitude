@@ -43,6 +43,7 @@ import { Route as Char91DotwellKnownChar93OauthAuthorizationServerSplatRouteImpo
 import { Route as AuthenticatedProjectsProjectSlugIndexRouteImport } from './routes/_authenticated/projects/$projectSlug/index'
 import { Route as WrappedIdOgPngRouteImport } from './routes/wrapped/$id.og.png'
 import { Route as CcWrappedIdOgPngRouteImport } from './routes/cc-wrapped/$id.og.png'
+import { Route as ApiNotificationsNidIncidentTrendDotpngRouteImport } from './routes/api/notifications/$nid/incident-trend[.]png'
 import { Route as ApiAuthMcpAuthorizeRouteImport } from './routes/api/auth/mcp/authorize'
 import { Route as ApiAuthProviderStartRouteImport } from './routes/api/auth/$provider/start'
 import { Route as AuthenticatedProjectsProjectSlugSettingsRouteImport } from './routes/_authenticated/projects/$projectSlug/settings'
@@ -242,6 +243,12 @@ const CcWrappedIdOgPngRoute = CcWrappedIdOgPngRouteImport.update({
   path: '/og/png',
   getParentRoute: () => CcWrappedIdRoute,
 } as any)
+const ApiNotificationsNidIncidentTrendDotpngRoute =
+  ApiNotificationsNidIncidentTrendDotpngRouteImport.update({
+    id: '/api/notifications/$nid/incident-trend.png',
+    path: '/api/notifications/$nid/incident-trend.png',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiAuthMcpAuthorizeRoute = ApiAuthMcpAuthorizeRouteImport.update({
   id: '/api/auth/mcp/authorize',
   path: '/api/auth/mcp/authorize',
@@ -378,6 +385,7 @@ export interface FileRoutesByFullPath {
   '/projects/$projectSlug/settings': typeof AuthenticatedProjectsProjectSlugSettingsRouteWithChildren
   '/api/auth/$provider/start': typeof ApiAuthProviderStartRoute
   '/api/auth/mcp/authorize': typeof ApiAuthMcpAuthorizeRoute
+  '/api/notifications/$nid/incident-trend.png': typeof ApiNotificationsNidIncidentTrendDotpngRoute
   '/cc-wrapped/$id/og/png': typeof CcWrappedIdOgPngRoute
   '/wrapped/$id/og/png': typeof WrappedIdOgPngRoute
   '/projects/$projectSlug/': typeof AuthenticatedProjectsProjectSlugIndexRoute
@@ -426,6 +434,7 @@ export interface FileRoutesByTo {
   '/projects/$projectSlug/onboarding': typeof AuthenticatedProjectsProjectSlugOnboardingRoute
   '/api/auth/$provider/start': typeof ApiAuthProviderStartRoute
   '/api/auth/mcp/authorize': typeof ApiAuthMcpAuthorizeRoute
+  '/api/notifications/$nid/incident-trend.png': typeof ApiNotificationsNidIncidentTrendDotpngRoute
   '/cc-wrapped/$id/og/png': typeof CcWrappedIdOgPngRoute
   '/wrapped/$id/og/png': typeof WrappedIdOgPngRoute
   '/projects/$projectSlug': typeof AuthenticatedProjectsProjectSlugIndexRoute
@@ -480,6 +489,7 @@ export interface FileRoutesById {
   '/_authenticated/projects/$projectSlug/settings': typeof AuthenticatedProjectsProjectSlugSettingsRouteWithChildren
   '/api/auth/$provider/start': typeof ApiAuthProviderStartRoute
   '/api/auth/mcp/authorize': typeof ApiAuthMcpAuthorizeRoute
+  '/api/notifications/$nid/incident-trend.png': typeof ApiNotificationsNidIncidentTrendDotpngRoute
   '/cc-wrapped/$id/og/png': typeof CcWrappedIdOgPngRoute
   '/wrapped/$id/og/png': typeof WrappedIdOgPngRoute
   '/_authenticated/projects/$projectSlug/': typeof AuthenticatedProjectsProjectSlugIndexRoute
@@ -534,6 +544,7 @@ export interface FileRouteTypes {
     | '/projects/$projectSlug/settings'
     | '/api/auth/$provider/start'
     | '/api/auth/mcp/authorize'
+    | '/api/notifications/$nid/incident-trend.png'
     | '/cc-wrapped/$id/og/png'
     | '/wrapped/$id/og/png'
     | '/projects/$projectSlug/'
@@ -582,6 +593,7 @@ export interface FileRouteTypes {
     | '/projects/$projectSlug/onboarding'
     | '/api/auth/$provider/start'
     | '/api/auth/mcp/authorize'
+    | '/api/notifications/$nid/incident-trend.png'
     | '/cc-wrapped/$id/og/png'
     | '/wrapped/$id/og/png'
     | '/projects/$projectSlug'
@@ -635,6 +647,7 @@ export interface FileRouteTypes {
     | '/_authenticated/projects/$projectSlug/settings'
     | '/api/auth/$provider/start'
     | '/api/auth/mcp/authorize'
+    | '/api/notifications/$nid/incident-trend.png'
     | '/cc-wrapped/$id/og/png'
     | '/wrapped/$id/og/png'
     | '/_authenticated/projects/$projectSlug/'
@@ -672,6 +685,7 @@ export interface RootRouteChildren {
   ApiObservabilityTestIndexRoute: typeof ApiObservabilityTestIndexRoute
   ApiAuthProviderStartRoute: typeof ApiAuthProviderStartRoute
   ApiAuthMcpAuthorizeRoute: typeof ApiAuthMcpAuthorizeRoute
+  ApiNotificationsNidIncidentTrendDotpngRoute: typeof ApiNotificationsNidIncidentTrendDotpngRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -913,6 +927,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cc-wrapped/$id/og/png'
       preLoaderRoute: typeof CcWrappedIdOgPngRouteImport
       parentRoute: typeof CcWrappedIdRoute
+    }
+    '/api/notifications/$nid/incident-trend.png': {
+      id: '/api/notifications/$nid/incident-trend.png'
+      path: '/api/notifications/$nid/incident-trend.png'
+      fullPath: '/api/notifications/$nid/incident-trend.png'
+      preLoaderRoute: typeof ApiNotificationsNidIncidentTrendDotpngRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/mcp/authorize': {
       id: '/api/auth/mcp/authorize'
@@ -1240,6 +1261,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiObservabilityTestIndexRoute: ApiObservabilityTestIndexRoute,
   ApiAuthProviderStartRoute: ApiAuthProviderStartRoute,
   ApiAuthMcpAuthorizeRoute: ApiAuthMcpAuthorizeRoute,
+  ApiNotificationsNidIncidentTrendDotpngRoute:
+    ApiNotificationsNidIncidentTrendDotpngRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
