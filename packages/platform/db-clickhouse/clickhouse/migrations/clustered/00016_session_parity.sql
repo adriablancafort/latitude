@@ -16,18 +16,29 @@
 -- pending bumps from prior failed attempts, so this file is
 -- safe to re-run after a partial application.
 --
--- LIGHTWEIGHT skips waiting on pending merges — only metadata
--- and part-movement entries — so this stays fast even when
--- the table is large and busy. SYNC does not block readers
--- or writers; it only stalls this migration connection.
+-- The mode matters: plain SYSTEM SYNC REPLICA waits for every
+-- fetched log entry — including ALTER_METADATA — to finish
+-- executing on the local replica. LIGHTWEIGHT mode waits only
+-- for part-movement entries (GET_PART, ATTACH_PART, DROP_RANGE,
+-- REPLACE_RANGE, DROP_PART) and explicitly skips ALTER_METADATA,
+-- so it does NOT close the 517 race. We use the default mode
+-- here and accept the wait on pending merges; SYNC does not
+-- block readers or writers, only this migration connection.
+--
+-- Docs: https://clickhouse.com/docs/en/sql-reference/statements/system#sync-replica
+--
+-- Scope reminder: SYSTEM SYNC REPLICA is a per-connection wait,
+-- not a cluster configuration change. ON CLUSTER default just
+-- dispatches the wait to every node so each one drains its own
+-- queue locally. Nothing persists after the SYNC returns.
 -- ═══════════════════════════════════════════════════════════
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     DROP COLUMN IF EXISTS duration_ns;
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     ADD COLUMN IF NOT EXISTS max_start_time
@@ -56,12 +67,12 @@ ALTER TABLE sessions ON CLUSTER default
     ADD COLUMN IF NOT EXISTS retention_days
         SimpleAggregateFunction(max, UInt16) DEFAULT 90 CODEC(T64, ZSTD(1));
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     MODIFY TTL toDateTime(min_start_time) + toIntervalDay(retention_days + 30) DELETE;
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 DROP VIEW IF EXISTS sessions_mv ON CLUSTER default;
 
@@ -138,16 +149,16 @@ GROUP BY
 
 -- SYSTEM SYNC REPLICA between dependent ALTERs — see header.
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 DROP VIEW IF EXISTS sessions_mv ON CLUSTER default;
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     REMOVE TTL;
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     DROP COLUMN IF EXISTS retention_days,
@@ -162,7 +173,7 @@ ALTER TABLE sessions ON CLUSTER default
     DROP COLUMN IF EXISTS duration_ns,
     DROP COLUMN IF EXISTS max_start_time;
 
-SYSTEM SYNC REPLICA sessions ON CLUSTER default LIGHTWEIGHT;
+SYSTEM SYNC REPLICA sessions ON CLUSTER default;
 
 ALTER TABLE sessions ON CLUSTER default
     ADD COLUMN IF NOT EXISTS duration_ns Int64 ALIAS
