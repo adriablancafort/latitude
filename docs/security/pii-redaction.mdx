@@ -1,0 +1,88 @@
+---
+title: PII redaction
+description: How Latitude reduces PII exposure with SDK redaction and internal data handling safeguards.
+---
+
+# PII redaction
+
+Latitude reduces exposure of personally identifiable information (PII) and other sensitive values in telemetry. Redaction starts in the SDKs before spans are exported to Latitude.
+
+<Note>
+  Redaction is best effort. Customers should avoid sending unnecessary regulated or highly sensitive data to Latitude and configure custom redaction patterns for application-specific identifiers.
+</Note>
+
+## SDK redaction by default
+
+The TypeScript and Python SDKs mask common security-sensitive attributes before export.
+
+Redacted by default:
+
+- HTTP authorization headers
+- HTTP cookies
+- HTTP API key headers such as `x-api-key`
+- database statements, which may contain sensitive values
+
+The default mask is `******`.
+
+## Custom redaction patterns
+
+Add custom patterns when your app places PII or secrets in known attributes, metadata fields, headers, or prompt variables.
+
+### TypeScript
+
+```ts
+import { Latitude } from "@latitude-data/telemetry"
+import OpenAI from "openai"
+
+const latitude = new Latitude({
+  apiKey: process.env.LATITUDE_API_KEY!,
+  project: process.env.LATITUDE_PROJECT_SLUG!,
+  instrumentations: { openai: OpenAI },
+  redact: {
+    attributes: [/^password$/i, /email/i, /phone/i, /secret/i],
+    mask: () => "[REDACTED]",
+  },
+})
+```
+
+### Python
+
+```python
+import re
+import openai
+from latitude_telemetry import Latitude, RedactSpanProcessorOptions
+
+latitude = Latitude(
+    api_key="your-api-key",
+    project="your-project-slug",
+    instrumentations={"openai": openai},
+    redact=RedactSpanProcessorOptions(
+        attributes=[
+            re.compile(r"^password$", re.IGNORECASE),
+            re.compile(r"email", re.IGNORECASE),
+            re.compile(r"phone", re.IGNORECASE),
+            re.compile(r"secret", re.IGNORECASE),
+        ],
+        mask=lambda attr, value: "[REDACTED]",
+    ),
+)
+```
+
+## Internal redaction and data handling
+
+Latitude's internal systems are designed to avoid unnecessary sensitive-data exposure:
+
+- Internal AI workflows receive only the trace context needed for the task.
+- Product workflows prefer summaries, derived labels, scores, and issue examples over raw payloads.
+- Sensitive implementation details and omitted payloads are not exposed in generated customer-facing explanations.
+- Latitude-managed inference stays within the hosted data boundary described in [Data protection](./data-protection).
+
+## Recommended customer controls
+
+For strongest protection:
+
+1. Do not send fields your team does not need for debugging, search, scoring, or issue discovery.
+2. Add custom SDK redaction patterns for app-specific PII fields.
+3. Use project boundaries to avoid mixing traces from unrelated agents or products.
+4. Review metadata before adding it to spans, sessions, scores, or annotations.
+5. Keep API keys and secrets out of prompts, tool outputs, and trace metadata whenever possible.

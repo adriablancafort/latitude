@@ -175,6 +175,21 @@
         ]
       },
       {
+        "group": "Security and Compliance",
+        "pages": [
+          "security/data-protection",
+          "security/pii-redaction",
+          {
+            "group": "Compliance",
+            "pages": [
+              "security/compliance/soc2",
+              "security/compliance/iso-27001",
+              "security/compliance/gdpr"
+            ]
+          }
+        ]
+      },
+      {
         "group": "More",
         "pages": [
           "getting-started/concepts",
