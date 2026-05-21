@@ -47,6 +47,7 @@
     "@domain/projects": "workspace:*",
     "@domain/saved-searches": "workspace:*",
     "@domain/scores": "workspace:*",
+    "@domain/integrations": "workspace:*",
     "@domain/shared": "workspace:*",
     "@domain/simulations": "workspace:*",
     "@domain/spans": "workspace:*",
