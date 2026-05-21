@@ -266,6 +266,19 @@ In rough priority order. None are on the near-term roadmap.
 
 ClickHouse supports `vector_similarity` indexes (experimental, HNSW). At project scales below ~500k embeddings, linear scan is fast enough. Above that, latency becomes user-visible. Adding the index is a migration-only change and future-proofs the query path against high-volume tenants.
 
+**Multi-tenancy — scope by the sort prefix, gate by tenant size (decided).**
+
+An HNSW graph ranks by vector distance alone; it has no notion of tenancy. The risk this raises is *not* a cross-tenant leak — the `WHERE organization_id = X AND project_id = Y` predicate still executes and is still authoritative for which rows return. The risk is **filtered-ANN recall collapse**: with naive post-filtering, the index picks the globally-nearest K vectors and *then* drops other tenants' rows, so a small tenant in a whale-dominated table can have its true neighbours crowded out of the candidate set and get few/zero results despite having relevant traces. The index never returns another tenant's data; it can return too little of your own.
+
+The chosen approach has two parts:
+
+1. **Co-location via the existing sort prefix.** The embeddings table is already `ORDER BY (organization_id, project_id, trace_id, chunk_index)`. ClickHouse's sparse primary index prunes granules by the `(organization_id, project_id)` prefix *before* the per-part `vector_similarity` skip index is consulted, so the ANN graph walk is effectively scoped to the tenant. This is the same prefix-pruning mechanism that already keeps today's linear `cosineDistance` scan per-project rather than whole-table — HNSW inherits it for free, with no new isolation machinery.
+2. **Size-gated planner.** Engage the index only above ~500k in-window embeddings for the tenant — the point where exact scan stops being instant (see Constraints & Limitations / scan-time table). Below that, keep the exact scan, which guarantees recall. The recall-collapse risk and the need-for-ANN are inversely correlated: small tenants (the ones a global graph would crowd out) don't need the index, and whales that do need it have enough of their own vectors that, combined with prefix co-location, the relevant parts are dominated by their data anyway.
+
+Considered and rejected: **over-fetch + post-filter** (ask the index for 50–100× `LIMIT`, then drop non-matching org) is brittle exactly where it matters — a small tenant in a whale table — so it stays a backstop, not the primary mechanism. **Per-tenant tables / a dedicated vector store** physically isolates ANN per tenant but abandons the "one shared trace pipeline, no external vector DB" principle this feature rests on (see Decisions & Tradeoffs).
+
+**Verify before writing the migration:** confirm the target ClickHouse version applies the prefix-PK prune *before* the vector index (scoped ANN) rather than post-filtering a global top-K (recall collapse) — test on a whale + small-tenant fixture against the seeded Acme corpus. Also confirm the optimizer doesn't silently fall back to brute force under the org filter (safe but a no-op index), and measure per-part HNSW graph RAM residency at XL embedding counts. All of this scopes trace search; the session-rollup query (`specs/session-problems/2-session-level-search.md`) sits downstream of the same scan and inherits the behaviour unchanged.
+
 ### Subscription-plan knobs
 
 Several constants will likely become tenant-tiered:
