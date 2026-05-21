@@ -1,3 +1,4 @@
+import { SLACK_FLAG } from "@domain/feature-flags"
 import { cn, Icon, Text } from "@repo/ui"
 import { Link, useRouterState } from "@tanstack/react-router"
 import {
@@ -6,11 +7,13 @@ import {
   Key,
   type LucideIcon,
   Package,
+  Plug,
   ScanSearch,
   ShieldAlert,
   UserRound,
   Users,
 } from "lucide-react"
+import { useHasFeatureFlag } from "../../../../../../domains/feature-flags/feature-flags.collection.ts"
 
 interface SubNavItem {
   readonly to: string
@@ -26,6 +29,7 @@ interface SubNavSection {
 export function SettingsSubNav({ projectSlug }: { projectSlug: string }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const base = `/projects/${projectSlug}/settings`
+  const slackEnabled = useHasFeatureFlag(SLACK_FLAG)
 
   const sections: SubNavSection[] = [
     {
@@ -43,6 +47,7 @@ export function SettingsSubNav({ projectSlug }: { projectSlug: string }) {
         { to: `${base}/members`, label: "Members", icon: Users },
         { to: `${base}/keys`, label: "Keys", icon: Key },
         { to: `${base}/billing`, label: "Billing", icon: CreditCard },
+        ...(slackEnabled ? [{ to: `${base}/integrations`, label: "Integrations", icon: Plug }] : []),
       ],
     },
     {
