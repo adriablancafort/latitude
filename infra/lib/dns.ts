@@ -245,6 +245,26 @@ export function createDnsRecords(
       allowOverwrite: true,
     })
 
+    // CNAME for one-pager.latitude.so -> Vercel
+    records.onePagerCname = new aws.route53.Record(`${name}-one-pager-cname`, {
+      zoneId: hostedZoneId,
+      name: "one-pager.latitude.so",
+      type: "CNAME",
+      records: ["64cf3fcb81779c8e.vercel-dns-017.com."],
+      ttl: 300,
+      allowOverwrite: true,
+    })
+
+    // Vercel domain verification for one-pager.latitude.so
+    records.onePagerVercelVerification = new aws.route53.Record(`${name}-one-pager-vercel-verification`, {
+      zoneId: hostedZoneId,
+      name: "_vercel.latitude.so",
+      type: "TXT",
+      records: ["vc-domain-verify=one-pager.latitude.so,c092b9f764af8a38180d"],
+      ttl: 300,
+      allowOverwrite: true,
+    })
+
     // CNAME for go.latitude.so -> customers.withbaker.com
     records.goCname = new aws.route53.Record(`${name}-go-cname`, {
       zoneId: hostedZoneId,
