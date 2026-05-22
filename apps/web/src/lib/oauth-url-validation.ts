@@ -1,21 +1,13 @@
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
+const UNSAFE_REDIRECT_PROTOCOLS = new Set(["javascript:", "data:", "vbscript:", "file:"])
 
-const parseAbsoluteUrl = (value: string): URL | null => {
+const parseAbsoluteUrl = (value: string, options: { readonly allowCredentials?: boolean } = {}): URL | null => {
   try {
     const url = new URL(value)
-    if (url.username || url.password) return null
+    if (!options.allowCredentials && (url.username || url.password)) return null
     return url
   } catch {
     return null
   }
-}
-
-const ipv4OctetPattern = "(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)"
-const loopbackIpv4Pattern = new RegExp(`^127\\.${ipv4OctetPattern}\\.${ipv4OctetPattern}\\.${ipv4OctetPattern}$`)
-
-const isLoopbackHostname = (hostname: string) => {
-  if (LOOPBACK_HOSTS.has(hostname)) return true
-  return loopbackIpv4Pattern.test(hostname)
 }
 
 export const isSafeOAuthIconUrl = (value: string | null | undefined): value is string => {
@@ -30,11 +22,10 @@ export const isSafeOAuthIconUrl = (value: string | null | undefined): value is s
 export const isSafeOAuthRedirectUrl = (value: string | null | undefined): value is string => {
   if (!value) return false
 
-  const url = parseAbsoluteUrl(value)
+  const url = parseAbsoluteUrl(value, { allowCredentials: true })
   if (!url) return false
 
-  if (url.protocol === "https:") return true
-  return url.protocol === "http:" && isLoopbackHostname(url.hostname)
+  return !UNSAFE_REDIRECT_PROTOCOLS.has(url.protocol)
 }
 
 export const validateOAuthClientRegistrationMetadata = (body: unknown): string | null => {
@@ -47,7 +38,7 @@ export const validateOAuthClientRegistrationMetadata = (body: unknown): string |
   if (Array.isArray(fields.redirect_uris)) {
     for (const redirectUri of fields.redirect_uris) {
       if (typeof redirectUri === "string" && !isSafeOAuthRedirectUrl(redirectUri)) {
-        return "redirect_uris must use HTTPS or loopback HTTP URLs"
+        return "redirect_uris must not use executable or embedded URL schemes"
       }
     }
   }

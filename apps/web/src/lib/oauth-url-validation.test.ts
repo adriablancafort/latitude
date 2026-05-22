@@ -18,31 +18,38 @@ describe("OAuth URL validation", () => {
     expect(isSafeOAuthIconUrl("/relative/logo.png")).toBe(false)
   })
 
-  it("allows https redirect URLs and loopback http redirect URLs", () => {
+  it("allows ordinary web, loopback, and native-app redirect URLs", () => {
     expect(isSafeOAuthRedirectUrl("https://client.example.com/callback?code=123")).toBe(true)
+    expect(isSafeOAuthRedirectUrl("http://client.example.com/callback")).toBe(true)
     expect(isSafeOAuthRedirectUrl("http://localhost:3917/callback")).toBe(true)
     expect(isSafeOAuthRedirectUrl("http://127.0.0.1:3917/callback")).toBe(true)
     expect(isSafeOAuthRedirectUrl("http://[::1]:3917/callback")).toBe(true)
+    expect(isSafeOAuthRedirectUrl("cursor://anysphere.cursor-mcp/oauth/callback")).toBe(true)
+    expect(isSafeOAuthRedirectUrl("agent-harness://oauth/callback")).toBe(true)
+    expect(isSafeOAuthRedirectUrl("com.example.agent:/oauth/callback")).toBe(true)
   })
 
-  it("rejects non-loopback http and executable redirect URL schemes", () => {
-    expect(isSafeOAuthRedirectUrl("http://client.example.com/callback")).toBe(false)
-    expect(isSafeOAuthRedirectUrl("http://127.999.999.999/callback")).toBe(false)
+  it("rejects malformed URLs and executable or embedded redirect URL schemes", () => {
     expect(isSafeOAuthRedirectUrl("javascript:alert(1)")).toBe(false)
     expect(isSafeOAuthRedirectUrl("data:text/html,<script>alert(1)</script>")).toBe(false)
     expect(isSafeOAuthRedirectUrl("vbscript:msgbox(1)")).toBe(false)
+    expect(isSafeOAuthRedirectUrl("file:///etc/passwd")).toBe(false)
     expect(isSafeOAuthRedirectUrl("//client.example.com/callback")).toBe(false)
   })
 
-  it("rejects credentials in URLs", () => {
+  it("rejects credentials in icon URLs but allows them in redirect URLs", () => {
     expect(isSafeOAuthIconUrl("https://user:pass@example.com/logo.png")).toBe(false)
-    expect(isSafeOAuthRedirectUrl("https://user:pass@example.com/callback")).toBe(false)
+    expect(isSafeOAuthRedirectUrl("https://user:pass@example.com/callback")).toBe(true)
   })
 
   it("validates dynamic client registration metadata", () => {
     expect(
       validateOAuthClientRegistrationMetadata({
-        redirect_uris: ["https://client.example.com/callback", "http://localhost:3917/callback"],
+        redirect_uris: [
+          "https://client.example.com/callback",
+          "http://localhost:3917/callback",
+          "agent-harness://oauth/callback",
+        ],
         logo_uri: "https://client.example.com/logo.png",
       }),
     ).toBeNull()
@@ -51,7 +58,7 @@ describe("OAuth URL validation", () => {
       validateOAuthClientRegistrationMetadata({
         redirect_uris: ["javascript:alert(1)"],
       }),
-    ).toBe("redirect_uris must use HTTPS or loopback HTTP URLs")
+    ).toBe("redirect_uris must not use executable or embedded URL schemes")
 
     expect(
       validateOAuthClientRegistrationMetadata({
