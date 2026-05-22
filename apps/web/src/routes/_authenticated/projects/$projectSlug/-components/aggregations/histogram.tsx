@@ -4,7 +4,9 @@ import { BarChart, HistogramSkeleton, Text } from "@repo/ui"
 import { useCallback, useMemo } from "react"
 
 import { useProjectAlertIncidentsInRange } from "../../../../../../domains/alerts/alerts.collection.ts"
-import { buildIncidentMarkers, renderIncidentsTooltipBlock } from "../../../../../../domains/alerts/incident-markers.ts"
+import { IncidentMarkerPopover } from "../../../../../../domains/alerts/incident-marker-popover.tsx"
+import { buildIncidentMarkers } from "../../../../../../domains/alerts/incident-markers.ts"
+import { useIncidentBucketHoverPopover } from "../../../../../../domains/alerts/use-incident-bucket-hover-popover.ts"
 import { useTraceTimeHistogram } from "../../../../../../domains/traces/traces.collection.ts"
 import { HISTOGRAM_METRIC_DEFINITIONS } from "./histogram-metrics.ts"
 
@@ -20,6 +22,7 @@ function formatBucketAxisLabel(iso: string): string {
 
 interface HistogramProps {
   readonly projectId: string
+  readonly projectSlug: string
   readonly filters: FilterSet
   readonly metric: TraceHistogramMetric
   /** When true, fetch and overlay incidents on the histogram. */
@@ -28,7 +31,7 @@ interface HistogramProps {
   readonly onRangeSelect?: ((range: { from: string; to: string } | null) => void) | undefined
 }
 
-export function Histogram({ projectId, filters, metric, showIncidents, onRangeSelect }: HistogramProps) {
+export function Histogram({ projectId, projectSlug, filters, metric, showIncidents, onRangeSelect }: HistogramProps) {
   const {
     data: sparseBuckets,
     isLoading,
@@ -97,14 +100,24 @@ export function Histogram({ projectId, filters, metric, showIncidents, onRangeSe
     [denseBuckets, bucketSeconds, onRangeSelect],
   )
 
+  // Tooltip stays on every bucket — it carries the metric value and is independent of the
+  // incident popover. Both coexist when the bucket has incidents.
   const formatTooltip = useCallback(
-    (category: string, value: number, dataIndex: number) => {
-      const base = `${category}<br/><b>${definition.formatBucket(value)}</b> ${definition.tooltipNoun}`
-      const touching = incidentsTouchingBucketIndex.get(dataIndex) ?? []
-      return base + renderIncidentsTooltipBlock(touching)
-    },
-    [definition, incidentsTouchingBucketIndex],
+    (category: string, value: number) =>
+      `${category}<br/><b>${definition.formatBucket(value)}</b> ${definition.tooltipNoun}`,
+    [definition],
   )
+
+  // Popover state machine — see use-incident-bucket-hover-popover.ts. Shared with the issues
+  // analytics panel.
+  const {
+    popover,
+    popoverIncidents,
+    handleBucketAxisPointerChange,
+    onOpenChange: onPopoverOpenChange,
+    onContentMouseEnter,
+    onContentMouseLeave,
+  } = useIncidentBucketHoverPopover({ incidentsTouchingBucketIndex })
 
   if (isLoading) {
     return (
@@ -140,6 +153,16 @@ export function Histogram({ projectId, filters, metric, showIncidents, onRangeSe
         formatTooltip={formatTooltip}
         onSelect={onRangeSelect ? handleSelect : undefined}
         {...(overlay ? { overlay } : {})}
+        {...(showIncidents ? { onBucketAxisPointerChange: handleBucketAxisPointerChange } : {})}
+      />
+      <IncidentMarkerPopover
+        open={popover !== null}
+        anchor={popover?.anchor ?? null}
+        incidents={popoverIncidents}
+        projectSlug={projectSlug}
+        onOpenChange={onPopoverOpenChange}
+        onContentMouseEnter={onContentMouseEnter}
+        onContentMouseLeave={onContentMouseLeave}
       />
     </div>
   )
