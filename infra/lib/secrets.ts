@@ -315,22 +315,38 @@ export function createApplicationSecrets(baseName: string, environment: string):
   secrets["stripe-pro-overage-meter-event-name"] = stripeProOverageMeterEventName.secret
   secretVersions["stripe-pro-overage-meter-event-name"] = stripeProOverageMeterEventName.secretVersion
 
-  // Slack secrets are managed manually in the AWS console (created
-  // out-of-band by an operator with Secrets Manager write access).
-  // Pulumi only looks them up by name so the ECS task definition can
-  // wire the ARNs in. Names must match the convention used elsewhere
-  // in this file: `${baseName}-${secretName}`. If a name is missing,
-  // `pulumi up` will fail at preview with a "secret not found" error —
-  // create the three entries in Secrets Manager first.
-  secrets["slack-client-id"] = aws.secretsmanager.getSecretOutput({
-    name: `${baseName}-slack-client-id`,
-  })
-  secrets["slack-client-secret"] = aws.secretsmanager.getSecretOutput({
-    name: `${baseName}-slack-client-secret`,
-  })
-  secrets["slack-signing-secret"] = aws.secretsmanager.getSecretOutput({
-    name: `${baseName}-slack-signing-secret`,
-  })
+  const slackClientId = createSingleSecret(
+    baseName,
+    "slack-client-id",
+    "Slack OAuth client ID — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_SLACK_CLIENT_ID ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["slack-client-id"] = slackClientId.secret
+  secretVersions["slack-client-id"] = slackClientId.secretVersion
+
+  const slackClientSecret = createSingleSecret(
+    baseName,
+    "slack-client-secret",
+    "Slack OAuth client secret — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_SLACK_CLIENT_SECRET ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["slack-client-secret"] = slackClientSecret.secret
+  secretVersions["slack-client-secret"] = slackClientSecret.secretVersion
+
+  const slackSigningSecret = createSingleSecret(
+    baseName,
+    "slack-signing-secret",
+    "Slack request signing secret — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_SLACK_SIGNING_SECRET ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["slack-signing-secret"] = slackSigningSecret.secret
+  secretVersions["slack-signing-secret"] = slackSigningSecret.secretVersion
 
   const temporalApiKey = createSingleSecret(
     baseName,
