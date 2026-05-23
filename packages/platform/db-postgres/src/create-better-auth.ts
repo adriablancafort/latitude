@@ -185,14 +185,29 @@ export const createBetterAuth = (config: BetterAuthConfig) => {
         },
       },
     },
+    /**
+     * OAuth security posture:
+     * - Better Auth 1.6.9 stores `accounts.accountId` from the provider user info `id`
+     *   (`sub` for OIDC providers such as Google), not from mutable email.
+     * - Do not implicitly link OAuth identities to existing users by matching email during sign-in;
+     *   users must link additional OAuth providers from an authenticated session.
+     * - Persist OAuth state in `verifications` and keep the signed state cookie check enabled.
+     */
+    account: {
+      storeStateStrategy: "database",
+      skipStateCookieCheck: false,
+      accountLinking: {
+        disableImplicitLinking: true,
+        allowDifferentEmails: false,
+        updateUserInfoOnLink: false,
+      },
+    },
     socialProviders: {
       ...(googleClientId &&
         googleClientSecret && {
           google: async () => ({
             clientId: googleClientId,
             clientSecret: googleClientSecret,
-            /** Keep `users.image` in sync with Google profile photos on each sign-in. */
-            overrideUserInfoOnSignIn: true,
           }),
         }),
       ...(githubClientId &&
