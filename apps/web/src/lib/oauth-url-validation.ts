@@ -21,8 +21,9 @@ export const isSafeOAuthIconUrl = (value: string | null | undefined): value is s
 
 export const isSafeOAuthRedirectUrl = (value: string | null | undefined): value is string => {
   if (!value) return false
+  if (value.includes("*") || value.includes(",")) return false
 
-  const url = parseAbsoluteUrl(value, { allowCredentials: true })
+  const url = parseAbsoluteUrl(value)
   if (!url) return false
 
   return !UNSAFE_REDIRECT_PROTOCOLS.has(url.protocol)

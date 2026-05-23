@@ -37,9 +37,14 @@ describe("OAuth URL validation", () => {
     expect(isSafeOAuthRedirectUrl("//client.example.com/callback")).toBe(false)
   })
 
-  it("rejects credentials in icon URLs but allows them in redirect URLs", () => {
+  it("rejects credentials in OAuth URLs", () => {
     expect(isSafeOAuthIconUrl("https://user:pass@example.com/logo.png")).toBe(false)
-    expect(isSafeOAuthRedirectUrl("https://user:pass@example.com/callback")).toBe(true)
+    expect(isSafeOAuthRedirectUrl("https://user:pass@example.com/callback")).toBe(false)
+  })
+
+  it("rejects wildcard and comma-delimited redirect URLs", () => {
+    expect(isSafeOAuthRedirectUrl("https://*.example.com/callback")).toBe(false)
+    expect(isSafeOAuthRedirectUrl("https://client.example.com/callback,https://evil.example.com/callback")).toBe(false)
   })
 
   it("validates dynamic client registration metadata", () => {
