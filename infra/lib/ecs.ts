@@ -262,6 +262,21 @@ export function createEcs(
           scaleOutCooldown: 60,
         },
       })
+
+      new aws.appautoscaling.Policy(`${name}-${serviceConfig.name}-memory-scaling`, {
+        policyType: "TargetTrackingScaling",
+        resourceId: target.resourceId,
+        scalableDimension: target.scalableDimension,
+        serviceNamespace: target.serviceNamespace,
+        targetTrackingScalingPolicyConfiguration: {
+          predefinedMetricSpecification: {
+            predefinedMetricType: "ECSServiceAverageMemoryUtilization",
+          },
+          targetValue: 70,
+          scaleInCooldown: 60,
+          scaleOutCooldown: 60,
+        },
+      })
     }
   }
 
