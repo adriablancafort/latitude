@@ -434,14 +434,7 @@ export function OnboardingFlow({
     return keys.find((k) => k.name === DEFAULT_API_KEY_NAME)?.token ?? null
   }, [apiKeysList])
 
-  const codingAgentPrompt = useMemo(
-    () =>
-      getCodingAgentTelemetryPrompt({
-        apiKey: defaultApiKeyToken,
-        projectSlug: slugForSnippets,
-      }),
-    [defaultApiKeyToken, slugForSnippets],
-  )
+  const codingAgentPrompt = getCodingAgentTelemetryPrompt()
 
   const integrationTabOptions = useMemo(() => {
     const cfg = ONBOARDING_PROVIDER_SNIPPET_CONFIG[selectedProvider.id]

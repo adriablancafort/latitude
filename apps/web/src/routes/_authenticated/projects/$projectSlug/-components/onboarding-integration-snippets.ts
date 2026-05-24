@@ -1366,25 +1366,8 @@ export function getOtelExporterLanguageSnippet(
  * (https://docs.latitude.so/telemetry/overview#ask-your-coding-agent), with the
  * project slug + API key pre-filled so the agent doesn't need to ask.
  */
-export function getCodingAgentTelemetryPrompt(params: {
-  readonly projectSlug: string
-  readonly apiKey: string | null
-}): string {
-  const { projectSlug, apiKey } = params
-  const apiKeyLine = apiKey ? `LATITUDE_API_KEY=${apiKey}` : ""
-  return [
-    "Install the Latitude AI skill from github.com/latitude-dev/skills.",
-    'Try: `npx skills add latitude-dev/skills --skill "latitude-telemetry"`',
-    "If does not work clone the repo in your skills directory.",
-    "Use it to add tracing to this application with Latitude,",
-    "following best practices.",
-    "",
-    "Put this in your environment variables:",
-    `LATITUDE_API_KEY=${projectSlug}`,
-    apiKeyLine,
-    "",
-    "IMPORTANT: Never commit secrets in your git repository.",
-  ].join("\n")
+export function getCodingAgentTelemetryPrompt(): string {
+  return "Read the Latitude Telemetry AI skill from github.com/latitude-dev/skills/blob/main/skills/latitude-telemetry/SKILL.md and add tracing to this application."
 }
 
 export type CodingMachineAgentId = "claude-code" | "openclaw"
