@@ -52,8 +52,8 @@ describe("computeTraceSearchHighlights", () => {
       expect(h.type).toBe("search-token")
       expect(h.source).toMatchObject({ kind: "token", phrase: "refund process", matchedTokens: ["refund", "process"] })
     }
-    expect(content.slice(result.highlights[0]!.startOffset, result.highlights[0]!.endOffset)).toBe("Refund-Process")
-    expect(content.slice(result.highlights[1]!.startOffset, result.highlights[1]!.endOffset)).toBe("refund_process")
+    expect(content.slice(result.highlights[0].startOffset, result.highlights[0].endOffset)).toBe("Refund-Process")
+    expect(content.slice(result.highlights[1].startOffset, result.highlights[1].endOffset)).toBe("refund_process")
   })
 
   it("skips role=system messages (they never reach the search index either)", () => {
@@ -66,7 +66,7 @@ describe("computeTraceSearchHighlights", () => {
     )
 
     expect(result.highlights).toHaveLength(1)
-    expect(result.highlights[0]!.messageIndex).toBe(1)
+    expect(result.highlights[0].messageIndex).toBe(1)
   })
 
   it("emits hits across multiple parts of one message, preserving partIndex", () => {
@@ -264,7 +264,7 @@ describe("computeTraceSearchHighlights", () => {
       const literalHighlights = result.highlights.filter((h) => h.type === "search-literal")
       expect(semanticRegionHighlights).toHaveLength(2)
       expect(literalHighlights).toHaveLength(1)
-      expect(literalHighlights[0]!.messageIndex).toBe(2)
+      expect(literalHighlights[0].messageIndex).toBe(2)
     })
 
     it("ignores semanticMatch when a phrase match-nothing makes the whole query empty", () => {
@@ -295,6 +295,6 @@ describe("computeTraceSearchHighlights", () => {
     const result = compute([textMessage("user", content)], '"refund  process"')
 
     expect(result.highlights).toHaveLength(1)
-    expect(content.slice(result.highlights[0]!.startOffset, result.highlights[0]!.endOffset)).toBe("refund process")
+    expect(content.slice(result.highlights[0].startOffset, result.highlights[0].endOffset)).toBe("refund process")
   })
 })

@@ -327,7 +327,7 @@ describe("buildTraceSearchDocument", () => {
 
         const document = await build(messages)
 
-        const lastChunk = document.chunks.at(-1)!
+        const lastChunk = document.chunks[document.chunks.length - 1]
         expect(lastChunk.lastMessageIndex).toBeGreaterThanOrEqual(40)
       })
     })
