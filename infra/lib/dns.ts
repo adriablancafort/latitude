@@ -255,12 +255,25 @@ export function createDnsRecords(
       allowOverwrite: true,
     })
 
-    // Vercel domain verification for one-pager.latitude.so
-    records.onePagerVercelVerification = new aws.route53.Record(`${name}-one-pager-vercel-verification`, {
+    // Vercel domain verification records
+    records.vercelVerification = new aws.route53.Record(`${name}-vercel-verification`, {
       zoneId: hostedZoneId,
       name: "_vercel.latitude.so",
       type: "TXT",
-      records: ["vc-domain-verify=one-pager.latitude.so,c092b9f764af8a38180d"],
+      records: [
+        "vc-domain-verify=one-pager.latitude.so,c092b9f764af8a38180d",
+        "vc-domain-verify=latitude.so,016a0dbeca8838d547f9",
+      ],
+      ttl: 300,
+      allowOverwrite: true,
+    })
+
+    // CNAME for 41st.latitude.so -> Vercel
+    records.fortyFirstCname = new aws.route53.Record(`${name}-41st-cname`, {
+      zoneId: hostedZoneId,
+      name: "41st.latitude.so",
+      type: "CNAME",
+      records: ["bb4bb3f03e7ed8d6.vercel-dns-016.com."],
       ttl: 300,
       allowOverwrite: true,
     })
