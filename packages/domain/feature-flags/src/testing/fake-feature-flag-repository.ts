@@ -1,84 +1,59 @@
 import { SqlClient } from "@domain/shared"
 import { Effect } from "effect"
-import { createFeatureFlag, createOrganizationFeatureFlag } from "../entities/feature-flag.ts"
-import { DuplicateFeatureFlagIdentifierError, FeatureFlagNotFoundError } from "../errors.ts"
+import { createFeatureFlag, createOrganizationFeatureFlag, type FeatureFlag } from "../entities/feature-flag.ts"
 import type { FeatureFlagRepositoryShape } from "../ports/feature-flag-repository.ts"
+import type { FeatureFlagId } from "../registry.ts"
 
 export const createFakeFeatureFlagRepository = () => {
-  const featureFlags = new Map<string, ReturnType<typeof createFeatureFlag>>()
+  const featureFlags = new Map<FeatureFlagId, FeatureFlag>()
   const organizationFeatureFlags = new Map<string, ReturnType<typeof createOrganizationFeatureFlag>>()
 
-  const enabledKey = (organizationId: string, featureFlagId: string) => `${organizationId}:${featureFlagId}`
+  const enabledKey = (organizationId: string, identifier: FeatureFlagId) => `${organizationId}:${identifier}`
 
   const repository: FeatureFlagRepositoryShape = {
-    findByIdentifier: (identifier) =>
-      Effect.gen(function* () {
-        const featureFlag = featureFlags.get(identifier)
-        if (!featureFlag || featureFlag.archivedAt) return yield* new FeatureFlagNotFoundError({ identifier })
-        return featureFlag
-      }),
-
-    list: () => Effect.succeed([...featureFlags.values()].filter((featureFlag) => featureFlag.archivedAt === null)),
-
     listEnabledForOrganization: () =>
       Effect.gen(function* () {
         const { organizationId } = yield* SqlClient
-        const enabledFeatureFlagIds = new Set(
+        const enabledIdentifiers = new Set(
           [...organizationFeatureFlags.values()]
             .filter((row) => row.organizationId === organizationId)
-            .map((row) => row.featureFlagId),
+            .map((row) => row.identifier),
         )
 
-        return [...featureFlags.values()].filter(
-          (featureFlag) =>
-            featureFlag.archivedAt === null && (featureFlag.enabledForAll || enabledFeatureFlagIds.has(featureFlag.id)),
-        )
+        // Match the live repo: collect flags that are either globally enabled
+        // or per-org enabled, synthesising a catalog row when only the
+        // per-org side exists.
+        const result = new Map<FeatureFlagId, FeatureFlag>()
+        for (const flag of featureFlags.values()) {
+          if (flag.enabledForAll || enabledIdentifiers.has(flag.identifier)) {
+            result.set(flag.identifier, flag)
+          }
+        }
+        for (const identifier of enabledIdentifiers) {
+          if (result.has(identifier)) continue
+          result.set(identifier, createFeatureFlag({ identifier }))
+        }
+        return [...result.values()].sort((a, b) => a.identifier.localeCompare(b.identifier))
       }),
 
     isEnabledForOrganization: (identifier) =>
       Effect.gen(function* () {
         const { organizationId } = yield* SqlClient
-        const featureFlag = featureFlags.get(identifier)
-        if (!featureFlag || featureFlag.archivedAt) return false
-        if (featureFlag.enabledForAll) return true
-
-        return organizationFeatureFlags.has(enabledKey(organizationId, featureFlag.id))
-      }),
-
-    createFeatureFlag: (input) =>
-      Effect.gen(function* () {
-        if (featureFlags.has(input.identifier)) {
-          return yield* new DuplicateFeatureFlagIdentifierError({ identifier: input.identifier })
-        }
-
-        const featureFlag = createFeatureFlag(input)
-        featureFlags.set(featureFlag.identifier, featureFlag)
-        return featureFlag
-      }),
-
-    archiveFeatureFlag: (identifier) =>
-      Effect.gen(function* () {
-        const featureFlag = featureFlags.get(identifier)
-        if (!featureFlag || featureFlag.archivedAt) return yield* new FeatureFlagNotFoundError({ identifier })
-
-        featureFlags.set(identifier, { ...featureFlag, archivedAt: new Date(), updatedAt: new Date() })
+        const flag = featureFlags.get(identifier)
+        if (flag?.enabledForAll) return true
+        return organizationFeatureFlags.has(enabledKey(organizationId, identifier))
       }),
 
     enableForOrganization: (input) =>
       Effect.gen(function* () {
         const { organizationId } = yield* SqlClient
-        const featureFlag = featureFlags.get(input.identifier)
-        if (!featureFlag || featureFlag.archivedAt) {
-          return yield* new FeatureFlagNotFoundError({ identifier: input.identifier })
-        }
-
-        const key = enabledKey(organizationId, featureFlag.id)
+        const key = enabledKey(organizationId, input.identifier)
         const existing = organizationFeatureFlags.get(key)
         if (existing) return existing
 
         const organizationFeatureFlag = createOrganizationFeatureFlag({
           organizationId,
-          featureFlagId: featureFlag.id,
+          identifier: input.identifier,
           enabledByAdminUserId: input.enabledByAdminUserId,
         })
         organizationFeatureFlags.set(key, organizationFeatureFlag)
@@ -88,10 +63,7 @@ export const createFakeFeatureFlagRepository = () => {
     disableForOrganization: (identifier) =>
       Effect.gen(function* () {
         const { organizationId } = yield* SqlClient
-        const featureFlag = featureFlags.get(identifier)
-        if (!featureFlag) return
-
-        organizationFeatureFlags.delete(enabledKey(organizationId, featureFlag.id))
+        organizationFeatureFlags.delete(enabledKey(organizationId, identifier))
       }),
   }
 
