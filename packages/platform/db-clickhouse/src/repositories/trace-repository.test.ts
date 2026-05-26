@@ -15,8 +15,8 @@ import { setupTestClickHouse } from "@platform/testkit"
 import { Effect, Layer } from "effect"
 import { beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { ChSqlClientLive } from "../ch-sql-client.ts"
-import { scoreSeeders } from "../seeds/scores/index.ts"
-import { fixedTraceSeeders } from "../seeds/spans/fixed-traces.ts"
+import { buildLifecycleAnalyticsRows } from "../seeds/scores/index.ts"
+import { buildCompatibilitySupportSpans } from "../seeds/spans/fixed-traces.ts"
 import type { SpanRow } from "../seeds/spans/span-builders.ts"
 import { insertJsonEachRow } from "../sql.ts"
 import { withClickHouse } from "../with-clickhouse.ts"
@@ -33,13 +33,15 @@ const ORG_ID = OrganizationId(SEED_ORG_ID)
 const PROJECT_ID = ProjectId(SEED_PROJECT_ID)
 const TRACE_ID = SEED_LIFECYCLE_TRACE_IDS[0] as TraceId
 const SCORED_TRACE_ID = SEED_LIFECYCLE_TRACE_IDS[3] as TraceId
-const firstFixedTraceSeeder = fixedTraceSeeders[0]
 const BASELINE_TEST_TAG = "baseline-missing-values"
-const firstScoreSeeder = scoreSeeders[0]
 
-if (firstFixedTraceSeeder === undefined) {
-  throw new Error("Expected at least one fixed trace seeder")
-}
+// Tests in this file only reference SEED_LIFECYCLE_TRACE_IDS and
+// SEED_ANNOTATION_DEMO_TRACE_ID — all from the compatibility-support set
+// (~6 spans). They never query the ~hundreds of tau2 trajectory spans, so
+// inserting the full fixed-trace set per test was pure overhead. Same on
+// the score side: only lifecycle analytics are queried, not tau2 issues.
+const BASELINE_SPANS: readonly SpanRow[] = buildCompatibilitySupportSpans(bootstrapSeedScope)
+const BASELINE_SCORES = buildLifecycleAnalyticsRows(bootstrapSeedScope)
 
 function toClickHouseDateTime(value: Date): string {
   return value.toISOString().replace("T", " ").replace("Z", "")
@@ -115,10 +117,6 @@ function makeSpanRow({
   }
 }
 
-if (firstScoreSeeder === undefined) {
-  throw new Error("Expected at least one score seeder")
-}
-
 const ch = setupTestClickHouse()
 
 const runCh = <A, E>(effect: Effect.Effect<A, E, ChSqlClient | AI>) =>
@@ -137,8 +135,8 @@ describe("TraceRepository", () => {
   })
 
   beforeEach(async () => {
-    await Effect.runPromise(firstFixedTraceSeeder.run({ client: ch.client, scope: bootstrapSeedScope, quiet: true }))
-    await Effect.runPromise(firstScoreSeeder.run({ client: ch.client, scope: bootstrapSeedScope, quiet: true }))
+    await Effect.runPromise(insertJsonEachRow(ch.client, "spans", BASELINE_SPANS))
+    await Effect.runPromise(insertJsonEachRow(ch.client, "scores", BASELINE_SCORES))
   })
 
   describe("matchesFiltersByTraceId", () => {
