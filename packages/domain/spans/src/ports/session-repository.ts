@@ -60,17 +60,22 @@ export interface SessionListCursor {
   readonly sessionId: string
 }
 
+export interface SessionSearchCursor {
+  readonly relevanceBucket: number
+  readonly lastActivityAt: string
+  readonly sessionId: string
+}
+
 export interface SessionListOptions {
   readonly limit?: number
-  readonly cursor?: SessionListCursor
+  readonly cursor?: SessionListCursor | SessionSearchCursor
   readonly sortBy?: string
   readonly sortDirection?: "asc" | "desc"
   readonly filters?: FilterSet
   /**
-   * When present, the repository switches into the search code path: results
-   * are session-rollups of matching traces, ranking is forced to
-   * `bestScore DESC, sessionId DESC` regardless of `sortBy`, and the returned
-   * `SessionListPage` carries a parallel `searchMatches` map.
+   * When set, switches the repository into the search code path. `sortBy` /
+   * `sortDirection` are ignored and the page carries a parallel
+   * `searchMatches` map.
    */
   readonly searchQuery?: string
 }
@@ -78,7 +83,7 @@ export interface SessionListOptions {
 export interface SessionListPage {
   readonly items: readonly Session[]
   readonly hasMore: boolean
-  readonly nextCursor?: SessionListCursor
+  readonly nextCursor?: SessionListCursor | SessionSearchCursor
   /**
    * Per-result search match metadata, keyed by `sessionId`. Present only when
    * `SessionListOptions.searchQuery` was active for the request. Surfaced as

@@ -18,9 +18,14 @@ import type {
   SessionCountResult,
   SessionListCursor,
   SessionListPage,
+  SessionSearchCursor,
   SessionSearchMatch,
 } from "@domain/spans"
-import { SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW } from "@domain/spans"
+import {
+  SESSION_SEARCH_MAX_CLOCK_SKEW_MS,
+  SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW,
+  SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH,
+} from "@domain/spans"
 import { normalizeCHString, parseCHDate } from "@repo/utils"
 import { Effect } from "effect"
 import { buildClickHouseWhere } from "../filter-builder.ts"
@@ -60,6 +65,12 @@ type SessionSearchRow = {
   // search path.
   best_score: number
   best_trace_id: string
+  // Fixed-width snap of `best_score` (see SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH).
+  // Drives the freshness-weighted sort tuple alongside `last_activity_at`.
+  relevance_bucket: number
+  // Session-level `max_end_time`, clamped to `now() + SESSION_SEARCH_MAX_CLOCK_SKEW_MS`
+  // to neutralize bad client clocks. ISO-8601 string from JSONEachRow.
+  last_activity_at: string
   matching_trace_count: string
   matching_trace_ids: string[]
   matching_trace_scores: number[]
@@ -232,10 +243,20 @@ interface ListSearchInput {
   readonly projectId: ProjectId
   readonly parsed: ParsedSearchQuery
   readonly filters: FilterSet | undefined
-  readonly cursor: SessionListCursor | undefined
+  readonly cursor: SessionListCursor | SessionSearchCursor | undefined
   readonly limit: number
   readonly fetchFullSessions: FetchFullSessions
 }
+
+/**
+ * Search-path cursor carries the freshness-weighted sort tuple. Legacy
+ * `SessionListCursor` values (from clients on the prior cursor shape) are
+ * silently dropped — keyset pagination will restart from the top, which is
+ * the only safe behavior when the cursor's encoded sort key doesn't match
+ * the query's actual ORDER BY.
+ */
+const isSearchCursor = (cursor: SessionListCursor | SessionSearchCursor | undefined): cursor is SessionSearchCursor =>
+  cursor !== undefined && "relevanceBucket" in cursor && "lastActivityAt" in cursor
 
 /**
  * Search-active list path (spec §4.3). Runs the trace → session rollup
@@ -257,9 +278,16 @@ export const listSessionsBySearchQuery = ({
     const plan = yield* planSearch(parsed)
     const { telemetryParams, traceScoreWhere, scoreParams, finalHaving } = buildSearchFilters(filters)
 
-    const sessionCursorClause = cursor
-      ? `HAVING (max(relevance_score), session_id) <
-           ({cursorSortValue:Float64}, {cursorSessionId:String})`
+    const searchCursor = isSearchCursor(cursor) ? cursor : undefined
+    // HAVING references the SELECT aliases (CH lets it see them) so the
+    // bucket and last_activity expressions stay defined in exactly one
+    // place — the outer projection below.
+    const sessionCursorClause = searchCursor
+      ? `HAVING (relevance_bucket, last_activity_at, session_id) < (
+           {cursorBucket:Float64},
+           {cursorLastActivityAt:DateTime64(9, 'UTC')},
+           {cursorSessionId:String}
+         )`
       : ""
 
     const rows = yield* chSqlClient
@@ -274,6 +302,22 @@ export const listSessionsBySearchQuery = ({
                       t.organization_id, t.project_id, t.trace_id,
                       search_results.relevance_score
                     ${finalHaving}
+                  ),
+                  -- Pre-aggregate the sessions table's max_end_time for the
+                  -- candidate set only. sessions.max_end_time is a
+                  -- SimpleAggregateFunction(max, ...) so plain reads can
+                  -- see a single unmerged part; max() finalizes across
+                  -- parts. The IN clause keeps the scan bounded to the
+                  -- session_ids that actually matched.
+                  session_freshness AS (
+                    SELECT
+                      session_id,
+                      max(max_end_time) AS sess_max_end_time
+                    FROM sessions
+                    WHERE organization_id = {organizationId:String}
+                      AND project_id = {projectId:String}
+                      AND session_id IN (SELECT session_id FROM trace_rollup)
+                    GROUP BY session_id
                   )
                   SELECT
                     organization_id,
@@ -281,13 +325,13 @@ export const listSessionsBySearchQuery = ({
                     session_id,
                     max(relevance_score)                                            AS best_score,
                     argMax(trace_id, relevance_score)                               AS best_trace_id,
+                    floor(max(relevance_score) / {bucketWidth:Float64})
+                      * {bucketWidth:Float64}                                       AS relevance_bucket,
+                    least(
+                      coalesce(any(sf.sess_max_end_time), max(end_time)),
+                      addMilliseconds(now64(9, 'UTC'), {clockSkewMs:UInt32})
+                    )                                                               AS last_activity_at,
                     count()                                                         AS matching_trace_count,
-                    -- Sort the (trace_id, score) tuples once, then slice the
-                    -- top-K and split into parallel arrays. The cap bounds
-                    -- per-row memory: an unbounded groupArray could otherwise
-                    -- materialize up to SEMANTIC_SCAN_LIMIT (30k) tuples per
-                    -- session in the pathological single-session case.
-                    -- matching_trace_count above keeps the true total.
                     arrayMap(
                       pair -> pair.1,
                       arraySlice(
@@ -311,22 +355,26 @@ export const listSessionsBySearchQuery = ({
                     sum(error_count)                                                AS error_count,
                     sum(tokens_total)                                               AS tokens_total
                   FROM trace_rollup
+                  LEFT JOIN session_freshness AS sf USING (session_id)
                   GROUP BY organization_id, project_id, session_id
                   ${sessionCursorClause}
-                  ORDER BY best_score DESC, session_id DESC
+                  ORDER BY relevance_bucket DESC, last_activity_at DESC, session_id DESC
                   LIMIT {limit:UInt32}`,
           query_params: {
             organizationId: organizationId as string,
             projectId: projectId as string,
             limit: limit + 1,
             matchingTracesCap: SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW,
+            bucketWidth: SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH,
+            clockSkewMs: SESSION_SEARCH_MAX_CLOCK_SKEW_MS,
             ...telemetryParams,
             ...scoreParams,
             ...plan.params,
-            ...(cursor
+            ...(searchCursor
               ? {
-                  cursorSortValue: cursor.sortValue,
-                  cursorSessionId: cursor.sessionId,
+                  cursorBucket: searchCursor.relevanceBucket,
+                  cursorLastActivityAt: searchCursor.lastActivityAt,
+                  cursorSessionId: searchCursor.sessionId,
                 }
               : {}),
           },
@@ -363,7 +411,12 @@ export const listSessionsBySearchQuery = ({
       items,
       hasMore,
       nextCursor: {
-        sortValue: String(Number(last.best_score)),
+        relevanceBucket: Number(last.relevance_bucket),
+        // Pass CH's DateTime64 string back unchanged: ClickHouse accepts the
+        // same ISO-8601 form it emits as `{x:DateTime64(9, 'UTC')}` input,
+        // so round-tripping through the wire as a string preserves the
+        // nanosecond precision the cursor predicate needs.
+        lastActivityAt: last.last_activity_at,
         sessionId: normalizeCHString(last.session_id),
       },
       searchMatches,
