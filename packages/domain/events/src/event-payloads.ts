@@ -294,6 +294,7 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly traceId: string
+    readonly onboardingType?: "prod-traces" | "code-agents"
   }
   BillingUsagePeriodUpdated: {
     readonly organizationId: string
