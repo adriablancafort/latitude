@@ -68,7 +68,9 @@ export function ErrorFallback({
       <Text.H5 color="foregroundMuted">
         If this error persists, please contact support and reference this error ID:
       </Text.H5>
-      <CopyableText value={errorId} tooltip="Copy error ID" />
+      <div className="flex justify-center">
+        <CopyableText value={errorId} tooltip="Copy error ID" />
+      </div>
       <Button onClick={reset}>Try again</Button>
     </div>
   )
