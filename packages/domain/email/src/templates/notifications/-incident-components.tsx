@@ -174,8 +174,9 @@ export function SampleExcerptCard({ excerpt }: { readonly excerpt: IncidentSampl
  *                  back to the alt text — the surrounding initials box
  *                  carries the same letters so the row still reads),
  *                  followed by the author's name.
- * - `system`:      small Latitude "L" monogram (no remote asset
- *                  dependency, renders identically across clients),
+ * - `system`:      hosted Latitude icon (clients that block remote
+ *                  images fall back to the `alt` text, and the
+ *                  adjacent "Latitude" label still names the author),
  *                  "Latitude", and an "Agent" badge — mirrors the
  *                  in-app annotation card's system branding.
  * - `evaluation`:  the evaluation name only (evaluations don't have
@@ -211,7 +212,7 @@ function SampleAuthorCells({ author }: { readonly author: IncidentSampleAuthor }
     return (
       <>
         <td style={authorCellStyle}>
-          <LatitudeMonogram />
+          <LatitudeIcon />
         </td>
         <td style={{ ...authorCellStyle, paddingLeft: 6 }}>
           <span style={authorNameStyle}>Latitude</span>
@@ -294,25 +295,20 @@ function InitialsAvatar({ text }: { readonly text: string }) {
   )
 }
 
-function LatitudeMonogram() {
+function LatitudeIcon() {
   return (
-    <span
+    <Img
+      src="https://console.latitude.so/latitude-icon.png"
+      alt="Latitude"
+      width={String(AVATAR_SIZE)}
+      height={String(AVATAR_SIZE)}
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
+        display: "inline-block",
         width: AVATAR_SIZE,
         height: AVATAR_SIZE,
-        borderRadius: AVATAR_SIZE / 2,
-        backgroundColor: "#0080FF",
-        color: "#FFFFFF",
-        fontSize: 11,
-        fontWeight: 700,
         verticalAlign: "middle",
       }}
-    >
-      L
-    </span>
+    />
   )
 }
 
