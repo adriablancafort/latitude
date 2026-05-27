@@ -1,4 +1,4 @@
-import { AI_GENERATE_TELEMETRY_TAGS, AIError } from "@domain/ai"
+import { AI_GENERATE_TELEMETRY_TAGS, AIError, type GenerateInput } from "@domain/ai"
 import { createFakeAI } from "@domain/ai/testing"
 import {
   ChSqlClient,
@@ -46,10 +46,35 @@ const { repository: defaultFlaggerRepo } = createFakeFlaggerRepository([], {
     } as Flagger),
 })
 
-// Schema from the implementation - for testing default behavior
-const flaggerOutputSchema = z.object({
-  matched: z.boolean().optional().default(false),
-})
+// Schema shape from the implementation - for testing default behavior
+const flaggerOutputSchema = z
+  .object({
+    matched: z.boolean().optional().default(false),
+    feedback: z.string().min(1).nullable().optional(),
+    messageIndex: z.number().int().nonnegative().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.matched && !value.feedback?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["feedback"], message: "feedback required" })
+    }
+    if (!value.matched && value.feedback?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["feedback"], message: "feedback not allowed" })
+    }
+  })
+
+const createClassifyAndApproveAI = (
+  classification = { matched: true, feedback: "Flagger matched with concrete evidence." },
+) =>
+  createFakeAI({
+    generate: <T>(input: { readonly system?: string }) => {
+      const isAnnotationReview = input.system?.includes("adversarial quality reviewer") ?? false
+      return Effect.succeed({
+        object: (isAnnotationReview ? { annotationMakesSense: true } : classification) as T,
+        tokens: 20,
+        duration: 90_000_000,
+      })
+    },
+  })
 
 function makeTraceDetail(allMessages: TraceDetail["allMessages"]): TraceDetail {
   return {
@@ -106,14 +131,7 @@ describe("runFlaggerUseCase", () => {
         ),
     })
 
-    const { calls, layer: aiLayer } = createFakeAI({
-      generate: <T>() =>
-        Effect.succeed({
-          object: { matched: true } as T,
-          tokens: 22,
-          duration: 123_000_000,
-        }),
-    })
+    const { calls, layer: aiLayer } = createClassifyAndApproveAI()
 
     const result = await Effect.runPromise(
       runFlaggerUseCase({ ...INPUT, flaggerSlug: "jailbreaking" }).pipe(
@@ -129,8 +147,8 @@ describe("runFlaggerUseCase", () => {
       ),
     )
 
-    expect(result).toEqual({ matched: true })
-    expect(calls.generate).toHaveLength(1)
+    expect(result).toEqual({ matched: true, feedback: "Flagger matched with concrete evidence." })
+    expect(calls.generate).toHaveLength(2)
     expect(calls.generate[0]).toMatchObject({
       ...FLAGGER_MODEL,
       maxTokens: FLAGGER_MAX_TOKENS,
@@ -204,14 +222,7 @@ describe("runFlaggerUseCase", () => {
         ),
     })
 
-    const { calls, layer: aiLayer } = createFakeAI({
-      generate: <T>() =>
-        Effect.succeed({
-          object: { matched: true } as T,
-          tokens: 18,
-          duration: 80_000_000,
-        }),
-    })
+    const { calls, layer: aiLayer } = createClassifyAndApproveAI()
 
     const result = await Effect.runPromise(
       runFlaggerUseCase({ ...INPUT, flaggerSlug: "refusal" }).pipe(
@@ -227,8 +238,8 @@ describe("runFlaggerUseCase", () => {
       ),
     )
 
-    expect(result).toEqual({ matched: true })
-    expect(calls.generate).toHaveLength(1)
+    expect(result).toEqual({ matched: true, feedback: "Flagger matched with concrete evidence." })
+    expect(calls.generate).toHaveLength(2)
     expect(calls.generate[0].system).toContain("Refusal")
     expect(calls.generate[0].system).toContain("declines, deflects, or over-restricts")
     expect(calls.generate[0].system).not.toContain("Jailbreaking")
@@ -258,14 +269,7 @@ describe("runFlaggerUseCase", () => {
         ),
     })
 
-    const { calls, layer: aiLayer } = createFakeAI({
-      generate: <T>() =>
-        Effect.succeed({
-          object: { matched: true } as T,
-          tokens: 16,
-          duration: 60_000_000,
-        }),
-    })
+    const { calls, layer: aiLayer } = createClassifyAndApproveAI()
 
     const result = await Effect.runPromise(
       runFlaggerUseCase({ ...INPUT, flaggerSlug: "frustration" }).pipe(
@@ -281,8 +285,8 @@ describe("runFlaggerUseCase", () => {
       ),
     )
 
-    expect(result).toEqual({ matched: true })
-    expect(calls.generate).toHaveLength(1)
+    expect(result).toEqual({ matched: true, feedback: "Flagger matched with concrete evidence." })
+    expect(calls.generate).toHaveLength(2)
     expect(calls.generate[0].system).toContain("USER'S OWN WORDING")
     expect(calls.generate[0].system).toContain("Judge only the user-authored messages")
     expect(calls.generate[0].prompt).toContain("USER MESSAGES")
@@ -520,6 +524,55 @@ describe("runFlaggerUseCase", () => {
     expect(result).toEqual({ matched: false })
   })
 
+  it("drops matched annotations when the adversarial reviewer rejects the feedback", async () => {
+    const { repository } = createFakeTraceRepository({
+      findByTraceId: () =>
+        Effect.succeed(
+          makeTraceDetail([
+            {
+              role: "user",
+              parts: [{ type: "text", content: "Please do the task." }],
+            },
+            {
+              role: "assistant",
+              parts: [{ type: "text", content: "I'll look into that." }],
+            },
+          ]),
+        ),
+    })
+
+    const { calls, layer: aiLayer } = createFakeAI({
+      generate: <T>(input: GenerateInput<T>) => {
+        const isAnnotationReview = input.system?.includes("adversarial quality reviewer") ?? false
+        return Effect.succeed({
+          object: (isAnnotationReview
+            ? { annotationMakesSense: false, reason: "The annotation contradicts the match." }
+            : { matched: true, feedback: "No jailbreaking behavior detected; this was legitimate." }) as T,
+          tokens: 20,
+          duration: 90_000_000,
+        })
+      },
+    })
+
+    const result = await Effect.runPromise(
+      runFlaggerUseCase({ ...INPUT, flaggerSlug: "jailbreaking" }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(TraceRepository, repository),
+            Layer.succeed(ChSqlClient, createFakeChSqlClient({ organizationId: OrganizationId(INPUT.organizationId) })),
+            Layer.succeed(SqlClient, createFakeSqlClient({ organizationId: OrganizationId(INPUT.organizationId) })),
+            Layer.succeed(FlaggerRepository, defaultFlaggerRepo),
+            aiLayer,
+          ),
+        ),
+      ),
+    )
+
+    expect(result).toEqual({ matched: false })
+    expect(calls.generate).toHaveLength(2)
+    expect(calls.generate[1].prompt).toContain("No jailbreaking behavior detected")
+  })
+
   it("recovers to matched=false when the SDK cause has no AI_NoObjectGeneratedError name but the message indicates a schema mismatch", async () => {
     const { repository } = createFakeTraceRepository({
       findByTraceId: () =>
@@ -581,14 +634,7 @@ describe("runFlaggerUseCase", () => {
         ),
     })
 
-    const { calls, layer: aiLayer } = createFakeAI({
-      generate: <T>() =>
-        Effect.succeed({
-          object: { matched: true } as T,
-          tokens: 20,
-          duration: 90_000_000,
-        }),
-    })
+    const { calls, layer: aiLayer } = createClassifyAndApproveAI()
 
     const result = await Effect.runPromise(
       runFlaggerUseCase({ ...INPUT, flaggerSlug: "laziness" }).pipe(
@@ -604,8 +650,8 @@ describe("runFlaggerUseCase", () => {
       ),
     )
 
-    expect(result).toEqual({ matched: true })
-    expect(calls.generate).toHaveLength(1)
+    expect(result).toEqual({ matched: true, feedback: "Flagger matched with concrete evidence." })
+    expect(calls.generate).toHaveLength(2)
     expect(calls.generate[0].system).toContain("Laziness")
     expect(calls.generate[0].system).toContain("AVOIDS doing the work")
     // Laziness prompt includes work signals
@@ -669,13 +715,16 @@ describe("runFlaggerUseCase", () => {
     expect(parsed).toEqual({ matched: false })
   })
 
-  it("schema: explicit matched=true is preserved", () => {
-    const parsed = flaggerOutputSchema.parse({ matched: true })
-    expect(parsed).toEqual({ matched: true })
+  it("schema: matched=true requires positive feedback", () => {
+    expect(() => flaggerOutputSchema.parse({ matched: true })).toThrow()
+
+    const parsed = flaggerOutputSchema.parse({ matched: true, feedback: "Assistant refused a harmless request." })
+    expect(parsed).toEqual({ matched: true, feedback: "Assistant refused a harmless request." })
   })
 
-  it("schema: explicit matched=false is preserved", () => {
+  it("schema: matched=false rejects annotation feedback", () => {
     const parsed = flaggerOutputSchema.parse({ matched: false })
     expect(parsed).toEqual({ matched: false })
+    expect(() => flaggerOutputSchema.parse({ matched: false, feedback: "No issue detected." })).toThrow()
   })
 })
