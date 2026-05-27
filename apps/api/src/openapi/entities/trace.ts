@@ -13,7 +13,14 @@ const emptyToNull = (value: string): string | null => (value === "" ? null : val
  * domain's free-form string sort param to a stable allow-list so the SDK and
  * MCP tool inputs document exactly what's tunable.
  */
-export const TRACE_SORT_FIELDS = ["startTime", "endTime", "durationNs", "tokensTotal", "costTotalMicrocents"] as const
+export const TRACE_SORT_FIELDS = [
+  "relevance",
+  "startTime",
+  "endTime",
+  "durationNs",
+  "tokensTotal",
+  "costTotalMicrocents",
+] as const
 
 /**
  * Opaque cursor over the wire — base64url JSON of `{ sortValue, traceId }`.

@@ -116,13 +116,18 @@ const serializeTraceDetail = (trace: TraceDetail): TraceDetailRecord => ({
 
 const traceListCursorSchema = z.object({
   sortValue: z.string(),
+  secondaryValue: z.string().optional(),
   traceId: z.string(),
 })
 
 interface TraceListResult {
   readonly traces: readonly TraceRecord[]
   readonly hasMore: boolean
-  readonly nextCursor?: { readonly sortValue: string; readonly traceId: string }
+  readonly nextCursor?: {
+    readonly sortValue: string
+    readonly secondaryValue?: string | undefined
+    readonly traceId: string
+  }
 }
 
 export const listTracesByProject = createServerFn({ method: "GET" })

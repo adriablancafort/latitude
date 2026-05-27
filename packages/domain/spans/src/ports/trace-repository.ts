@@ -137,6 +137,7 @@ export interface TraceFilterSetMatchCandidate {
 
 export interface TraceListCursor {
   readonly sortValue: string
+  readonly secondaryValue?: string | undefined
   readonly traceId: string
 }
 

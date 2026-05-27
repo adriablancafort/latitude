@@ -685,12 +685,21 @@ export const TraceRepositoryLive = Layer.effect(
         const plan = parsed && isActiveSearch(parsed) ? yield* planSearch(parsed) : undefined
 
         if (plan?.ranked) {
-          const cursorClause = options.cursor
-            ? `AND (search_results.relevance_score, t.trace_id) <
-                 ({cursorSortValue:Float64}, {cursorTraceId:FixedString(32)})`
-            : ""
-
-          const finalHaving = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
+          const rankedAxis = options.sortBy ? SORT_COLUMNS[options.sortBy] : undefined
+          const primaryExpr = rankedAxis ? rankedAxis.expr : "search_results.relevance_score"
+          const primaryChType = rankedAxis ? rankedAxis.chType : "Float64"
+          const orderDir = options.sortDirection === "asc" ? "ASC" : "DESC"
+          const cmp = orderDir === "DESC" ? "<" : ">"
+          const havingParts: string[] = [...havingClauses]
+          if (options.cursor) {
+            havingParts.push(
+              `(${primaryExpr}, start_time, t.trace_id) ${cmp}
+                ({cursorSortValue:${primaryChType}},
+                 {cursorSecondaryValue:DateTime64(9, 'UTC')},
+                 {cursorTraceId:FixedString(32)})`,
+            )
+          }
+          const finalHaving = havingParts.length > 0 ? `HAVING ${havingParts.join(" AND ")}` : ""
 
           return yield* chSqlClient
             .query(async (client) => {
@@ -705,10 +714,9 @@ export const TraceRepositoryLive = Layer.effect(
                         WHERE t.organization_id = {organizationId:String}
                           AND t.project_id = {projectId:String}
                           ${extraWhere}
-                          ${cursorClause}
                         GROUP BY t.organization_id, t.project_id, t.trace_id, search_results.relevance_score
                         ${finalHaving}
-                        ORDER BY search_results.relevance_score DESC, t.trace_id DESC
+                        ORDER BY ${primaryExpr} ${orderDir}, start_time ${orderDir}, t.trace_id ${orderDir}
                         LIMIT {limit:UInt32}`,
                 query_params: {
                   organizationId: organizationId as string,
@@ -719,6 +727,7 @@ export const TraceRepositoryLive = Layer.effect(
                   ...(options.cursor
                     ? {
                         cursorSortValue: options.cursor.sortValue,
+                        cursorSecondaryValue: options.cursor.secondaryValue ?? "1970-01-01 00:00:00.000000000",
                         cursorTraceId: options.cursor.traceId,
                       }
                     : {}),
@@ -738,7 +747,8 @@ export const TraceRepositoryLive = Layer.effect(
                   items,
                   hasMore,
                   nextCursor: {
-                    sortValue: String(last.relevance_score ?? 0),
+                    sortValue: rankedAxis ? String(last[rankedAxis.rowKey]) : String(last.relevance_score ?? 0),
+                    secondaryValue: String(last.start_time),
                     traceId: last.trace_id,
                   },
                 }

@@ -18,14 +18,9 @@ import type {
   SessionCountResult,
   SessionListCursor,
   SessionListPage,
-  SessionSearchCursor,
   SessionSearchMatch,
 } from "@domain/spans"
-import {
-  SESSION_SEARCH_MAX_CLOCK_SKEW_MS,
-  SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW,
-  SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH,
-} from "@domain/spans"
+import { SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW } from "@domain/spans"
 import { normalizeCHString, parseCHDate } from "@repo/utils"
 import { Effect } from "effect"
 import { buildClickHouseWhere } from "../filter-builder.ts"
@@ -65,12 +60,6 @@ type SessionSearchRow = {
   // search path.
   best_score: number
   best_trace_id: string
-  // Fixed-width snap of `best_score` (see SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH).
-  // Drives the freshness-weighted sort tuple alongside `last_activity_at`.
-  relevance_bucket: number
-  // Session-level `max_end_time`, clamped to `now() + SESSION_SEARCH_MAX_CLOCK_SKEW_MS`
-  // to neutralize bad client clocks. ISO-8601 string from JSONEachRow.
-  last_activity_at: string
   matching_trace_count: string
   matching_trace_ids: string[]
   matching_trace_scores: number[]
@@ -80,6 +69,24 @@ type SessionSearchRow = {
   span_count: string
   error_count: string
   tokens_total: string
+  duration_ns: string
+  time_to_first_token_ns: string
+}
+
+interface SearchSortAxis {
+  readonly expr: string
+  readonly chType: string
+  readonly rowKey: keyof SessionSearchRow
+}
+
+const SEARCH_SORT_AXES: Record<string, SearchSortAxis> = {
+  lastActivity: { expr: "session_end_time", chType: "DateTime64(9, 'UTC')", rowKey: "session_end_time" },
+  startTime: { expr: "session_start_time", chType: "DateTime64(9, 'UTC')", rowKey: "session_start_time" },
+  duration: { expr: "duration_ns", chType: "Int64", rowKey: "duration_ns" },
+  ttft: { expr: "time_to_first_token_ns", chType: "Int64", rowKey: "time_to_first_token_ns" },
+  cost: { expr: "cost_total_microcents", chType: "UInt64", rowKey: "cost_total_microcents" },
+  spans: { expr: "span_count", chType: "UInt64", rowKey: "span_count" },
+  traceCount: { expr: "matching_trace_count", chType: "UInt64", rowKey: "matching_trace_count" },
 }
 
 const toSearchMatch = (row: SessionSearchRow): SessionSearchMatch => ({
@@ -243,27 +250,13 @@ interface ListSearchInput {
   readonly projectId: ProjectId
   readonly parsed: ParsedSearchQuery
   readonly filters: FilterSet | undefined
-  readonly cursor: SessionListCursor | SessionSearchCursor | undefined
+  readonly cursor: SessionListCursor | undefined
   readonly limit: number
+  readonly sortBy: string | undefined
+  readonly sortDirection: "asc" | "desc" | undefined
   readonly fetchFullSessions: FetchFullSessions
 }
 
-/**
- * Search-path cursor carries the freshness-weighted sort tuple. Legacy
- * `SessionListCursor` values (from clients on the prior cursor shape) are
- * silently dropped — keyset pagination will restart from the top, which is
- * the only safe behavior when the cursor's encoded sort key doesn't match
- * the query's actual ORDER BY.
- */
-const isSearchCursor = (cursor: SessionListCursor | SessionSearchCursor | undefined): cursor is SessionSearchCursor =>
-  cursor !== undefined && "relevanceBucket" in cursor && "lastActivityAt" in cursor
-
-/**
- * Search-active list path (spec §4.3). Runs the trace → session rollup
- * query, then resolves full `Session` rows via `fetchFullSessions`
- * (orphan-trace synthesized ids that don't exist in the `sessions` table
- * fall back to `toOrphanSession`).
- */
 export const listSessionsBySearchQuery = ({
   organizationId,
   projectId,
@@ -271,6 +264,8 @@ export const listSessionsBySearchQuery = ({
   filters,
   cursor,
   limit,
+  sortBy,
+  sortDirection,
   fetchFullSessions,
 }: ListSearchInput): Effect.Effect<SessionListPage, RepositoryError, ChSqlClient> =>
   Effect.gen(function* () {
@@ -278,16 +273,17 @@ export const listSessionsBySearchQuery = ({
     const plan = yield* planSearch(parsed)
     const { telemetryParams, traceScoreWhere, scoreParams, finalHaving } = buildSearchFilters(filters)
 
-    const searchCursor = isSearchCursor(cursor) ? cursor : undefined
-    // HAVING references the SELECT aliases (CH lets it see them) so the
-    // bucket and last_activity expressions stay defined in exactly one
-    // place — the outer projection below.
-    const sessionCursorClause = searchCursor
-      ? `HAVING (relevance_bucket, last_activity_at, session_id) < (
-           {cursorBucket:Float64},
-           {cursorLastActivityAt:DateTime64(9, 'UTC')},
-           {cursorSessionId:String}
-         )`
+    const axis = sortBy ? SEARCH_SORT_AXES[sortBy] : undefined
+    const primaryExpr = axis ? axis.expr : "best_score"
+    const primaryChType = axis ? axis.chType : "Float64"
+    const orderDir = sortDirection === "asc" ? "ASC" : "DESC"
+    const cmp = orderDir === "DESC" ? "<" : ">"
+    const orderClause = `ORDER BY ${primaryExpr} ${orderDir}, session_end_time ${orderDir}, session_id ${orderDir}`
+    const sessionCursorClause = cursor
+      ? `HAVING (${primaryExpr}, session_end_time, session_id) ${cmp}
+           ({cursorSortValue:${primaryChType}},
+            {cursorSecondaryValue:DateTime64(9, 'UTC')},
+            {cursorSessionId:String})`
       : ""
 
     const rows = yield* chSqlClient
@@ -302,22 +298,6 @@ export const listSessionsBySearchQuery = ({
                       t.organization_id, t.project_id, t.trace_id,
                       search_results.relevance_score
                     ${finalHaving}
-                  ),
-                  -- Pre-aggregate the sessions table's max_end_time for the
-                  -- candidate set only. sessions.max_end_time is a
-                  -- SimpleAggregateFunction(max, ...) so plain reads can
-                  -- see a single unmerged part; max() finalizes across
-                  -- parts. The IN clause keeps the scan bounded to the
-                  -- session_ids that actually matched.
-                  session_freshness AS (
-                    SELECT
-                      session_id,
-                      max(max_end_time) AS sess_max_end_time
-                    FROM sessions
-                    WHERE organization_id = {organizationId:String}
-                      AND project_id = {projectId:String}
-                      AND session_id IN (SELECT session_id FROM trace_rollup)
-                    GROUP BY session_id
                   )
                   SELECT
                     organization_id,
@@ -325,12 +305,6 @@ export const listSessionsBySearchQuery = ({
                     session_id,
                     max(relevance_score)                                            AS best_score,
                     argMax(trace_id, relevance_score)                               AS best_trace_id,
-                    floor(max(relevance_score) / {bucketWidth:Float64})
-                      * {bucketWidth:Float64}                                       AS relevance_bucket,
-                    least(
-                      coalesce(any(sf.sess_max_end_time), max(end_time)),
-                      addMilliseconds(now64(9, 'UTC'), {clockSkewMs:UInt32})
-                    )                                                               AS last_activity_at,
                     count()                                                         AS matching_trace_count,
                     arrayMap(
                       pair -> pair.1,
@@ -353,28 +327,27 @@ export const listSessionsBySearchQuery = ({
                     sum(cost_total_microcents)                                      AS cost_total_microcents,
                     sum(span_count)                                                 AS span_count,
                     sum(error_count)                                                AS error_count,
-                    sum(tokens_total)                                               AS tokens_total
+                    sum(tokens_total)                                               AS tokens_total,
+                    sum(duration_ns)                                                AS duration_ns,
+                    sum(time_to_first_token_ns)                                     AS time_to_first_token_ns
                   FROM trace_rollup
-                  LEFT JOIN session_freshness AS sf USING (session_id)
                   GROUP BY organization_id, project_id, session_id
                   ${sessionCursorClause}
-                  ORDER BY relevance_bucket DESC, last_activity_at DESC, session_id DESC
+                  ${orderClause}
                   LIMIT {limit:UInt32}`,
           query_params: {
             organizationId: organizationId as string,
             projectId: projectId as string,
             limit: limit + 1,
             matchingTracesCap: SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW,
-            bucketWidth: SESSION_SEARCH_RELEVANCE_BUCKET_WIDTH,
-            clockSkewMs: SESSION_SEARCH_MAX_CLOCK_SKEW_MS,
             ...telemetryParams,
             ...scoreParams,
             ...plan.params,
-            ...(searchCursor
+            ...(cursor
               ? {
-                  cursorBucket: searchCursor.relevanceBucket,
-                  cursorLastActivityAt: searchCursor.lastActivityAt,
-                  cursorSessionId: searchCursor.sessionId,
+                  cursorSortValue: cursor.sortValue,
+                  cursorSecondaryValue: cursor.secondaryValue ?? "1970-01-01 00:00:00.000000000",
+                  cursorSessionId: cursor.sessionId,
                 }
               : {}),
           },
@@ -407,16 +380,13 @@ export const listSessionsBySearchQuery = ({
 
     const last = hasMore ? pageRows[pageRows.length - 1] : undefined
     if (!last) return { items, hasMore, searchMatches }
+    const cursorRowKey: keyof SessionSearchRow = axis ? axis.rowKey : "best_score"
     return {
       items,
       hasMore,
       nextCursor: {
-        relevanceBucket: Number(last.relevance_bucket),
-        // Pass CH's DateTime64 string back unchanged: ClickHouse accepts the
-        // same ISO-8601 form it emits as `{x:DateTime64(9, 'UTC')}` input,
-        // so round-tripping through the wire as a string preserves the
-        // nanosecond precision the cursor predicate needs.
-        lastActivityAt: last.last_activity_at,
+        sortValue: String(last[cursorRowKey]),
+        secondaryValue: last.session_end_time,
         sessionId: normalizeCHString(last.session_id),
       },
       searchMatches,

@@ -16,6 +16,7 @@ import type { TraceRecord } from "../../../../../domains/traces/traces.functions
 import { IndicatorsCell } from "./table/indicators-cell.tsx"
 import { TableMetricSubheader } from "./table/metric-subheader.tsx"
 import { TraceOutlierBadge } from "./trace-outlier-badge.tsx"
+import { RELEVANCE_SORT_COLUMN } from "./trace-page-state.ts"
 
 export const DEFAULT_TRACE_TABLE_SORTING: InfiniteTableSorting = { column: "startTime", direction: "desc" }
 
@@ -98,6 +99,7 @@ export function ProjectTracesTable({
   onAnnotationClick,
 }: ProjectTracesTableProps) {
   const showMetricSubheaders = traceMetrics !== undefined || metricsLoading !== undefined
+  const isRelevanceSort = sorting?.column === RELEVANCE_SORT_COLUMN
 
   const allColumns = useMemo((): InfiniteTableColumn<TraceRecord>[] => {
     return [
@@ -144,6 +146,12 @@ export function ProjectTracesTable({
             {new Date(trace.startTime).toLocaleString()}
           </Tooltip>
         ),
+        renderSubheader: () =>
+          isRelevanceSort ? (
+            <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+              Sorted by relevance
+            </span>
+          ) : null,
       },
       {
         key: "name",
@@ -330,6 +338,7 @@ export function ProjectTracesTable({
     annotationCountsPendingTraceIds,
     onErrorClick,
     onAnnotationClick,
+    isRelevanceSort,
   ])
 
   const columns = useMemo(() => {

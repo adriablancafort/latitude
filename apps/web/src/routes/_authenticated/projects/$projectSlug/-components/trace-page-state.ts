@@ -3,6 +3,10 @@ import type { InfiniteTableSorting } from "@repo/ui"
 
 export const DEFAULT_TRACE_SORTING: InfiniteTableSorting = { column: "startTime", direction: "desc" }
 
+export const RELEVANCE_SORT_COLUMN = "relevance"
+
+export const DEFAULT_SEARCH_SORTING: InfiniteTableSorting = { column: RELEVANCE_SORT_COLUMN, direction: "desc" }
+
 export function parseFilters(raw?: string): FilterSet {
   if (!raw) return {}
   try {
