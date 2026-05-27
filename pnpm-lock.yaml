@@ -375,6 +375,9 @@ importers:
       '@domain/billing':
         specifier: workspace:*
         version: link:../../packages/domain/billing
+      '@domain/changelog':
+        specifier: workspace:*
+        version: link:../../packages/domain/changelog
       '@domain/datasets':
         specifier: workspace:*
         version: link:../../packages/domain/datasets
@@ -450,6 +453,9 @@ importers:
       '@platform/cache-redis':
         specifier: workspace:*
         version: link:../../packages/platform/cache-redis
+      '@platform/changelog-framer':
+        specifier: workspace:*
+        version: link:../../packages/platform/changelog-framer
       '@platform/db-clickhouse':
         specifier: workspace:*
         version: link:../../packages/platform/db-clickhouse
@@ -1045,6 +1051,18 @@ importers:
       '@domain/organizations':
         specifier: workspace:*
         version: link:../organizations
+      '@domain/shared':
+        specifier: workspace:*
+        version: link:../shared
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.57
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
+
+  packages/domain/changelog:
+    dependencies:
       '@domain/shared':
         specifier: workspace:*
         version: link:../shared
@@ -1777,6 +1795,21 @@ importers:
       ioredis:
         specifier: 'catalog:'
         version: 5.10.1
+
+  packages/platform/changelog-framer:
+    dependencies:
+      '@domain/changelog':
+        specifier: workspace:*
+        version: link:../../domain/changelog
+      '@platform/env':
+        specifier: workspace:*
+        version: link:../env
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.57
+      framer-api:
+        specifier: ^0.1.1
+        version: 0.1.9
 
   packages/platform/db-clickhouse:
     dependencies:
@@ -8743,6 +8776,9 @@ packages:
   detect-node-es@1.1.0:
     resolution: {integrity: sha512-ypdmJU/TbBby2Dxibuv7ZLW3Bs1QEmM7nHjEANfohJLvE0XVujisn1qPJcZxg+qDucsr+bP6fLD1rPS3AhJ7EQ==}
 
+  devalue@5.8.1:
+    resolution: {integrity: sha512-4CXDYRBGqN+57wVJkuXBYmpAVUSg3L6JAQa/DFqm238G73E1wuyc/JhGQJzN7vUf/CMphYau2zXbfWzDR5aTEw==}
+
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
 
@@ -9306,6 +9342,10 @@ packages:
   fractional-indexing@3.2.0:
     resolution: {integrity: sha512-PcOxmqwYCW7O2ovKRU8OoQQj2yqTfEB/yeTYk4gPid6dN5ODRfU1hXd9tTVZzax/0NkO7AxpHykvZnT1aYp/BQ==}
     engines: {node: ^14.13.1 || >=16.0.0}
+
+  framer-api@0.1.9:
+    resolution: {integrity: sha512-PWhdUrJGONc1G59B3M7l5MiCkRDbT0hAU5HmlRHgeGg/INGFmE0FATMFr+0weCMsaUKxCSEoPMpbZx2QwPJRjQ==}
+    engines: {node: '>=22'}
 
   fresh@2.0.0:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
@@ -19764,6 +19804,8 @@ snapshots:
 
   detect-node-es@1.1.0: {}
 
+  devalue@5.8.1: {}
+
   devlop@1.1.0:
     dependencies:
       dequal: 2.0.3
@@ -20279,6 +20321,12 @@ snapshots:
   forwarded@0.2.0: {}
 
   fractional-indexing@3.2.0: {}
+
+  framer-api@0.1.9:
+    dependencies:
+      csstype: 3.2.3
+      devalue: 5.8.1
+      std-env: 4.1.0
 
   fresh@2.0.0: {}
 
