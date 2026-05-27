@@ -19,7 +19,7 @@ import {
   type WrappedReportSummary,
   type WrappedReportType,
 } from "@domain/spans"
-import { and, asc, desc, eq, gte } from "drizzle-orm"
+import { and, asc, desc, eq, gte, lt, lte } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { wrappedReports } from "../schema/wrapped-reports.ts"
@@ -110,10 +110,12 @@ export const WrappedReportRepositoryLive = Layer.effect(
       projectId,
       type,
       sinceCreatedAt,
+      beforeCreatedAt,
     }: {
       projectId: ProjectIdType
       type: WrappedReportType
-      sinceCreatedAt: Date
+      sinceCreatedAt?: Date
+      beforeCreatedAt?: Date
     }): Effect.Effect<WrappedReportSummary | null, ReturnType<typeof toRepositoryError>, SqlClient> =>
       Effect.gen(function* () {
         const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
@@ -130,7 +132,8 @@ export const WrappedReportRepositoryLive = Layer.effect(
               and(
                 eq(wrappedReports.type, type),
                 eq(wrappedReports.projectId, projectId),
-                gte(wrappedReports.createdAt, sinceCreatedAt),
+                sinceCreatedAt !== undefined ? gte(wrappedReports.createdAt, sinceCreatedAt) : undefined,
+                beforeCreatedAt !== undefined ? lte(wrappedReports.createdAt, beforeCreatedAt) : undefined,
               ),
             )
             .orderBy(desc(wrappedReports.createdAt))
@@ -139,6 +142,65 @@ export const WrappedReportRepositoryLive = Layer.effect(
         if (!row) return null
         return { id: WrappedReportId(row.id), createdAt: row.createdAt }
       }),
+
+    findLeaderboardRankForReport: ({
+      reportId,
+      createdAt,
+      type,
+    }: {
+      reportId: WrappedReportIdType
+      createdAt: Date
+      type: WrappedReportType
+    }): Effect.Effect<
+      { readonly rank: number; readonly total: number } | null,
+      ReturnType<typeof toRepositoryError>,
+      SqlClient
+    > =>
+      Effect.gen(function* () {
+        const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+        // Cross-org read — BYPASSRLS admin client required.
+        //
+        // Cohort: all reports of the same type generated on the same UTC
+        // calendar day as this report, deduplicated to one per project
+        // (latest created_at wins). Sort metric: tokensTotal when present
+        // (V2), toolCalls otherwise (V1). Computed in JS — same dedup
+        // logic as listLatestPerProjectAdmin, avoids complex CTE.
+        const dayStart = new Date(Date.UTC(createdAt.getUTCFullYear(), createdAt.getUTCMonth(), createdAt.getUTCDate()))
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
+
+        const rows = yield* sqlClient.query((db) =>
+          db
+            .select({
+              id: wrappedReports.id,
+              projectId: wrappedReports.projectId,
+              report: wrappedReports.report,
+            })
+            .from(wrappedReports)
+            .where(
+              and(
+                eq(wrappedReports.type, type),
+                gte(wrappedReports.createdAt, dayStart),
+                lt(wrappedReports.createdAt, dayEnd), // half-open [dayStart, dayEnd)
+              ),
+            )
+            .orderBy(asc(wrappedReports.projectId), desc(wrappedReports.createdAt)),
+        )
+
+        // Dedupe to latest-per-project and extract sort metric.
+        const seen = new Set<string>()
+        const cohort: Array<{ id: string; metric: number }> = []
+        for (const row of rows) {
+          if (seen.has(row.projectId)) continue
+          seen.add(row.projectId)
+          const totals = (row.report as { totals?: { tokensTotal?: number; toolCalls?: number } })?.totals
+          cohort.push({ id: row.id, metric: totals?.tokensTotal ?? totals?.toolCalls ?? 0 })
+        }
+
+        cohort.sort((a, b) => b.metric - a.metric)
+        const rank = cohort.findIndex((c) => c.id === reportId) + 1
+        if (rank === 0) return null // reportId not in this day's cohort
+        return { rank, total: cohort.length }
+      }).pipe(Effect.mapError((e) => toRepositoryError(e, "findLeaderboardRankForReport"))),
 
     listLatestPerProjectAdmin: ({
       type,

@@ -37,8 +37,26 @@ export interface WrappedReportRepositoryShape {
   findLatestForProject: (params: {
     readonly projectId: ProjectId
     readonly type: WrappedReportType
-    readonly sinceCreatedAt: Date
+    /** Lower bound (inclusive). When omitted no lower bound is applied. */
+    readonly sinceCreatedAt?: Date
+    /** Upper bound (inclusive). When omitted no upper bound is applied. */
+    readonly beforeCreatedAt?: Date
   }) => Effect.Effect<WrappedReportSummary | null, RepositoryError, SqlClient>
+
+  /**
+   * Returns the rank of this report among all reports generated on the same
+   * UTC calendar day, deduplicated to one per project and sorted descending
+   * by `tokensTotal ?? toolCalls`. Used for the leaderboard widget.
+   *
+   * Returns `null` when the report is not found in the cohort (should not
+   * happen in practice). The caller decides whether to surface the widget
+   * based on `total` (e.g. hide when total < 5).
+   */
+  findLeaderboardRankForReport: (params: {
+    readonly reportId: WrappedReportId
+    readonly createdAt: Date
+    readonly type: WrappedReportType
+  }) => Effect.Effect<{ readonly rank: number; readonly total: number } | null, RepositoryError, SqlClient>
 
   listLatestPerProjectAdmin: (params: {
     readonly type: WrappedReportType

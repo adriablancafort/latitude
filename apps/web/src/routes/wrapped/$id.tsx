@@ -3,6 +3,7 @@ import { createFileRoute, notFound } from "@tanstack/react-router"
 import { getWrappedPageData } from "../../domains/wrapped/wrapped.functions.ts"
 import { TITLE_FOR_KIND } from "./-components/claude-code/v1/personality-copy.ts"
 import { WrappedReportV1 } from "./-components/claude-code/v1/WrappedReportV1.tsx"
+import { WrappedReportV2 } from "./-components/claude-code/v2/WrappedReportV2.tsx"
 
 /**
  * Public Wrapped report. The CUID `$id` is the access token for *seeing
@@ -22,7 +23,12 @@ export const Route = createFileRoute("/wrapped/$id")({
   loader: async ({ params }) => {
     const result = await getWrappedPageData({ data: { id: params.id } })
     if (!result.found) throw notFound()
-    return { record: result.record, isMember: result.isMember, loggedIn: result.loggedIn }
+    return {
+      record: result.record,
+      isMember: result.isMember,
+      loggedIn: result.loggedIn,
+      leaderboard: result.leaderboard,
+    }
   },
   head: ({ loaderData, params }) => {
     if (!loaderData) {
@@ -64,7 +70,7 @@ export const Route = createFileRoute("/wrapped/$id")({
  * with their frozen renderer.
  */
 const RENDERER_BY_TYPE_VERSION = {
-  claude_code: { 1: WrappedReportV1 },
+  claude_code: { 1: WrappedReportV1, 2: WrappedReportV2 },
 } as const satisfies Record<
   WrappedReportType,
   Record<ReportVersion, (props: { record: WrappedReportRecord; isMember: boolean }) => React.ReactNode>

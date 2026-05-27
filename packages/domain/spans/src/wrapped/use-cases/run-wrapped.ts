@@ -84,14 +84,35 @@ export const runWrappedUseCase = Effect.fn("wrapped.runForProject")(function* (i
   // pipeline — this use case no longer fans out emails itself.
   const members = yield* membershipRepo.listMembersWithUser(input.organizationId)
 
+  // Look up the most recent prior report to populate week-over-week deltas.
+  // "Most recent created_at ≤ now − 6 days" — the 6-day gap prevents picking
+  // up a report that was manually re-triggered the same day as this run while
+  // still reliably finding last week's scheduled report.
+  // Two round trips (summary → full record) are fine at weekly cadence.
+  // Must happen before `reportRepo.save` so we never accidentally find the
+  // report we're about to create.
+  const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000
+  const reportRepo = yield* WrappedReportRepository
+  const previousSummary = yield* reportRepo.findLatestForProject({
+    projectId: input.projectId,
+    type: "claude_code",
+    beforeCreatedAt: new Date(Date.now() - SIX_DAYS_MS),
+  })
+  const previousReport: Report | undefined = previousSummary
+    ? yield* reportRepo.findById(previousSummary.id).pipe(
+        Effect.map((r) => r.report),
+        Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)),
+      )
+    : undefined
+
   const report: Report = yield* buildReportUseCase({
     project,
     organization: { id: organization.id, name: organization.name },
     windowStart: input.windowStart,
     windowEnd: input.windowEnd,
+    ...(previousReport !== undefined ? { previousReport } : {}),
   })
 
-  const reportRepo = yield* WrappedReportRepository
   const reportId = generateId<"WrappedReportId">()
   const now = new Date()
   yield* reportRepo.save({

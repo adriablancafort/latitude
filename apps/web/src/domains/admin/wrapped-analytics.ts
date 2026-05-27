@@ -36,13 +36,15 @@ const EXCESS_BUCKETS: ReadonlyArray<readonly [number, number]> = [
 ]
 
 export interface WrappedAnalyticsListItemDto {
+  readonly rank: number
   readonly id: string
   readonly projectName: string
   readonly ownerName: string
   readonly organizationName: string
   readonly personalityKind: PersonalityKind
   readonly personalityScore: number
-  readonly toolCalls: number
+  /** null for V1 reports that predate the tokensTotal field */
+  readonly tokensTotal: number | null
   readonly sessions: number
   readonly createdAt: string
 }
@@ -211,22 +213,30 @@ const histogramOf = (values: readonly number[]): ReadonlyArray<ExcessHistogramBu
  * additional math beyond formatting.
  */
 export const buildAnalyticsPayload = (records: ReadonlyArray<WrappedReportRecord>): WrappedAnalyticsPayloadDto => {
-  // Sort list by tool-call activity (desc) so the backoffice list opens on
-  // the most active project. Make a shallow copy first — never mutate the
-  // input array.
-  const sortedByActivity = [...records].sort((a, b) => b.report.totals.toolCalls - a.report.totals.toolCalls)
+  // Sort by tokensTotal (V2) falling back to toolCalls (V1), descending.
+  // V1 reports naturally rank below V2 ones since token counts >> tool-call
+  // counts — that's acceptable for now.
+  const sortMetric = (r: WrappedReportRecord): number => {
+    const totals = r.report.totals as { tokensTotal?: number; toolCalls: number }
+    return totals.tokensTotal ?? totals.toolCalls
+  }
+  const sortedByActivity = [...records].sort((a, b) => sortMetric(b) - sortMetric(a))
 
-  const list: WrappedAnalyticsListItemDto[] = sortedByActivity.map((r) => ({
-    id: r.id,
-    projectName: r.report.project.name,
-    ownerName: r.ownerName,
-    organizationName: r.report.organization.name,
-    personalityKind: r.report.personality.kind,
-    personalityScore: r.report.personality.score,
-    toolCalls: r.report.totals.toolCalls,
-    sessions: r.report.totals.sessions,
-    createdAt: r.createdAt.toISOString(),
-  }))
+  const list: WrappedAnalyticsListItemDto[] = sortedByActivity.map((r, i) => {
+    const totals = r.report.totals as { tokensTotal?: number; toolCalls: number }
+    return {
+      rank: i + 1,
+      id: r.id,
+      projectName: r.report.project.name,
+      ownerName: r.ownerName,
+      organizationName: r.report.organization.name,
+      personalityKind: r.report.personality.kind,
+      personalityScore: r.report.personality.score,
+      tokensTotal: totals.tokensTotal ?? null,
+      sessions: r.report.totals.sessions,
+      createdAt: r.createdAt.toISOString(),
+    }
+  })
 
   // Summary card row.
   const orgIds = new Set<string>()

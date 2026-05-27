@@ -11,6 +11,7 @@ import { projectSeeders } from "./projects/index.ts"
 import { scoreSeeders } from "./scores/index.ts"
 import { simulationSeeders } from "./simulations/index.ts"
 import type { Seeder } from "./types.ts"
+import { wrappedReportSeeders } from "./wrapped-reports/index.ts"
 
 /**
  * Per-project ("content") seeders — datasets, evaluations, issues,
@@ -51,4 +52,8 @@ export const allSeeders: readonly Seeder[] = [
   // which lives on the canonical seed org. Excluded from `contentSeeders`
   // because the demo workflow's scope points at a different org/project.
   ...bootstrapTelemetryFlaggerSeeders,
+  // 100 Claude Code Wrapped V2 reports for the backoffice analytics page
+  // and the public Wrapped share URLs. All created "today" so they appear
+  // in the backoffice list and form a single leaderboard cohort.
+  ...wrappedReportSeeders,
 ]
