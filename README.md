@@ -24,7 +24,7 @@ Latitude shows you **what will break next** in your AI Agent and helps you fix i
 - **[Issue-centric](https://docs.latitude.so/issues/overview#issues)**: failed traces grouped into tracked issues, with status, size, and trend.
 - **[Human-aligned evals](https://docs.latitude.so/evaluations/alignment#evaluation-alignment)**: evals built automatically from your team's judgments, with an alignment score that tracks drift from human judgment over time.
 - **[Agent-native traces](https://docs.latitude.so/observability/overview#observability-overview)**: multi-turn sessions, tool calls, and full execution paths in one view.
-- **[Semantic search](https://docs.latitude.so/search/overview#search)**: find any trace by meaning, exact matches, or roughly similar sentences. No sampling, 100% of traes are searchable.
+- **[Semantic search](https://docs.latitude.so/search/overview#search)**: find any trace by meaning, exact matches, or roughly similar sentences. No sampling, 100% of traces are searchable.
 
 ## 📚 Table of contents
 
@@ -41,27 +41,45 @@ Latitude shows you **what will break next** in your AI Agent and helps you fix i
 
 Sign up at [latitude.so](https://latitude.so) and grab your API key and project slug.
 
-### Install
+### Recommended: ask your coding agent
+
+Paste this prompt into Claude Code, Cursor, Windsurf, Codex, OpenCode, or another coding agent:
+
+```text
+Read the Latitude Telemetry AI skill from https://raw.githubusercontent.com/latitude-dev/skills/refs/heads/main/skills/latitude-telemetry/SKILL.md and add tracing to this application.
+```
+
+### Manual TypeScript setup
 
 ```bash
 npm install @latitude-data/telemetry
 ```
 
-### Instrument
+This example uses OpenAI; replace it with the LLM SDK your app already imports.
 
 ```ts
 import { Latitude } from "@latitude-data/telemetry";
+import OpenAI from "openai";
 
-new Latitude({
+const latitude = new Latitude({
   apiKey: process.env.LATITUDE_API_KEY!,
-  projectSlug: process.env.LATITUDE_PROJECT_SLUG!,
-  instrumentations: ["openai"],
+  project: process.env.LATITUDE_PROJECT_SLUG!,
+  instrumentations: { openai: OpenAI },
 });
+
+const client = new OpenAI();
+
+await client.chat.completions.create({
+  model: "gpt-4o",
+  messages: [{ role: "user", content: "Hello" }],
+});
+
+await latitude.shutdown();
 ```
 
-Every LLM call now shows up as a trace in Latitude.
+Every supported LLM call now shows up as a trace in Latitude. Use `capture()` at request, conversation, or agent boundaries when you want to add user IDs, session IDs, tags, or metadata.
 
-Python, Go, and other languages are also supported. Full setup, OTel passthrough, and self-hosting in the [getting started guide](https://docs.latitude.so/telemetry/start-tracing).
+Python and any OpenTelemetry-compatible runtime are also supported. Full setup, provider guides, and OTel passthrough are in the [Start tracing guide](https://docs.latitude.so/telemetry/start-tracing).
 
 ## 🔌 Integrations
 
