@@ -21,6 +21,8 @@ production deploy, focused on the major aspects rather than every commit.
 - Do not promote by merging `development` into `main`.
 - Do not tag unreleased local-only commits. The release commit, including any
   changelog update, must be pushed to `origin/development` before tagging.
+- The changelog release commit message must always have the exact shape
+  `release: vX.Y.Z`, for example `release: v1.2.3`.
 - Update `CHANGELOG.md` during release preparation, before running the command
   that pushes the production tag.
 
@@ -48,7 +50,8 @@ production deploy, focused on the major aspects rather than every commit.
    - include references such as PR numbers or short commit SHAs when they help
      readers trace the change;
    - skip internal-only noise that does not matter to operators or users.
-5. Commit the changelog update and push it to `origin/development`.
+5. Commit the changelog update with message `release: vX.Y.Z` (matching the
+   release version exactly) and push it to `origin/development`.
 6. Run `scripts/release.sh [version]` from the pushed release commit. Use
    `--dry` first when you want to preview the release summary without tagging.
 7. Confirm staging has deployed and been verified before accepting the prompt,
