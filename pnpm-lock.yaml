@@ -432,6 +432,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../packages/domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../packages/domain/taxonomy
       '@domain/users':
         specifier: workspace:*
         version: link:../../packages/domain/users
@@ -676,6 +679,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../packages/domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../packages/domain/taxonomy
       '@domain/users':
         specifier: workspace:*
         version: link:../../packages/domain/users
@@ -791,6 +797,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../packages/domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../packages/domain/taxonomy
       '@platform/ai':
         specifier: workspace:*
         version: link:../../packages/platform/ai
@@ -1582,6 +1591,34 @@ importers:
         specifier: 'catalog:'
         version: 4.3.6
 
+  packages/domain/taxonomy:
+    dependencies:
+      '@domain/ai':
+        specifier: workspace:*
+        version: link:../ai
+      '@domain/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@domain/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@domain/spans':
+        specifier: workspace:*
+        version: link:../spans
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../../utils
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.57
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
+    devDependencies:
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@25.8.0)(jsdom@29.0.2(@noble/hashes@2.2.0))(vite@8.0.5(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(@types/node@25.8.0)(esbuild@0.27.7)(jiti@2.6.1)(terser@5.46.2)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/domain/users:
     dependencies:
       '@domain/organizations':
@@ -1786,6 +1823,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../domain/taxonomy
       '@platform/env':
         specifier: workspace:*
         version: link:../env
@@ -1837,6 +1877,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../domain/taxonomy
       '@platform/env':
         specifier: workspace:*
         version: link:../env
@@ -1934,6 +1977,9 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../domain/taxonomy
       '@domain/users':
         specifier: workspace:*
         version: link:../../domain/users
@@ -2758,6 +2804,9 @@ importers:
 
   tools/live-seeds:
     dependencies:
+      '@domain/ai':
+        specifier: workspace:*
+        version: link:../../packages/domain/ai
       '@domain/annotation-queues':
         specifier: workspace:*
         version: link:../../packages/domain/annotation-queues
@@ -2776,12 +2825,30 @@ importers:
       '@domain/spans':
         specifier: workspace:*
         version: link:../../packages/domain/spans
+      '@domain/taxonomy':
+        specifier: workspace:*
+        version: link:../../packages/domain/taxonomy
+      '@platform/ai':
+        specifier: workspace:*
+        version: link:../../packages/platform/ai
+      '@platform/ai-voyage':
+        specifier: workspace:*
+        version: link:../../packages/platform/ai-voyage
+      '@platform/cache-redis':
+        specifier: workspace:*
+        version: link:../../packages/platform/cache-redis
+      '@platform/db-clickhouse':
+        specifier: workspace:*
+        version: link:../../packages/platform/db-clickhouse
       '@platform/db-postgres':
         specifier: workspace:*
         version: link:../../packages/platform/db-postgres
       '@platform/env':
         specifier: workspace:*
         version: link:../../packages/platform/env
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.57
