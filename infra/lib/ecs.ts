@@ -377,6 +377,8 @@ function createTaskDefinition(
       secrets["latitude-telemetry-project-slug"].arn,
       secrets["turnstile-secret-key"].arn,
       secrets["posthog-api-key"].arn,
+      secrets["framer-api-key"].arn,
+      secrets["framer-project-url"].arn,
       secrets["loops-api-key"].arn,
       secrets["v2-support-app-id"].arn,
       secrets["v2-support-app-secret-key"].arn,
@@ -422,6 +424,8 @@ function createTaskDefinition(
         latitudeTelemetryProjectSlugArn,
         turnstileSecretKeyArn,
         posthogApiKeyArn,
+        framerApiKeyArn,
+        framerProjectUrlArn,
         loopsApiKeyArn,
         supportAppIdArn,
         supportAppSecretKeyArn,
@@ -559,9 +563,14 @@ function createTaskDefinition(
           { name: "LAT_V2_SUPPORT_APP_SECRET_KEY", valueFrom: supportAppSecretKeyArn },
         ]
 
+        const framerSecrets = [
+          { name: "LAT_FRAMER_API_KEY", valueFrom: framerApiKeyArn },
+          { name: "LAT_FRAMER_PROJECT_URL", valueFrom: framerProjectUrlArn },
+        ]
+
         const serviceSpecificSecrets: Record<string, { name: string; valueFrom: string }[]> = {
           api: [temporalSecret],
-          web: [...oauthSecrets, ...stripeSelfServeSecrets, temporalSecret, ...supportSecrets],
+          web: [...oauthSecrets, ...stripeSelfServeSecrets, temporalSecret, ...supportSecrets, ...framerSecrets],
           workflows: [temporalSecret, ...stripeOverageSecrets],
           workers: [temporalSecret, ...bullBoardSecrets],
         }
