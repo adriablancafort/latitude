@@ -1,5 +1,5 @@
 import type { Score, ScoreListOptions, ScoreSource, TraceAnnotationCounts } from "@domain/scores"
-import { ScoreRepository, scoreSchema } from "@domain/scores"
+import { ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT, ScoreRepository, scoreSchema } from "@domain/scores"
 import {
   type IssueId,
   NotFoundError,
@@ -527,6 +527,55 @@ export const ScoreRepositoryLive = Layer.effect(
                 .limit(1),
             )
             .pipe(Effect.map((rows) => (rows[0] ? toDomainScore(rows[0]) : null)))
+        }),
+
+      listFlaggerSlugsByIssueId: ({
+        projectId,
+        issueId,
+      }: {
+        readonly projectId: ProjectId
+        readonly issueId: IssueId
+      }) =>
+        Effect.gen(function* () {
+          const sqlClient = yield* resolveSqlClient()
+          return yield* sqlClient
+            .query((db, organizationId) => {
+              // Recent-N sample of the issue's published SYSTEM annotation occurrences that
+              // carry a `flaggerSlug` in their metadata. Bounded by the domain-level
+              // `ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT` so the fake repo applies the same cap.
+              const recent = db
+                .select({
+                  slug: sql<string>`${scores.metadata}->>'flaggerSlug'`.as("slug"),
+                  createdAt: scores.createdAt,
+                })
+                .from(scores)
+                .where(
+                  and(
+                    eq(scores.organizationId, organizationId),
+                    eq(scores.projectId, projectId),
+                    eq(scores.issueId, issueId as string),
+                    eq(scores.source, "annotation"),
+                    eq(scores.sourceId, "SYSTEM"),
+                    isNull(scores.draftedAt),
+                    sql`${scores.metadata} ? 'flaggerSlug'`,
+                  ),
+                )
+                .orderBy(desc(scores.createdAt))
+                .limit(ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT)
+                .as("recent")
+
+              // Collapse to distinct slugs, ordered by most-recently-firing flagger first.
+              return db
+                .select({
+                  slug: recent.slug,
+                  lastSeenAt: sql<Date>`max(${recent.createdAt})`.as("last_seen_at"),
+                })
+                .from(recent)
+                .where(sql`${recent.slug} IS NOT NULL AND ${recent.slug} <> ''`)
+                .groupBy(recent.slug)
+                .orderBy(sql`max(${recent.createdAt}) DESC`)
+            })
+            .pipe(Effect.map((rows) => rows.map((row) => row.slug)))
         }),
     }
   }),
