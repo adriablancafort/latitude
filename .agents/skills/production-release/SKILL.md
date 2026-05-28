@@ -8,10 +8,14 @@ description: >-
 
 # Production release
 
-Use this skill when preparing a production deployment. Production deploys are
-triggered by pushing a `vX.Y.Z` tag; the changelog is updated at release time as
-a human-readable diff of the code being pushed to production since the previous
-production deploy, focused on the major aspects rather than every commit.
+Use this skill when preparing a production deployment. If the skill is invoked
+without additional context or constraints, assume the user wants the default
+patch production release flow: update `CHANGELOG.md`, commit the changelog as
+`release: vX.Y.Z`, push it to `origin/development`, and run the production tag
+script for the next patch version. Production deploys are triggered by pushing a
+`vX.Y.Z` tag; the changelog is updated at release time as a human-readable diff
+of the code being pushed to production since the previous production deploy,
+focused on the major aspects rather than every commit.
 
 ## Release invariants
 
@@ -25,6 +29,24 @@ production deploy, focused on the major aspects rather than every commit.
   `release: vX.Y.Z`, for example `release: v1.2.3`.
 - Update `CHANGELOG.md` during release preparation, before running the command
   that pushes the production tag.
+
+## Default behavior when no extra context is given
+
+When the user only invokes this skill (or says something like "production
+release") without specifying a version, dry run, changelog-only update, or other
+constraint:
+
+1. Treat it as approval to perform the full patch release workflow.
+2. Determine the next patch version from the latest `vX.Y.Z` tag.
+3. Update `CHANGELOG.md` for that next patch version using the production diff.
+4. Commit with the exact message `release: vX.Y.Z` and push to
+   `origin/development`.
+5. Run `scripts/release.sh` (without an explicit version) so it tags the latest
+   `origin/development` commit with the next patch version.
+
+Still obey all release invariants: never tag local-only commits, never promote
+via `main`, and stop to ask if the working tree or branch state makes the
+release unsafe or ambiguous.
 
 ## Workflow
 
