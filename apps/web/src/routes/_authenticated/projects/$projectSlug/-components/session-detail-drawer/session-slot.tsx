@@ -35,31 +35,34 @@ export function SessionSlot({
   activeTab,
   onActiveTabChange,
   onOpenTrace,
+  onOpenIssue,
   onOpenInConversation,
   searchQuery,
 }: {
   readonly projectId: string
   readonly session: SessionDetailRecord
-  /** Session's traces, ordered by start time — used for the "Trace N" badges. */
   readonly traces: readonly TraceRecord[]
   readonly latestTraceId: string
   readonly activeTab: SessionTabId
   readonly onActiveTabChange: (tab: SessionTabId) => void
   readonly onOpenTrace: (traceId: string, options?: OpenTraceOptions) => void
-  /** Inline annotation on the latest trace → switch to Conversation, focused on it. */
+  readonly onOpenIssue: (issueId: string) => void
   readonly onOpenInConversation: (annotationId: string) => void
   readonly searchQuery?: string
 }) {
   const traceIds = session.traceIds
   const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<SessionTabId>>(() => new Set([activeTab]))
 
+  // TODO(frontend-use-effect-policy): reactive on `activeTab` because the tab can
+  // change from a URL param (deep link, browser back/forward), not just from the
+  // tab control here. The single source of truth for "mark visited" is this
+  // effect — `selectTab` does not need to write the set itself.
   useEffect(() => {
     setVisitedTabs((prev) => (prev.has(activeTab) ? prev : new Set([...prev, activeTab])))
   }, [activeTab])
 
   function selectTab(tab: SessionTabId) {
     onActiveTabChange(tab)
-    setVisitedTabs((prev) => new Set([...prev, tab]))
   }
 
   // Badge counts. Both queries are shared (same key) with the tab panes, so
@@ -182,12 +185,7 @@ export function SessionSlot({
         )}
         {visitedTabs.has("issues") && (
           <div className={activeTab === "issues" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-            <IssuesTab
-              projectId={projectId}
-              traceIds={traceIds}
-              traceNumberById={traceNumberById}
-              onOpenTrace={onOpenTrace}
-            />
+            <IssuesTab projectId={projectId} traceIds={traceIds} onOpenIssue={onOpenIssue} />
           </div>
         )}
       </div>

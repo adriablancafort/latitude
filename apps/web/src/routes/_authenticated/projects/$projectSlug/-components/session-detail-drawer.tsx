@@ -4,8 +4,9 @@ import { ChevronLeftIcon } from "lucide-react"
 import { HotkeyBadge } from "../../../../../components/hotkey-badge.tsx"
 import { useSessionDetail } from "../../../../../domains/sessions/sessions.collection.ts"
 import { useParamState } from "../../../../../lib/hooks/useParamState.ts"
+import { IssueSlot } from "./session-detail-drawer/issue-slot.tsx"
 import { isSessionTab, SessionSlot } from "./session-detail-drawer/session-slot.tsx"
-import { SlotTransition } from "./session-detail-drawer/slot-transition.tsx"
+import { type DetailSlotKind, SlotTransition } from "./session-detail-drawer/slot-transition.tsx"
 import { isTraceDetailTab, type TraceDetailTabId, TraceSlot } from "./session-detail-drawer/trace-slot.tsx"
 import { useSessionTraces } from "./session-detail-drawer/use-session-traces.ts"
 
@@ -28,6 +29,7 @@ export function SessionDetailDrawer({
   readonly searchQuery?: string
 }) {
   const [traceId, setTraceId] = useParamState("traceId", "")
+  const [issueId, setIssueId] = useParamState("issueId", "")
   const [, setFocusAnnotationId] = useParamState("annotationId", "")
   const [q] = useParamState("q", "")
   const defaultSessionTab = q.length > 0 ? "conversation" : "session"
@@ -46,13 +48,26 @@ export function SessionDetailDrawer({
   })
   const { traces } = useSessionTraces({ projectId, sessionId })
 
-  const showTrace = traceId.length > 0
+  // Defensive precedence for URLs that arrive with both params already set
+  // (deep links, browser history, hand-edited URLs). Our own code never sets
+  // both at the same time — opening a trace from inside the issue slot uses
+  // `IssueDetailBody`'s local Sheet state, not the `traceId` param. Trace
+  // wins so a stale `issueId` doesn't shadow the requested trace; "View
+  // session" clears both so we can't land in an ambiguous state after close.
+  const detailKind: DetailSlotKind | null = traceId.length > 0 ? "trace" : issueId.length > 0 ? "issue" : null
+  const showDetail = detailKind !== null
 
   const openTrace = (nextTraceId: string, options: OpenTraceOptions = {}) => {
     const { focusAnnotationId, targetTab } = options
     setFocusAnnotationId(focusAnnotationId ?? "")
     setTraceTab(targetTab ?? (focusAnnotationId ? "conversation" : "trace"))
     setTraceId(nextTraceId)
+  }
+
+  const openIssue = (nextIssueId: string) => {
+    setFocusAnnotationId("")
+    setTraceId("")
+    setIssueId(nextIssueId)
   }
 
   const focusAnnotationInConversation = (annotationId: string) => {
@@ -63,18 +78,20 @@ export function SessionDetailDrawer({
   const backToSession = () => {
     setFocusAnnotationId("")
     setTraceId("")
+    setIssueId("")
   }
 
   const handleClose = () => {
     setFocusAnnotationId("")
     setTraceId("")
+    setIssueId("")
     onClose()
   }
 
   useHotkeys([
     {
       hotkey: "Escape",
-      callback: () => (showTrace ? backToSession() : handleClose()),
+      callback: () => (showDetail ? backToSession() : handleClose()),
       options: { ignoreInputs: true, conflictBehavior: "allow" },
     },
   ])
@@ -89,7 +106,7 @@ export function SessionDetailDrawer({
         </>
       }
       actions={
-        showTrace ? (
+        showDetail ? (
           <Tooltip
             asChild
             side="bottom"
@@ -117,7 +134,7 @@ export function SessionDetailDrawer({
         </div>
       ) : (
         <SlotTransition
-          showTrace={showTrace}
+          detailKind={detailKind}
           sessionSlot={
             <SessionSlot
               projectId={projectId}
@@ -127,15 +144,17 @@ export function SessionDetailDrawer({
               activeTab={activeTab}
               onActiveTabChange={setActiveTab}
               onOpenTrace={openTrace}
+              onOpenIssue={openIssue}
               onOpenInConversation={focusAnnotationInConversation}
               {...(searchQuery ? { searchQuery } : {})}
             />
           }
           traceSlot={
-            showTrace ? (
+            detailKind === "trace" ? (
               <TraceSlot projectId={projectId} traceId={traceId} {...(searchQuery ? { searchQuery } : {})} />
             ) : null
           }
+          issueSlot={detailKind === "issue" ? <IssueSlot projectId={projectId} issueId={issueId} /> : null}
         />
       )}
     </DetailDrawer>
