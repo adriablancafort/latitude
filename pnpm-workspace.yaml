@@ -7,6 +7,23 @@ packages:
   - tools/*
   - examples/**
 
+publicHoistPattern:
+  - "@temporalio/*"
+  - "@grpc/*"
+  - protobufjs
+  - "@protobufjs/*"
+  - long
+
+# Refuse to install npm versions published less than 7 days ago.
+# Buys time for the registry / community to yank malicious releases
+# before they land in our lockfile (e.g. GHSA-g7cv-rxg3-hmpx, May 2026).
+minimumReleaseAge: 10080
+
+# Disable npm `pre*` / `post*` lifecycle scripts (defense in depth on top of
+# pnpm-workspace.yaml `onlyBuiltDependencies` allowlist). Mini Shai-Hulud
+# used a `prepare` hook on a malicious git-ref optionalDependency.
+enablePrePostScripts: false
+
 catalog:
   "@biomejs/biome": 2.4.6
   "@clickhouse/client": 1.18.3
