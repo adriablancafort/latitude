@@ -24,12 +24,24 @@ const logger = createLogger("slack-oauth-callback")
 
 type FlashStatus = "installed=ok" | "error=workspace_taken" | "error=oauth_failed"
 
-const redirectToSettings = (status: FlashStatus, webUrl: string): Response => {
+const DEFAULT_RETURN_PATH = "/?next=integrations"
+
+// Exported for unit testing.
+export const buildPostInstallRedirect = (input: {
+  readonly returnTo: string | null
+  readonly status: FlashStatus
+  readonly webUrl: string
+}): Response => {
+  const path = input.returnTo ?? DEFAULT_RETURN_PATH
+  const separator = path.includes("?") ? "&" : "?"
   const headers = new Headers()
-  headers.set("Location", `${webUrl}/?next=integrations&${status}`)
+  headers.set("Location", `${input.webUrl}${path}${separator}${input.status}`)
   headers.set("Cache-Control", "no-store")
   return new Response(null, { status: 302, headers })
 }
+
+const redirectToSettings = (status: FlashStatus, webUrl: string): Response =>
+  buildPostInstallRedirect({ returnTo: null, status, webUrl })
 
 /**
  * `Effect.runPromise` wraps domain failures in a `FiberFailure` whose
@@ -58,23 +70,39 @@ export const Route = createFileRoute("/integrations/slack/oauth/callback")({
         const webUrl = rawWebUrl.replace(/\/$/, "")
 
         const url = new URL(request.url)
-        const code = url.searchParams.get("code")
         const state = url.searchParams.get("state")
-        if (!code || !state) {
-          logger.warn("slack oauth callback missing code or state")
+        const code = url.searchParams.get("code")
+
+        // No state → no returnTo to honor.
+        if (!state) {
+          logger.warn("slack oauth callback missing state")
           return redirectToSettings("error=oauth_failed", webUrl)
         }
 
+        // Consume state before checking `code` so the user-denied path (state without code) still honors returnTo.
         const stateEntry = await consumeSlackOAuthState({ redis: getRedisClient(), state })
         if (!stateEntry) {
           logger.warn("slack oauth state not found, expired, or already consumed")
           return redirectToSettings("error=oauth_failed", webUrl)
         }
 
+        if (!code) {
+          logger.info("slack oauth callback missing code (user denied or upstream error)")
+          return buildPostInstallRedirect({
+            returnTo: stateEntry.returnTo,
+            status: "error=oauth_failed",
+            webUrl,
+          })
+        }
+
         const config = await Effect.runPromise(loadSlackConfig)
         if (!config) {
           logger.warn("slack config missing at callback time")
-          return redirectToSettings("error=oauth_failed", webUrl)
+          return buildPostInstallRedirect({
+            returnTo: stateEntry.returnTo,
+            status: "error=oauth_failed",
+            webUrl,
+          })
         }
 
         const redirectUri = `${webUrl}/integrations/slack/oauth/callback`
@@ -109,14 +137,22 @@ export const Route = createFileRoute("/integrations/slack/oauth/callback")({
             ),
           )
 
-          return redirectToSettings("installed=ok", webUrl)
+          return buildPostInstallRedirect({ returnTo: stateEntry.returnTo, status: "installed=ok", webUrl })
         } catch (cause) {
           if (isWorkspaceConflict(cause)) {
             logger.info("slack workspace already claimed by another organization")
-            return redirectToSettings("error=workspace_taken", webUrl)
+            return buildPostInstallRedirect({
+              returnTo: stateEntry.returnTo,
+              status: "error=workspace_taken",
+              webUrl,
+            })
           }
           logger.error("slack oauth callback failed", cause)
-          return redirectToSettings("error=oauth_failed", webUrl)
+          return buildPostInstallRedirect({
+            returnTo: stateEntry.returnTo,
+            status: "error=oauth_failed",
+            webUrl,
+          })
         }
       },
     },

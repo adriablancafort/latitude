@@ -82,6 +82,14 @@ const toRecord = (row: SlackIntegration): SlackIntegrationRecord => ({
   routes: row.routes ?? {},
 })
 
+// Dynamic import keeps `@platform/slack` (and its `@slack/web-api` transitive dep) off the client bundle.
+export const isSlackConfigured = createServerFn({ method: "GET" }).handler(async (): Promise<boolean> => {
+  await requireSession()
+  const { loadSlackConfig } = await import("@platform/slack")
+  const config = await Effect.runPromise(loadSlackConfig)
+  return config !== undefined
+})
+
 export const getActiveSlackIntegration = createServerFn({ method: "GET" }).handler(
   async (): Promise<SlackIntegrationRecord | null> => {
     const { organizationId } = await requireSession()
