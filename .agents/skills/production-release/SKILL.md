@@ -16,8 +16,8 @@ production deploy, focused on the major aspects rather than every commit.
 ## Release invariants
 
 - `development` is trunk and deploys to staging by default.
-- Production is triggered only by pushing a `vX.Y.Z` tag that points at a commit
-  reachable from `origin/development`.
+- Production is triggered only by pushing a `vX.Y.Z` tag that points at the
+  latest `origin/development` commit.
 - Do not promote by merging `development` into `main`.
 - Do not tag unreleased local-only commits. The release commit, including any
   changelog update, must be pushed to `origin/development` before tagging.
@@ -28,15 +28,15 @@ production deploy, focused on the major aspects rather than every commit.
 
 ## Workflow
 
-1. Start from the commit intended for production and verify it is on
-   `origin/development`.
+1. Push the commit intended for production to `origin/development`; the release
+   script always tags the latest `origin/development` commit after fetching.
 2. Fetch tags and identify the previous production release tag:
    ```bash
    git fetch origin development --tags
    git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1
    ```
-3. Inspect the release range (`<latest-tag>..HEAD`, or the initial release range
-   if no tag exists) as the production diff. Read the commits and changed files
+3. Inspect the release range (`<latest-tag>..origin/development`, or the initial
+   release range if no tag exists) as the production diff. Read the commits and changed files
    enough to understand the main shipped behavior, not just the commit titles.
 4. Update `CHANGELOG.md` before deploying:
    - keep `## Unreleased` at the top;
@@ -52,10 +52,8 @@ production deploy, focused on the major aspects rather than every commit.
    - skip internal-only noise that does not matter to operators or users.
 5. Commit the changelog update with message `release: vX.Y.Z` (matching the
    release version exactly) and push it to `origin/development`.
-6. Run `scripts/release.sh [version]` from the pushed release commit. Use
-   `--dry` first when you want to preview the release summary without tagging.
-7. Confirm staging has deployed and been verified before accepting the prompt,
-   unless an explicit operator decision authorizes `--skip-staging-check`.
+6. Run `scripts/release.sh [version]`. Use `--dry` first when you want to preview
+   the release summary without tagging.
 
 ## Changelog style
 

@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  deployments: read
   packages: write
 
 jobs:
@@ -35,7 +34,6 @@ jobs:
       - name: Resolve deployment target
         id: target
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
@@ -51,32 +49,6 @@ jobs:
 
           git fetch origin development --quiet
 
-          require_staging_deployment() {
-            local sha="$1"
-            local deployments
-            deployments=$(gh api "/repos/${GITHUB_REPOSITORY}/deployments?environment=staging&sha=${sha}&per_page=20")
-
-            local deployment_ids
-            deployment_ids=$(echo "${deployments}" | jq -r '.[].id')
-            if [ -z "${deployment_ids}" ]; then
-              echo "No staging deployment was found for ${sha}. Deploy it to staging before production release."
-              exit 1
-            fi
-
-            while IFS= read -r deployment_id; do
-              [ -z "${deployment_id}" ] && continue
-              state=$(gh api "/repos/${GITHUB_REPOSITORY}/deployments/${deployment_id}/statuses?per_page=1" --jq '.[0].state // ""')
-              if [ "${state}" = "success" ]; then
-                return 0
-              fi
-            done <<<"${deployment_ids}"
-
-            echo "No successful staging deployment was found for ${sha}."
-            exit 1
-          }
-
-          skip_staging_check=false
-
           if [ "${EVENT_NAME}" = "push" ]; then
             if [ "${REF_TYPE}" = "tag" ]; then
               target_sha=$(git rev-parse "${REF_NAME}^{commit}")
@@ -85,15 +57,6 @@ jobs:
               if ! echo "${REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
                 echo "Production tags must look like v1.2.3. Got: ${REF_NAME}"
                 exit 1
-              fi
-
-              tag_object_type=$(git cat-file -t "refs/tags/${REF_NAME}" || echo "")
-              if [ "${tag_object_type}" = "tag" ]; then
-                tag_message=$(git for-each-ref "refs/tags/${REF_NAME}" --format='%(contents)' || true)
-                if echo "${tag_message}" | grep -q '^skip-staging-check'; then
-                  skip_staging_check=true
-                  echo "Tag ${REF_NAME} carries skip-staging-check marker; bypassing staging deployment check."
-                fi
               fi
             else
               if [ "${REF_NAME}" != "development" ]; then
@@ -111,7 +74,7 @@ jobs:
             fi
 
             if [ "${INPUT_ENVIRONMENT}" = "production" ]; then
-              echo "Production deploys are triggered by release tag pushes only. Use scripts/release.sh from the commit to deploy."
+              echo "Production deploys are triggered by release tag pushes only. Use scripts/release.sh to tag the latest origin/development commit."
               exit 1
             elif [ "${INPUT_ENVIRONMENT}" = "staging" ]; then
               target_sha="${CURRENT_SHA}"
@@ -137,8 +100,11 @@ jobs:
             exit 1
           fi
 
-          if [ "${production_should_deploy}" = "true" ] && [ "${skip_staging_check}" != "true" ]; then
-            require_staging_deployment "${target_sha}"
+          if [ "${production_should_deploy}" = "true" ] && [ "${target_sha}" != "$(git rev-parse origin/development)" ]; then
+            echo "Production tags must point at the latest origin/development commit."
+            echo "Target SHA: ${target_sha}"
+            echo "Latest origin/development: $(git rev-parse origin/development)"
+            exit 1
           fi
 
           {
