@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v0.1.38 - 2026-05-28
+
+### Sessions, traces, and search
+
+- Added a session detail drawer with metadata, conversation, traces, annotations, and issues tabs, plus slide-to-trace navigation from session rows (ref: #3295).
+- Polished live taxonomy recommendations with clearer loading, trend, tooltip, and keyboard-focus behavior (ref: #3306).
+- Improved click-triggered navigation across tables and badges by rendering real links for new-tab, copy-link, and pre-hydration support (ref: #3312).
+
+### Flagger and issue workflows
+
+- Bounded flagger-on-flagger recursion with a no-reflag telemetry marker while preserving one level of production flagger monitoring (ref: #3304).
+- Sanitized truncated flagger snippets so partial emoji or malformed UTF-16 cannot break Bedrock prompt payloads (ref: #3310).
+- Showed flagger badges on automatically monitored issue drawers and aligned score repository sampling with production behavior (ref: #3311).
+
+### Demo data, analytics, and reporting
+
+- Seeded demo-project derived data for taxonomy, scores, and embeddings with resilient failure handling and workflow coverage (ref: #3308).
+- Added onboarding type identification to PostHog analytics events (ref: #3313).
+- Fixed Wrapped social previews by using an absolute `og:image` URL (ref: #3307).
+
+### Infrastructure and docs
+
+- Added production-only Hex read-only database access through an SSH-tunneled Aurora reader path, including Pulumi config and runbook documentation (ref: b2b4ec6).
+- Refreshed telemetry quick-start documentation and pnpm workspace install configuration (refs: 35eb022, 473fa5f).
+
 ## v0.1.37 - 2026-05-27
 
 ### Search and traces
