@@ -1,5 +1,4 @@
 import { DEFAULT_API_KEY_NAME } from "@domain/api-keys"
-import type { FLAGGER_STRATEGY_SLUGS } from "@domain/flaggers"
 import {
   Button,
   CodeBlock,
@@ -35,6 +34,11 @@ import {
   configureProjectFlaggersForOnboarding,
   listAvailableFlaggers,
 } from "../../../../../domains/flaggers/flaggers.functions.ts"
+import {
+  FLAGGER_ONBOARDING_ORDER,
+  FLAGGER_USE_CASE_PRESETS,
+  type FlaggerPresetSlug,
+} from "../../../../../domains/flaggers/presets.ts"
 import { useProjectsCollection } from "../../../../../domains/projects/projects.collection.ts"
 import { countTracesByProject } from "../../../../../domains/traces/traces.functions.ts"
 import { submitOnboarding } from "../../../../../domains/users/user.functions.ts"
@@ -68,7 +72,6 @@ type OnboardingStep = "role" | "stack" | "flaggers" | "telemetry"
 type StackChoice = "coding-agent-machine" | "production-agent"
 type TelemetrySetupMode = "coding-agent" | "manual"
 type IntegrationPanel = "typescript" | "python" | "opentelemetry"
-type FlaggerPresetSlug = (typeof FLAGGER_STRATEGY_SLUGS)[number]
 
 const SETUP_MODE_TAB_OPTIONS = [
   { id: "coding-agent" as const, label: "Coding agent", icon: <Bot className="h-4 w-4" /> },
@@ -104,98 +107,6 @@ const CODING_MACHINE_AGENT_TAB_OPTIONS = [
     icon: <OnboardingCodingAgentTabIcon src={ONBOARDING_OPENCLAW_LOGO_SRC} />,
   },
 ] as const satisfies ReadonlyArray<{ id: CodingMachineAgentId; label: string; icon: ReactNode }>
-
-const FLAGGER_USE_CASE_PRESETS = [
-  {
-    id: "support-agent",
-    label: "Support agent",
-    description: "Customer-facing assistants handling questions, escalations, and account workflows.",
-    enabledSlugs: [
-      "frustration",
-      "refusal",
-      "forgetting",
-      "tool-call-errors",
-      "empty-response",
-      "jailbreaking",
-      "nsfw",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "coding-agent",
-    label: "Coding agent",
-    description: "Agents that edit files, call tools, and work through multi-step implementation tasks.",
-    enabledSlugs: [
-      "laziness",
-      "trashing",
-      "tool-call-errors",
-      "empty-response",
-      "refusal",
-      "forgetting",
-      "output-schema-validation",
-      "frustration",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "sales-agent",
-    label: "Sales agent",
-    description: "Lead qualification and buyer-facing assistants where tone and follow-through matter.",
-    enabledSlugs: [
-      "frustration",
-      "refusal",
-      "forgetting",
-      "empty-response",
-      "jailbreaking",
-      "nsfw",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "tool-workflow-agent",
-    label: "Tool workflow agent",
-    description: "Agents that coordinate tools, APIs, and structured workflows.",
-    enabledSlugs: [
-      "tool-call-errors",
-      "trashing",
-      "output-schema-validation",
-      "empty-response",
-      "laziness",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "knowledge-base-agent",
-    label: "Knowledge-base agent",
-    description: "RAG and documentation assistants that need to preserve context and answer directly.",
-    enabledSlugs: [
-      "forgetting",
-      "refusal",
-      "empty-response",
-      "frustration",
-      "laziness",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "structured-extraction-agent",
-    label: "Structured extraction",
-    description: "Extraction and classification agents that return machine-readable output.",
-    enabledSlugs: [
-      "output-schema-validation",
-      "empty-response",
-      "tool-call-errors",
-      "laziness",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-  {
-    id: "safety-agent",
-    label: "Safety agent",
-    description: "Moderation and policy-sensitive assistants exposed to adversarial or unsafe inputs.",
-    enabledSlugs: [
-      "nsfw",
-      "jailbreaking",
-      "refusal",
-      "frustration",
-      "empty-response",
-    ] satisfies ReadonlyArray<FlaggerPresetSlug>,
-  },
-] as const
 
 const STACK_CHOICE_OPTIONS: ReadonlyArray<{
   readonly id: StackChoice
@@ -532,12 +443,26 @@ export function OnboardingFlow({
     queryFn: () => listAvailableFlaggers(),
   })
 
-  const availableFlaggerSlugs = availableFlaggers.map((flagger) => flagger.slug)
+  const sortedAvailableFlaggers = useMemo(() => {
+    const indexBySlug = new Map<string, number>(FLAGGER_ONBOARDING_ORDER.map((slug, index) => [slug, index]))
+    const fallbackIndex = FLAGGER_ONBOARDING_ORDER.length
+    return [...availableFlaggers].sort(
+      (a, b) => (indexBySlug.get(a.slug) ?? fallbackIndex) - (indexBySlug.get(b.slug) ?? fallbackIndex),
+    )
+  }, [availableFlaggers])
+  const availableFlaggerSlugs = sortedAvailableFlaggers.map((flagger) => flagger.slug)
   const currentEnabledFlaggerSlugs = new Set(
     projectFlaggers.filter((flagger) => flagger.enabled).map((flagger) => flagger.slug),
   )
   const enabledFlaggerSlugs =
     selectedFlaggerSlugs ?? (projectFlaggers.length > 0 ? currentEnabledFlaggerSlugs : new Set(availableFlaggerSlugs))
+
+  const activePresetId =
+    FLAGGER_USE_CASE_PRESETS.find(
+      (preset) =>
+        preset.enabledSlugs.length === enabledFlaggerSlugs.size &&
+        preset.enabledSlugs.every((slug) => enabledFlaggerSlugs.has(slug)),
+    )?.id ?? null
 
   const toggleFlaggerSelection = (slug: string) => {
     setSelectedFlaggerSlugs((current) => {
@@ -551,7 +476,7 @@ export function OnboardingFlow({
     })
   }
 
-  const applyFlaggerPreset = (enabledSlugs: readonly string[]) => {
+  const applyFlaggerPreset = (enabledSlugs: ReadonlyArray<FlaggerPresetSlug>) => {
     setSelectedFlaggerSlugs(new Set(enabledSlugs))
   }
 
@@ -811,29 +736,36 @@ export function OnboardingFlow({
                     Latitude inspects all incoming traces and creates issues when they detect common failure patterns.
                     Choose the patterns you want to monitor.
                   </Text.H4>
+                  <Text.H5 color="foregroundMuted">
+                    You can fine-tune sampling rates per flagger later in Project settings.
+                  </Text.H5>
                 </div>
               </div>
 
               <div className="flex flex-col gap-6">
                 <div className="flex flex-row flex-wrap gap-2">
-                  {FLAGGER_USE_CASE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => applyFlaggerPreset(preset.enabledSlugs)}
-                      className="inline-flex cursor-pointer rounded-full border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-accent/10"
-                      title={preset.description}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
+                  {FLAGGER_USE_CASE_PRESETS.map((preset) => {
+                    const isActive = activePresetId === preset.id
+                    return (
+                      <Button
+                        key={preset.id}
+                        variant={isActive ? "default-soft" : "outline"}
+                        size="sm"
+                        aria-pressed={isActive}
+                        onClick={() => applyFlaggerPreset(preset.enabledSlugs)}
+                        title={preset.description}
+                      >
+                        {preset.label}
+                      </Button>
+                    )
+                  })}
                 </div>
 
                 {isLoadingAvailableFlaggers || isLoadingProjectFlaggers ? (
                   <Text.H5 color="foregroundMuted">Loading flaggers…</Text.H5>
                 ) : (
                   <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
-                    {availableFlaggers.map((flagger) => {
+                    {sortedAvailableFlaggers.map((flagger) => {
                       const selected = enabledFlaggerSlugs.has(flagger.slug)
                       return (
                         <button

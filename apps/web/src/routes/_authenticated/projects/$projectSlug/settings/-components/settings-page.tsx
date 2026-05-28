@@ -1,4 +1,4 @@
-import { Text } from "@repo/ui"
+import { cn, Text } from "@repo/ui"
 import type { ReactNode } from "react"
 
 interface SettingsPageTitleProps {
@@ -14,9 +14,15 @@ interface SettingsPageProps {
   readonly description?: ReactNode
   readonly actions?: ReactNode
   readonly children: ReactNode
+  /**
+   * When true, the title/description/actions header sticks to the top of the scroll
+   * container with a background + bottom border. Use this to surface action controls
+   * (e.g. Apply/Discard) when the page has unsaved changes.
+   */
+  readonly headerSticky?: boolean
 }
 
-export function SettingsPage({ title, description, actions, children }: SettingsPageProps) {
+export function SettingsPage({ title, description, actions, children, headerSticky = false }: SettingsPageProps) {
   const header = (
     <div className="flex flex-col gap-1">
       {typeof title === "string" ? <SettingsPageTitle>{title}</SettingsPageTitle> : title}
@@ -26,14 +32,15 @@ export function SettingsPage({ title, description, actions, children }: Settings
 
   return (
     <>
-      {actions ? (
-        <div className="flex flex-row items-start justify-between gap-4">
-          {header}
-          <div className="shrink-0">{actions}</div>
-        </div>
-      ) : (
-        header
-      )}
+      <div
+        className={cn("flex flex-row items-center justify-between gap-4", {
+          "sticky top-0 z-10 -mx-6 border-b border-border bg-background/95 px-6 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80":
+            headerSticky,
+        })}
+      >
+        {header}
+        {actions ? <div className="shrink-0">{actions}</div> : null}
+      </div>
       <div className="flex flex-col gap-6">{children}</div>
     </>
   )
