@@ -159,6 +159,49 @@ Manual deployments must be dispatched from the matching branch:
 
 The deployment workflow uses GitHub Actions OIDC authentication (no long-lived AWS access keys). Each GitHub Environment must define `AWS_DEPLOY_ROLE_ARN` as an environment variable (not a secret), pointing at the Pulumi output `outputs.githubActionsRoleArn` for the matching stack. Keep any legacy deployment IAM user in place until both staging and production deployments have been verified with the new role, then retire the user manually.
 
+## Hex read-only DB access (production)
+
+Hex SaaS reaches Aurora via an SSH tunnel through the existing admin bastion. SSH ingress is scoped to Hex's published egress CIDRs, and the bastion-side `hex` user is restricted to forwarding to the Aurora reader endpoint only.
+
+**1. Get the inputs from Hex** (Workspace → Settings → Connections → "New SSH connection"):
+
+   - SSH public key Hex generated for this workspace
+   - Hex's published egress IP CIDRs
+
+**2. Set Pulumi config and deploy:**
+
+   ```bash
+   pulumi config set --secret hexSshPublicKey "ssh-ed25519 AAAA... hex-workspace" --stack production
+   pulumi config set --plaintext hexEgressCidrs '["1.2.3.4/32","5.6.7.8/32"]' --stack production
+   pulumi up --stack production
+   ```
+
+   The bastion will be **replaced** (userData change) and will come up with a new public IP. Note the `bastionPublicIp`, `rdsReaderEndpoint`, and `hexReadonlySecretArn` outputs.
+
+**3. Create the Postgres role** (one-off, via SSM Session Manager to the bastion):
+
+   ```bash
+   # From the bastion:
+   PW=$(aws secretsmanager get-secret-value --secret-id "$(pulumi stack output hexReadonlySecretArn)" --query SecretString --output text | jq -r 'capture("hex_readonly:(?<pw>[^@]+)@").pw')
+   ADMIN_URL=$(aws secretsmanager get-secret-value --secret-id latitude-production-admin-database-url --query SecretString --output text)
+   psql "$ADMIN_URL" <<SQL
+   CREATE ROLE hex_readonly WITH LOGIN PASSWORD '$PW';
+   GRANT pg_read_all_data TO hex_readonly;
+   ALTER ROLE hex_readonly SET default_transaction_read_only = on;
+   ALTER ROLE hex_readonly SET statement_timeout = '5min';
+   ALTER ROLE hex_readonly SET idle_in_transaction_session_timeout = '1min';
+   SQL
+   ```
+
+**4. Configure the Hex data source:**
+
+   - SSH host: `bastionPublicIp` output, user `hex`, port 22
+   - DB host: `rdsReaderEndpoint` output, port 5432
+   - DB user: `hex_readonly`, password from the `hexReadonlySecretArn` secret
+   - DB name: `latitude`, SSL required
+
+To unwire Hex access entirely: `pulumi config rm hexSshPublicKey hexEgressCidrs --stack production && pulumi up` — bastion goes back to SSM-only and the `hex_readonly` Postgres role can be `DROP ROLE`ed at leisure.
+
 ## Secret lifecycle
 
 - `better-auth-secret` and `encryption-key` are treated as long-lived immutable secrets in Pulumi.

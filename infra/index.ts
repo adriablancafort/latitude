@@ -34,6 +34,9 @@ const temporalCloudAddress = config.get("temporalCloudAddress") ?? `${envConfig.
 const temporalCloudNamespace = config.get("temporalCloudNamespace") ?? ""
 const temporalTaskQueue = config.get("temporalTaskQueue") ?? "latitude-workflows"
 
+const hexSshPublicKey = config.getSecret("hexSshPublicKey")
+const hexEgressCidrs = config.getObject<string[]>("hexEgressCidrs")
+
 const name = `latitude-${environment}`
 
 pulumi.log.info(`Deploying ${environment} environment to ${envConfig.region}`)
@@ -77,7 +80,23 @@ const rds = createRds(name, envConfig, vpc.privateSubnets, securityGroups.rds)
 
 const redis = createRedis(name, envConfig, vpc.privateSubnets, securityGroups.redis)
 
-const bastion = createBastion(name, envConfig, vpc.vpc, vpc.publicSubnets, securityGroups.bastion, bastionAmiId)
+const hexBastionConfig = environment === "production" && hexSshPublicKey && hexEgressCidrs && rds.cluster
+  ? {
+      sshPublicKey: hexSshPublicKey,
+      egressCidrs: hexEgressCidrs,
+      rdsReaderEndpoint: rds.cluster.readerEndpoint,
+    }
+  : undefined
+
+const bastion = createBastion(
+  name,
+  envConfig,
+  vpc.vpc,
+  vpc.publicSubnets,
+  securityGroups.bastion,
+  bastionAmiId,
+  hexBastionConfig,
+)
 
 const s3 = createS3(name, envConfig)
 
@@ -146,6 +165,10 @@ export const outputs = {
   githubActionsRoleArn: githubActions.deployRole.arn,
 
   bastionInstanceId: bastion.instance.id,
+  bastionPublicIp: bastion.instance.publicIp,
+
+  rdsReaderEndpoint: rds.cluster?.readerEndpoint,
+  hexReadonlySecretArn: rds.hexReadonlySecret?.arn,
 
   ...(securityCompliance
     ? {

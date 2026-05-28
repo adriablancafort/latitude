@@ -24,6 +24,8 @@ export interface RdsOutput {
   secretVersion: SecretsmanagerSecretVersion
   adminSecret: SecretsmanagerSecret
   adminSecretVersion: SecretsmanagerSecretVersion
+  hexReadonlySecret?: SecretsmanagerSecret
+  hexReadonlySecretVersion?: SecretsmanagerSecretVersion
   connectionInfo: pulumi.Output<{
     host: string
     port: number
@@ -202,6 +204,25 @@ function createAuroraServerless(
     secretString: adminSecretString,
   })
 
+  const hexReadonlyPassword = new random.RandomPassword(`${name}-hex-readonly-password`, {
+    length: 32,
+    special: false,
+  }).result
+
+  const hexReadonlySecret = new aws.secretsmanager.Secret(`${name}-hex-readonly-secret`, {
+    name: `${name}-hex-readonly-database-credentials`,
+    description: "Read-only Hex database credentials (Aurora reader endpoint)",
+    tags: {
+      Name: `${name}-hex-readonly-secret`,
+      Environment: config.name,
+    },
+  })
+
+  const hexReadonlySecretVersion = new aws.secretsmanager.SecretVersion(`${name}-hex-readonly-secret-version`, {
+    secretId: hexReadonlySecret.id,
+    secretString: pulumi.interpolate`postgres://hex_readonly:${hexReadonlyPassword}@${cluster.readerEndpoint}:5432/${databaseName}?sslmode=require`,
+  })
+
   const connectionInfo = pulumi.output({
     host: cluster.endpoint,
     port: 5432,
@@ -218,6 +239,8 @@ function createAuroraServerless(
     secretVersion,
     adminSecret,
     adminSecretVersion,
+    hexReadonlySecret,
+    hexReadonlySecretVersion,
     connectionInfo,
   }
 }
