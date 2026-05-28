@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## v0.1.39 - 2026-05-28
+
+### Sessions and issues
+
+- Added issue drill-down inside the session drawer, including sortable issue rows and trace overlays that return users to the issue context on close (ref: #3314).
+- Restored flagger-sourced issue metadata in issue drawers and allowed signal-only annotations with empty feedback text (ref: #3314).
+
+### Flagger workflows
+
+- Reworked flagger configuration in onboarding and project settings with shared presets, grouped settings rows, buffered apply/discard behavior, dirty-state guards, and accessible sampling sliders (ref: #3318).
+- Anchored deterministic jailbreak and NSFW matches to the triggering message so generated annotations point to the exact conversation turn (ref: #3317).
+
+### Product experience
+
+- Improved the in-app changelog popover interactions and switched the unread news affordance to a dot indicator (ref: #3315).
+
+### Infrastructure
+
+- Fixed production release tagging so tags are created from the latest `origin/development` commit after the changelog release commit is pushed, and improved release-script safety checks (refs: c5d2841, 0307b56).
+
 ## v0.1.38 - 2026-05-28
 
 ### Sessions, traces, and search
