@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v0.1.42 - 2026-05-29
+
+### Search
+
+- Promoted the session-rollup view to the primary `/search` route, porting saved searches and the Export Traces / Add to Dataset bulk actions, and retired the legacy trace-flat search and the Live Taxonomy panel (ref: #3320).
+- Applied session defaults to bulk-action filters on `/search` and the project Sessions tab so trace counts and Select-All exports match the visible list (ref: #3320).
+- Opened orphan session search hits as their underlying trace instead of "Session not found" (ref: #3320).
+
+### Traces and ingest
+
+- Added project-level trace sampling at the OTLP ingest boundary, deterministic on session id, so sampled-out batches skip object storage, the queue, ClickHouse insert, and the downstream `TracesIngested` fan-out (ref: #3324).
+- Unified project general settings under a single Apply/Discard flow with Cmd/Ctrl+S, Escape, and a navigation guard for unsaved changes (ref: #3324).
+
+### Issues
+
+- Moved Ignore/Resolve lifecycle buttons back into the drawer top toolbar for both the standalone issue drawer and the session drawer (ref: #3327).
+
+### Workers
+
+- Recorded BullMQ job failures with Datadog-compatible exception attributes on worker spans so errors can be searched and grouped by type (ref: 3c9d0b2).
+
+### Docs
+
+- Added documentation for AWS Strands agents (ref: #3326).
+
 ## v0.1.40 - 2026-05-29
 
 ### Onboarding and integrations
