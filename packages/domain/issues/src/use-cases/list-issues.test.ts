@@ -213,12 +213,70 @@ describe("listIssuesUseCase", () => {
 
     expect(result.items).toEqual([])
     expect(result.totalCount).toBe(0)
+    expect(result.hasAnyIssues).toBe(false)
     expect(result.analytics.totalTraces).toBe(0)
     expect(result.analytics.histogram.length).toBeGreaterThan(0)
     expect(windowMetricInputs).toEqual([])
     expect(aggregateInputs).toEqual([])
     expect(histogramInputs).toEqual([])
     expect(traceCountCalls).toBe(0)
+  })
+
+  it("reports project issue existence when the selected lifecycle group has no visible rows", async () => {
+    const now = new Date("2026-04-10T00:00:00.000Z")
+    const resolvedIssue = makeIssue({
+      id: IssueId("r".repeat(24)),
+      resolvedAt: new Date("2026-04-08T00:00:00.000Z"),
+    })
+    const { repository: issueRepository } = createFakeIssueRepository([resolvedIssue])
+    const { repository: evaluationRepository, listByIssueIdsCalls } = createEvaluationRepository()
+    const { repository: scoreAnalyticsRepository } = createFakeScoreAnalyticsRepository({
+      listIssueWindowMetrics: () =>
+        Effect.succeed([
+          makeWindowMetric({
+            issueId: resolvedIssue.id,
+            occurrences: 3,
+            firstSeenAt: new Date("2026-04-07T00:00:00.000Z"),
+            lastSeenAt: new Date("2026-04-08T00:00:00.000Z"),
+          }),
+        ]),
+      aggregateByIssues: aggregateOccurrences([
+        makeOccurrence({
+          issueId: resolvedIssue.id,
+          totalOccurrences: 3,
+          recentOccurrences: 0,
+          baselineAvgOccurrences: 0,
+          firstSeenAt: new Date("2026-04-07T00:00:00.000Z"),
+          lastSeenAt: new Date("2026-04-08T00:00:00.000Z"),
+        }),
+      ]),
+    })
+
+    const result = await Effect.runPromise(
+      listIssuesUseCase({
+        organizationId,
+        projectId,
+        lifecycleGroup: "active",
+        now,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(IssueRepository, issueRepository),
+            Layer.succeed(EvaluationRepository, evaluationRepository),
+            Layer.succeed(ScoreAnalyticsRepository, scoreAnalyticsRepository),
+            Layer.succeed(SqlClient, createFakeSqlClient({ organizationId })),
+            Layer.succeed(ChSqlClient, createFakeChSqlClient({ organizationId })),
+            provideTraceRepository,
+          ),
+        ),
+      ),
+    )
+
+    expect(result.items).toEqual([])
+    expect(result.totalCount).toBe(0)
+    expect(result.hasAnyIssues).toBe(true)
+    expect(result.analytics.counts.resolvedIssues).toBe(1)
+    expect(listByIssueIdsCalls).toEqual([])
   })
 
   it("enriches the default listing with derived lifecycle states", async () => {
@@ -361,6 +419,7 @@ describe("listIssuesUseCase", () => {
     expect(result.analytics.counts.regressedIssues).toBe(0)
     expect(result.analytics.counts.seenOccurrences).toBe(12)
     expect(result.totalCount).toBe(3)
+    expect(result.hasAnyIssues).toBe(true)
     expect(result.hasMore).toBe(true)
     expect(result.limit).toBe(2)
     expect(result.offset).toBe(0)

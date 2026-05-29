@@ -126,6 +126,8 @@ export interface ListIssuesResult {
   readonly items: readonly IssueListItem[]
   readonly totalCount: number
   readonly hasMore: boolean
+  /** True when the project has at least one issue, regardless of lifecycle group or activity window. */
+  readonly hasAnyIssues: boolean
   readonly limit: number
   readonly offset: number
   readonly occurrencesSum: number
@@ -433,14 +435,16 @@ export const listIssuesUseCase = (
     const now = parsed.now ?? new Date()
     const selectedTimeRange = toScoreAnalyticsTimeRange(parsed.timeRange)
 
+    let hasAnyIssues = parsed.issueIds !== undefined
     if (!parsed.issueIds) {
       const firstIssuePage = yield* issueRepository.list({
         projectId: parsed.projectId,
         limit: 1,
         offset: 0,
       })
+      hasAnyIssues = firstIssuePage.items.length > 0
 
-      if (firstIssuePage.items.length === 0) {
+      if (!hasAnyIssues) {
         const histogramTimeRange = resolveHistogramTimeRange({
           timeRange: parsed.timeRange,
           now,
@@ -472,6 +476,7 @@ export const listIssuesUseCase = (
           items: [],
           totalCount: 0,
           hasMore: false,
+          hasAnyIssues,
           limit: parsed.limit,
           offset: parsed.offset,
           occurrencesSum: 0,
@@ -570,6 +575,7 @@ export const listIssuesUseCase = (
         items: [],
         totalCount: 0,
         hasMore: false,
+        hasAnyIssues,
         limit: parsed.limit,
         offset: parsed.offset,
         occurrencesSum: 0,
@@ -737,6 +743,7 @@ export const listIssuesUseCase = (
       })),
       totalCount: tableCandidates.length,
       hasMore: parsed.offset + parsed.limit < tableCandidates.length,
+      hasAnyIssues,
       limit: parsed.limit,
       offset: parsed.offset,
       occurrencesSum,

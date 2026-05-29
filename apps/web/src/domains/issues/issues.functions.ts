@@ -111,6 +111,7 @@ const toIssuesListResultRecord = (result: ListIssuesResult) => ({
   items: result.items.map(toIssueRecord),
   totalCount: result.totalCount,
   hasMore: result.hasMore,
+  hasAnyIssues: result.hasAnyIssues,
   limit: result.limit,
   offset: result.offset,
   occurrencesSum: result.occurrencesSum,

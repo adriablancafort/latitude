@@ -190,6 +190,7 @@ export function useIssues(input: {
     data: data as readonly IssueRecord[],
     analytics: firstPage?.analytics ?? EMPTY_ISSUES_ANALYTICS,
     totalCount: firstPage?.totalCount ?? 0,
+    hasAnyIssues: firstPage?.hasAnyIssues ?? false,
     occurrencesSum: firstPage?.occurrencesSum ?? 0,
     isLoading,
     // True while a new query key is in flight and the previous result is being

@@ -160,6 +160,7 @@ function IssuesPage() {
     analytics,
     occurrencesSum,
     totalCount,
+    hasAnyIssues,
     isLoading,
     isReloading,
     infiniteScroll,
@@ -313,10 +314,10 @@ function IssuesPage() {
   const hasActiveFilters = lifecycleGroup !== "active" || searchQuery !== "" || Boolean(timeRange)
   // Derived from the un-substituted data so a placeholder reload (which forces
   // `issues` to []) does not falsely trigger the empty state.
-  const hasNoIssues = issuesData.length === 0 && !hasActiveFilters
+  const hasNoIssues = !hasAnyIssues && !hasActiveFilters
   const showEmptyState = !showSkeletons && hasNoIssues
 
-  if (isLoading && hasNoIssues) {
+  if (isLoading && !hasAnyIssues && !hasActiveFilters) {
     return (
       <Layout>
         <Layout.Content>
