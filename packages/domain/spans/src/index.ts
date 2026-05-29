@@ -109,6 +109,8 @@ export type {
   TraceSemanticHighlightMatch,
 } from "./ports/trace-search-repository.ts"
 export { TraceSearchRepository } from "./ports/trace-search-repository.ts"
+export { deterministicSample } from "./sampling/deterministic-sampler.ts"
+export { extractSamplingKey } from "./sampling/extract-sampling-key.ts"
 export {
   buildTraceCohortSummaryEntries,
   buildTraceMetricBaseline,

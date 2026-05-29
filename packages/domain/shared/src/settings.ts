@@ -60,11 +60,19 @@ export const escalationSettingSchema = z.object({
 })
 export type EscalationSetting = z.infer<typeof escalationSettingSchema>
 
+/** Trace sampling: keep a deterministic fraction of ingested batches, keyed by `session_id || trace_id`. */
+export const samplingSettingSchema = z.object({
+  enabled: z.boolean().optional(),
+  rate: z.number().min(0).max(1).optional(),
+})
+export type SamplingSetting = z.infer<typeof samplingSettingSchema>
+
 export const projectSettingsSchema = z.object({
   keepMonitoring: z.boolean().optional(),
   notifications: notificationsSettingSchema.optional(),
   escalation: escalationSettingSchema.optional(),
   onboardingType: z.enum(["prod-traces", "code-agents"]).optional(),
+  sampling: samplingSettingSchema.optional(),
 })
 
 export const isIncidentNotificationEnabled = (
