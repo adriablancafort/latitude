@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## v0.1.40 - 2026-05-29
+
+### Onboarding and integrations
+
+- Added an optional Slack onboarding step and channel-routing flow so teams can connect Slack during setup or manage routing from integrations settings (ref: #3319).
+
+### Sessions, traces, and issues
+
+- Brought filter parity between sessions and traces, including additional filter fields, status and percentile filtering, aggregation support, and ClickHouse repository coverage (ref: #3316).
+- Kept the issue list populated when projects only have archived issues, avoiding an empty-state regression for archived issue views (ref: 30f2457).
+
+### Wrapped reports and data
+
+- Added a feature-flagged 41st merch promo banner to Claude Code Wrapped emails and notification rendering (ref: #3322).
+- Refreshed bundled models.dev provider/model data (ref: #3323).
+
+### Docs
+
+- Updated README setup guidance (ref: #3321).
+
 ## v0.1.39 - 2026-05-28
 
 ### Sessions and issues
