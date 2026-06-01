@@ -45,6 +45,35 @@ export interface SlackIntegrationRepositoryShape {
     group: NotificationGroup,
     routes: readonly SlackRoute[],
   ): Effect.Effect<boolean, RepositoryError, SqlClient>
+
+  /**
+   * Persists a freshly rotated token triple on the active details row,
+   * scoped to the current RLS organization. Re-encrypts both tokens at
+   * the repository boundary (same AES-256-GCM scheme as `save`). All
+   * three values are non-nullable here: a successful rotation always
+   * yields a new access token, a new refresh token, and an expiry — the
+   * nullable columns only model the rotation-disabled install case.
+   * Returns `true` when a row was updated, `false` when no matching
+   * active row exists in the current org. Used by `getOrRefreshBotToken`.
+   */
+  updateTokens(
+    integrationId: SlackIntegrationId,
+    tokens: {
+      readonly botAccessToken: string
+      readonly refreshToken: string
+      readonly tokenExpiresAt: Date
+    },
+  ): Effect.Effect<boolean, RepositoryError, SqlClient>
+
+  /**
+   * Stamps `reconnect_required_at` on the active details row, scoped to
+   * the current RLS organization. Called when a refresh fails with
+   * `invalid_refresh_token` — the rotation chain is dead and the
+   * workspace must be reconnected. Idempotent (overwrites the stamp).
+   * Returns `true` when a row was updated. A successful {@link updateTokens}
+   * clears the stamp back to `null`.
+   */
+  markReconnectRequired(id: SlackIntegrationId, at: Date): Effect.Effect<boolean, RepositoryError, SqlClient>
 }
 
 export class SlackIntegrationRepository extends Context.Service<

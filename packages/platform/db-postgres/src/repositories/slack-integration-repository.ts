@@ -114,6 +114,7 @@ const toDomainSlackIntegration = (parent: IntegrationRow, details: SlackDetailsR
       botTokenScopes: details.botTokenScopes,
       refreshToken,
       tokenExpiresAt: details.tokenExpiresAt,
+      reconnectRequiredAt: details.reconnectRequiredAt,
       installedByUserId: UserId(parent.installedByUserId),
       installedAt: parent.installedAt,
       revokedAt: parent.revokedAt,
@@ -156,6 +157,7 @@ const buildInsertRows = (integration: SlackIntegration, organizationId: string, 
       botTokenScopes: integration.botTokenScopes,
       refreshToken,
       tokenExpiresAt: integration.tokenExpiresAt,
+      reconnectRequiredAt: integration.reconnectRequiredAt,
       routes: integration.routes,
     }
 
@@ -261,6 +263,65 @@ export const SlackIntegrationRepositoryLive = Layer.effect(
                 .returning({ id: slackIntegrationDetails.integrationId }),
             )
             .pipe(Effect.mapError((e) => toRepositoryError(e, "updateSlackIntegrationRoutes")))
+
+          return rows.length > 0
+        }),
+
+      updateTokens: (integrationId, tokens) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const botAccessToken = yield* encrypt(tokens.botAccessToken, encryptionKey).pipe(
+            Effect.mapError((e) => toRepositoryError(e, "encryptSlackIntegrationToken")),
+          )
+          const refreshToken = yield* encrypt(tokens.refreshToken, encryptionKey).pipe(
+            Effect.mapError((e) => toRepositoryError(e, "encryptSlackIntegrationRefreshToken")),
+          )
+
+          // Single atomic UPDATE — re-encrypts the rotated triple and writes
+          // it on the active details row scoped to the RLS org. No transaction
+          // needed (mirrors `updateRoutes`).
+          const rows = yield* sqlClient
+            .query((db, organizationId) =>
+              db
+                .update(slackIntegrationDetails)
+                .set({
+                  botAccessToken,
+                  refreshToken,
+                  tokenExpiresAt: tokens.tokenExpiresAt,
+                  // A successful refresh clears any prior dead-chain stamp.
+                  reconnectRequiredAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(slackIntegrationDetails.integrationId, integrationId),
+                    eq(slackIntegrationDetails.organizationId, organizationId),
+                  ),
+                )
+                .returning({ id: slackIntegrationDetails.integrationId }),
+            )
+            .pipe(Effect.mapError((e) => toRepositoryError(e, "updateSlackIntegrationTokens")))
+
+          return rows.length > 0
+        }),
+
+      markReconnectRequired: (id, at) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const rows = yield* sqlClient
+            .query((db, organizationId) =>
+              db
+                .update(slackIntegrationDetails)
+                .set({ reconnectRequiredAt: at, updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(slackIntegrationDetails.integrationId, id),
+                    eq(slackIntegrationDetails.organizationId, organizationId),
+                  ),
+                )
+                .returning({ id: slackIntegrationDetails.integrationId }),
+            )
+            .pipe(Effect.mapError((e) => toRepositoryError(e, "markSlackIntegrationReconnectRequired")))
 
           return rows.length > 0
         }),
