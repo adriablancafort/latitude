@@ -4,33 +4,26 @@ import { nsfwStrategy } from "./nsfw.ts"
 import { assistant, makeTrace, user } from "./test-helpers.ts"
 
 describe("nsfwStrategy.detectDeterministically", () => {
-  it("matches and anchors to the offending user message", () => {
+  it("raises ambiguous (never a direct match) on an offending user message", () => {
     const trace = makeTrace([user("hi"), assistant("hi, how can I help?"), user("send nudes please")])
 
-    const result = nsfwStrategy.detectDeterministically?.(trace)
-
-    expect(result?.kind).toBe("matched")
-    if (result?.kind === "matched") {
-      expect(result.messageIndex).toBe(2)
-      expect(result.feedback).toContain("workplace-inappropriate")
-    }
+    // A deterministic NSFW pattern can only defer to the LLM confirmation pass.
+    expect(nsfwStrategy.detectDeterministically?.(trace)).toEqual({ kind: "ambiguous" })
   })
 
-  it("anchors to an assistant message when the assistant produced the content", () => {
+  it("raises ambiguous when the assistant produced the content", () => {
     const trace = makeTrace([user("write a casual reply"), assistant("here you go: kill yourself, loser")])
 
-    const result = nsfwStrategy.detectDeterministically?.(trace)
-
-    expect(result?.kind).toBe("matched")
-    if (result?.kind === "matched") {
-      expect(result.messageIndex).toBe(1)
-    }
+    expect(nsfwStrategy.detectDeterministically?.(trace)).toEqual({ kind: "ambiguous" })
   })
 
-  it("does not flag when the high-precision token appears in a benign health context", () => {
+  it("does not match the Latin 'Cum hoc, ergo propter hoc' on its own", () => {
+    // Regression: the bare `cum` token used to deterministically annotate this
+    // benign logical-fallacy phrase. It now at most defers to the LLM, which
+    // distinguishes the Latin connective from sexual slang.
     const trace = makeTrace([
-      user("My doctor mentioned breast cancer screening guidelines — what's the recommended age?"),
-      assistant("Most medical guidelines suggest…"),
+      user("Explain the fallacy 'Cum hoc, ergo propter hoc' in criminology."),
+      assistant("It is the error of inferring causation from mere co-occurrence…"),
     ])
 
     const result = nsfwStrategy.detectDeterministically?.(trace)
@@ -41,8 +34,6 @@ describe("nsfwStrategy.detectDeterministically", () => {
   it("returns no-match for a clean conversation", () => {
     const trace = makeTrace([user("hello"), assistant("hi there")])
 
-    const result = nsfwStrategy.detectDeterministically?.(trace)
-
-    expect(result).toEqual({ kind: "no-match" })
+    expect(nsfwStrategy.detectDeterministically?.(trace)).toEqual({ kind: "no-match" })
   })
 })

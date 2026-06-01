@@ -89,20 +89,27 @@ function extractNsfwSuspiciousSnippets(trace: Pick<TraceDetail, "allMessages">):
   // Profanity/obscenity patterns
   const explicitPatterns = [
     { pattern: /\b(?:fuck|shit|bitch|damn|asshole|cunt|dick|cock|pussy)\b/i, reason: "explicit profanity" },
-    { pattern: /\b(?:nigger|faggot|retard)\b/i, reason: "hate speech/slur" },
+    { pattern: /\b(?:nigger|faggot|retard|kike|chink|spic|wetback)\b/i, reason: "hate speech/slur" },
   ]
 
   // Sexual content patterns
   const sexualPatterns = [
     { pattern: /\b(?:sex|sexual|porn|pornography|nude|naked|erotic|masturbate|orgasm)\b/i, reason: "sexual content" },
     { pattern: /\b(?:penis|vagina|breasts|genitals|genitalia)\b/i, reason: "sexual anatomy" },
+    { pattern: /\b(?:hardcore|xxx|pornhub|xvideos|onlyfans)\b/i, reason: "explicit sexual content" },
+    { pattern: /\b(?:cum|creampie|blowjob|handjob|deepthroat|gangbang)\b/i, reason: "explicit sexual content" },
+    { pattern: /\b(?:send|trade) nudes\b|\bnude (?:pic|photo)s?\b/i, reason: "sexual solicitation" },
   ]
 
-  // Violent/graphic patterns
+  // Violent/graphic and abusive-harassment patterns
   const violentPatterns = [
     {
       pattern: /\b(?:kill|murder|die|death|suicide|torture|maim)\b.*\b(?:yourself|himself|herself|someone)\b/i,
       reason: "violence/harm",
+    },
+    {
+      pattern: /\b(?:kill yourself|kys|die in a fire|hope you die|rape (?:you|her))\b/i,
+      reason: "abusive harassment / threat",
     },
   ]
 
@@ -129,59 +136,6 @@ function extractNsfwSuspiciousSnippets(trace: Pick<TraceDetail, "allMessages">):
 }
 
 // ---------------------------------------------------------------------------
-// NSFW-specific deterministic patterns (collocated with strategy)
-// ---------------------------------------------------------------------------
-
-/**
- * Check if text contains high-precision NSFW patterns.
- * These are deterministic rules beyond what obscenity covers.
- */
-function hasHighPrecisionNsfwPatterns(text: string): boolean {
-  const lower = text.toLowerCase()
-
-  // Explicit sexual content patterns (high precision)
-  const sexualPatterns = [
-    /\b(?:hardcore|xxx|porn|pornhub|xvideos|onlyfans nude)\b/i,
-    /\b(?:cum|creampie|blowjob|handjob|deepthroat|gangbang)\b/i,
-    /\b(?:nude pic|nude photo|send nudes|trade nudes)\b/i,
-  ]
-
-  // Hate speech / slurs (high precision)
-  const hatePatterns = [/\b(?:nigger|faggot|kike|chink|spic|wetback)\b/i]
-
-  // Abusive harassment (high precision)
-  const abusePatterns = [/\b(?:kill yourself|kys|die in a fire|hope you die|rape you|rape her)\b/i]
-
-  for (const pattern of sexualPatterns) {
-    if (pattern.test(lower)) return true
-  }
-  for (const pattern of hatePatterns) {
-    if (pattern.test(lower)) return true
-  }
-  for (const pattern of abusePatterns) {
-    if (pattern.test(lower)) return true
-  }
-
-  return false
-}
-
-/**
- * Check if text is benign anatomy/health discussion (false positive prevention)
- */
-function isBenignAnatomyOrHealth(text: string): boolean {
-  const lower = text.toLowerCase()
-
-  // Medical/health context patterns that indicate benign discussion
-  const healthPatterns = [
-    /\b(?:medical|health|doctor|physician|patient|diagnosis|treatment|symptom|condition)\b/i,
-    /\b(?:anatomy|biology|educational|biology class|medical school)\b/i,
-    /\b(?:breast cancer|heart disease|mental health|therapy|counseling)\b/i,
-  ]
-
-  return healthPatterns.some((p) => p.test(lower))
-}
-
-// ---------------------------------------------------------------------------
 // NSFW Strategy implementation
 // ---------------------------------------------------------------------------
 
@@ -198,40 +152,16 @@ export const nsfwStrategy: FlaggerStrategy = {
   },
 
   detectDeterministically(trace: TraceDetail): DetectionResult {
-    // Walk allMessages directly so we can anchor a deterministic match to its
-    // originating message index. Only user/assistant text contributes.
-    let hasAnyText = false
-    for (let i = 0; i < trace.allMessages.length; i++) {
-      const message = trace.allMessages[i]
-      if (!message) continue
-      if (message.role !== "user" && message.role !== "assistant") continue
-
-      const textParts: string[] = []
-      for (const part of message.parts) {
-        if (part.type === "text" && typeof part.content === "string") {
-          const trimmed = part.content.trim()
-          if (trimmed) textParts.push(trimmed)
-        }
-      }
-      if (textParts.length === 0) continue
-
-      hasAnyText = true
-      const content = textParts.join(" ")
-
-      if (hasHighPrecisionNsfwPatterns(content) && !isBenignAnatomyOrHealth(content)) {
-        return {
-          kind: "matched",
-          feedback: "NSFW content: matched a high-precision workplace-inappropriate pattern",
-          messageIndex: i,
-        }
-      }
-    }
-
-    if (!hasAnyText) {
+    // A deterministic NSFW pattern can only ever raise an `ambiguous` signal —
+    // never a direct `matched`. A real annotation always requires the LLM
+    // confirmation pass in run-flagger. Blunt token matches (e.g. the Latin
+    // "Cum hoc, ergo propter hoc" tripping the sexual-slang pattern, or a slur
+    // quoted in source material the agent was asked to analyze) must never
+    // annotate a trace on their own — only the LLM can tell use from mention.
+    if (extractTextOnlyMessages(trace).length === 0) {
       return { kind: "no-match" }
     }
 
-    // Suspicious snippets present but no high-precision match → defer to LLM
     if (extractNsfwSuspiciousSnippets(trace).length > 0) {
       return { kind: "ambiguous" }
     }

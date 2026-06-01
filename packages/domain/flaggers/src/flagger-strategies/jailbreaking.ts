@@ -214,12 +214,24 @@ function extractJailbreakSuspiciousSnippets(trace: Pick<TraceDetail, "allMessage
 
   const directPatterns = [
     {
-      pattern: /ignore (?:all |previous |earlier |prior )?(?:instructions?|commands?|prompts?|system)/i,
+      pattern: /ignore (?:all |previous |earlier |prior )*(?:instructions?|commands?|prompts?|system)/i,
       reason: "instruction override attempt",
     },
     {
       pattern: /ignore (?:the |your )?(?:system|developer|programming|training|initial) (?:instructions?|prompt)/i,
       reason: "system prompt override",
+    },
+    {
+      pattern: /ignore your (?:training|programming|system prompt)/i,
+      reason: "system prompt override",
+    },
+    {
+      pattern: /you are now (?:in |entering )?developer mode/i,
+      reason: "developer mode override",
+    },
+    {
+      pattern: /system prompt:.*user:.*assistant:/is,
+      reason: "role confusion injection",
     },
     {
       pattern:
@@ -367,40 +379,6 @@ function extractJailbreakSuspiciousSnippets(trace: Pick<TraceDetail, "allMessage
 // Deterministic patterns
 // ---------------------------------------------------------------------------
 
-const HIGH_PRECISION_JAILBREAK_PATTERNS = [
-  { pattern: /ignore all (?:previous |prior )?instructions? and/i, reason: "direct override" },
-  { pattern: /ignore your (?:training|programming|system prompt)/i, reason: "system prompt override" },
-  { pattern: /DAN mode|DAN \(do anything now\)/i, reason: "known jailbreak pattern" },
-  { pattern: /you are now (?:in |entering )?developer mode/i, reason: "developer mode override" },
-  { pattern: /system prompt:.*user:.*assistant:/is, reason: "role confusion injection" },
-  { pattern: /<!--\s*system:.*?-->/is, reason: "HTML comment injection" },
-  { pattern: /\[system\]:.*\[user\]:.*\[assistant\]:/is, reason: "role tag injection" },
-]
-
-function findHighPrecisionJailbreakMatch(trace: Pick<TraceDetail, "allMessages">): number | null {
-  for (let i = 0; i < trace.allMessages.length; i++) {
-    const message = trace.allMessages[i]
-    if (!message || message.role !== "user") continue
-
-    let textContent = ""
-    for (const part of message.parts) {
-      if (part.type === "text" && typeof part.content === "string") {
-        textContent += `${part.content} `
-      }
-    }
-    textContent = textContent.trim()
-    if (!textContent) continue
-
-    for (const { pattern } of HIGH_PRECISION_JAILBREAK_PATTERNS) {
-      if (pattern.test(textContent)) {
-        return i
-      }
-    }
-  }
-
-  return null
-}
-
 // ---------------------------------------------------------------------------
 // Jailbreaking Strategy implementation
 // ---------------------------------------------------------------------------
@@ -422,19 +400,12 @@ export const jailbreakingStrategy: FlaggerStrategy = {
   },
 
   detectDeterministically(trace: TraceDetail): DetectionResult {
-    const messageIndex = findHighPrecisionJailbreakMatch(trace)
-    if (messageIndex !== null) {
-      return {
-        kind: "matched",
-        feedback:
-          "Jailbreak attempt: matched a high-precision bypass pattern (prompt injection / instruction override)",
-        messageIndex,
-      }
-    }
-
-    const snippets = extractJailbreakSuspiciousSnippets(trace)
-
-    if (snippets.length > 0) {
+    // A deterministic jailbreak pattern can only ever raise an `ambiguous`
+    // signal — never a direct `matched`. A real annotation always requires the
+    // LLM confirmation pass in run-flagger. A bypass pattern quoted in nested
+    // source material the agent was asked to analyze is the agent's input, not
+    // its behavior, and only the LLM can tell those apart.
+    if (extractJailbreakSuspiciousSnippets(trace).length > 0) {
       return { kind: "ambiguous" }
     }
 
