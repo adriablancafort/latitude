@@ -314,11 +314,7 @@ function extractJailbreakSuspiciousSnippets(trace: Pick<TraceDetail, "allMessage
   ]
 
   for (const message of trace.allMessages) {
-    const role = message.role
-    if (role === "system") continue
-
-    const isUser = role === "user"
-    const isTool = role === "tool" || role === "function"
+    if (message.role !== "user") continue
 
     let textContent = ""
     for (const part of message.parts) {
@@ -330,33 +326,31 @@ function extractJailbreakSuspiciousSnippets(trace: Pick<TraceDetail, "allMessage
     textContent = textContent.trim()
     if (!textContent) continue
 
-    if (isUser) {
-      if (looksLikeAdversarialSuffix(textContent)) {
+    if (looksLikeAdversarialSuffix(textContent)) {
+      snippets.push({
+        source: "user",
+        text: truncateExcerpt(textContent, MAX_SNIPPET_EXCERPT_LENGTH),
+        reason: "adversarial suffix / GCG-style perturbation",
+      })
+      if (snippets.length >= MAX_SUSPICIOUS_SNIPPETS) return snippets
+    }
+
+    for (const { pattern, reason } of directPatterns) {
+      if (pattern.test(textContent)) {
         snippets.push({
           source: "user",
           text: truncateExcerpt(textContent, MAX_SNIPPET_EXCERPT_LENGTH),
-          reason: "adversarial suffix / GCG-style perturbation",
+          reason,
         })
         if (snippets.length >= MAX_SUSPICIOUS_SNIPPETS) return snippets
-      }
-
-      for (const { pattern, reason } of directPatterns) {
-        if (pattern.test(textContent)) {
-          snippets.push({
-            source: "user",
-            text: truncateExcerpt(textContent, MAX_SNIPPET_EXCERPT_LENGTH),
-            reason,
-          })
-          if (snippets.length >= MAX_SUSPICIOUS_SNIPPETS) return snippets
-          break
-        }
+        break
       }
     }
 
     for (const { pattern, reason } of indirectPatterns) {
       if (pattern.test(textContent)) {
         snippets.push({
-          source: isTool ? "tool" : isUser ? "user" : "assistant",
+          source: "user",
           text: truncateExcerpt(textContent, MAX_SNIPPET_EXCERPT_LENGTH),
           reason,
         })
@@ -386,7 +380,7 @@ const HIGH_PRECISION_JAILBREAK_PATTERNS = [
 function findHighPrecisionJailbreakMatch(trace: Pick<TraceDetail, "allMessages">): number | null {
   for (let i = 0; i < trace.allMessages.length; i++) {
     const message = trace.allMessages[i]
-    if (!message || message.role === "system") continue
+    if (!message || message.role !== "user") continue
 
     let textContent = ""
     for (const part of message.parts) {
@@ -412,8 +406,8 @@ function findHighPrecisionJailbreakMatch(trace: Pick<TraceDetail, "allMessages">
 // ---------------------------------------------------------------------------
 
 export const jailbreakingStrategy: FlaggerStrategy = {
-  // Jailbreak attempts arrive through user messages or injected tool/retrieval
-  // content, so the judgement is not restricted to the assistant response.
+  // Jailbreak attempts are judged from user prompts only; system, assistant,
+  // and tool content may contain inspected-agent context or nested examples.
   classifiesAssistantResponseOnly: false,
 
   annotator: {
@@ -424,7 +418,7 @@ export const jailbreakingStrategy: FlaggerStrategy = {
   },
 
   hasRequiredContext(trace: TraceDetail): boolean {
-    return trace.allMessages.some((message) => message.role !== "system")
+    return trace.allMessages.some((message) => message.role === "user")
   },
 
   detectDeterministically(trace: TraceDetail): DetectionResult {
