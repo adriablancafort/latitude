@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.1.44 - 2026-06-01
+
+### Flaggers
+
+- Reduced NSFW and jailbreak false-positive annotations by making deterministic keyword/prompt-injection matches require the LLM confirmation pass instead of directly marking traces as matched (refs: 0cc592a, 1cfe25a).
+- Tightened jailbreak evidence collection to user prompts only and required extracted evaluated-agent context before running LLM-capable flagger judgments, avoiding matches on system, assistant, or tool content quoted for analysis (refs: 5eb45a, 0cc592a).
+- Switched evaluated-agent context extraction to the dedicated MiniMax extractor model and stricter structured-output validation so missing context falls back safely instead of producing misleading evaluator input (ref: dcc019c).
+
 ## v0.1.43 - 2026-06-01
 
 ### Monitors
