@@ -13,7 +13,8 @@
     "check": "biome check src",
     "format": "biome format --write src && biome check --fix src",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests --dir src"
+    "test": "vitest run --passWithNoTests --dir src",
+    "test:regression": "pnpm --filter @latitude-data/sdk build && RUN_FLAGGER_REGRESSION=true vitest run --passWithNoTests --dir src"
   },
   "dependencies": {
     "@domain/ai": "workspace:*",
@@ -27,5 +28,9 @@
     "effect": "catalog:",
     "zod": "catalog:"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@latitude-data/sdk": "workspace:*",
+    "@platform/ai": "workspace:*",
+    "@platform/ai-vercel": "workspace:*"
+  }
 }

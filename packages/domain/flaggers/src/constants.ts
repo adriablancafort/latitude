@@ -15,11 +15,13 @@ export const MAX_SNIPPET_EXCERPT_LENGTH = 300
 
 export const FLAGGER_MODEL = {
   provider: "amazon-bedrock",
-  model: "minimax.minimax-m2.5",
+  model: "anthropic.claude-haiku-4-5-20251001-v1:0",
   temperature: 0,
 } as const
 
 export const FLAGGER_MAX_TOKENS = 2048
+
+export const FLAGGER_INSTRUCTION_EXTRACTOR_MAX_TOKENS = 512
 
 export const FLAGGER_ANNOTATOR_MODEL = {
   provider: "amazon-bedrock",
