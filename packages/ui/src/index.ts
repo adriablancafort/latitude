@@ -98,6 +98,16 @@ export {
   ComboboxValue,
 } from "./components/combobox/combobox.tsx"
 export {
+  CommandDialog,
+  CommandEmpty,
+  CommandFooter,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandLoading,
+} from "./components/command/command.tsx"
+export {
   Container,
   type ContainerSize,
 } from "./components/container/container.tsx"
