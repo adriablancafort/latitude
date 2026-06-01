@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## v0.1.43 - 2026-06-01
+
+### Monitors
+
+- Added the feature-flagged Monitors surface and backend foundation, including Postgres schema, domain/repository read paths, incident hydration and pagination, and OpenAPI/MCP incident enum updates (refs: #3330, #3339).
+- Provisioned system issue monitors for all projects on creation and via backfill, then added monitor metadata, mute/delete, and alert-update use-cases for the upcoming detail panel (refs: #3342, #3345).
+
+### Navigation and onboarding
+
+- Added a global Cmd+K command palette with project, organization, navigation, issue, dataset, saved-search, trace, page, and monitor search/actions, plus a searchable project switcher (ref: #3343).
+- Reworked onboarding right-pane previews with an animated product tour, mock issues, Slack notifications, and live trace-tail states (ref: #3331).
+
+### Integrations
+
+- Refreshed rotated Slack bot tokens on demand under an org-scoped single-flight lock and showed a reconnect-required banner when a refresh chain is broken (ref: #3334).
+
+### Search, sessions, and tables
+
+- Aligned aggregation cards and histograms with the active Traces/Sessions rollup so session filters and metrics use session-level repositories consistently (ref: #3332).
+- Right-aligned string values in end-aligned infinite-table columns (ref: #3341).
+
+### Flagger and taxonomy
+
+- Reduced nested-evaluator false positives by extracting evaluated-agent context, ignoring system-role evidence, and scoping assistant-only prompt guidance to assistant-centric flaggers so user/input detectors still fire (refs: #3333, #3346).
+- Retried taxonomy clustering lock acquisition with capped exponential backoff and full jitter to avoid prematurely assigning observations to noise during contention (ref: #3325).
+
+### API
+
+- Raised dataset trace imports from the critical to the high rate-limit tier for higher-volume API imports (ref: 5ab4cb5).
+
 ## v0.1.42 - 2026-05-29
 
 ### Search
