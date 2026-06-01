@@ -23,7 +23,7 @@ import { AIGenerateLive } from "@platform/ai-vercel"
 import { Cause, Effect, Layer } from "effect"
 import { describe, expect, it } from "vitest"
 import { z } from "zod"
-import { FLAGGER_MAX_TOKENS, FLAGGER_MODEL } from "../constants.ts"
+import { FLAGGER_INSTRUCTION_EXTRACTOR_MODEL, FLAGGER_MAX_TOKENS, FLAGGER_MODEL } from "../constants.ts"
 import type { Flagger } from "../entities/flagger.ts"
 import { FlaggerRepository } from "../ports/flagger-repository.ts"
 import { createFakeFlaggerRepository } from "../testing/fake-flagger-repository.ts"
@@ -415,6 +415,7 @@ describe("runFlaggerUseCase", () => {
 
     expect(result).toEqual({ matched: false })
     expect(calls.generate).toHaveLength(2)
+    expect(calls.generate[0]).toMatchObject(FLAGGER_INSTRUCTION_EXTRACTOR_MODEL)
     expect(calls.generate[0].system).toContain("You extract agent context")
     expect(calls.generate[1].prompt).toContain("EVALUATED AGENT CONTEXT")
     expect(calls.generate[1].prompt).toContain("dashboard design assistant")

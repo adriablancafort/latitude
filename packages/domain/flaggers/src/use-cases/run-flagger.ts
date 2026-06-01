@@ -19,7 +19,12 @@ import {
 import { type TraceDetail, TraceRepository } from "@domain/spans"
 import { Effect, Option } from "effect"
 import { z } from "zod"
-import { FLAGGER_INSTRUCTION_EXTRACTOR_MAX_TOKENS, FLAGGER_MAX_TOKENS, FLAGGER_MODEL } from "../constants.ts"
+import {
+  FLAGGER_INSTRUCTION_EXTRACTOR_MAX_TOKENS,
+  FLAGGER_INSTRUCTION_EXTRACTOR_MODEL,
+  FLAGGER_MAX_TOKENS,
+  FLAGGER_MODEL,
+} from "../constants.ts"
 import { getFlaggerStrategy, hasFlaggerStrategy, isLlmCapableStrategy } from "../flagger-strategies/index.ts"
 import type { FlaggerSlug, FlaggerStrategy } from "../flagger-strategies/types.ts"
 import { FlaggerRepository } from "../ports/flagger-repository.ts"
@@ -370,7 +375,7 @@ function getInspectedAgentContext(input: {
 
       return input.ai
         .generate({
-          ...FLAGGER_MODEL,
+          ...FLAGGER_INSTRUCTION_EXTRACTOR_MODEL,
           maxTokens: FLAGGER_INSTRUCTION_EXTRACTOR_MAX_TOKENS,
           system: INSTRUCTION_EXTRACTOR_SYSTEM_PROMPT,
           prompt: buildInstructionExtractorPrompt(systemPrompt),
