@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v0.1.46 - 2026-06-02
+
+### Monitors and incidents
+
+- Added user-created monitors, monitor rename/delete flows, alert add/edit/delete controls, saved-search alert sources, sensitivity editing for system issue monitors, and supporting domain/repository use-cases (ref: #3367).
+- Tuned incident popover timing and spacing, and showed the incident issue name consistently (ref: 78e3a07).
+
+### Issues and flaggers
+
+- Kept ignored issues from regressing or escalating during score assignment while still clearing resolved issues when they re-enter escalation (ref: #3366).
+- Prevented malformed flagger message-index output and added regression coverage for false-positive and malformed JSON paths (ref: #3369).
+- Anchored trashing detections to consecutive repeated tool calls and attached deterministic matches to the offending message index (ref: #3363).
+
+### Changelog and docs
+
+- Added an authenticated changelog banner/sidebar entry flow with fallback cover imagery and stronger changelog item handling (ref: #3372).
+- Added contributing and code-of-conduct documentation plus GitHub issue and pull-request templates for open-source contributions (ref: #3374).
+- Replaced the getting-started overview demo GIF with a video embed (ref: #3360).
+
+### Datasets
+
+- Moved the dataset `expected_output` column directly after `output` in the dataset table (ref: #3370).
+
 ## v0.1.45 - 2026-06-02
 
 ### Datasets
