@@ -2,7 +2,7 @@
 export const FULL_CHANGELOG_URL = "https://latitude.so/changelog"
 
 /** Global (non-org-scoped) cache key for the rendered changelog list. */
-export const CHANGELOG_CACHE_KEY = "changelog:framer:entries:v1"
+export const CHANGELOG_CACHE_KEY = "changelog:framer:entries:v3"
 
 /** Cache TTL — keep the Framer fetch bounded while surfacing updates within 30 minutes. */
 export const CHANGELOG_CACHE_TTL_SECONDS = 30 * 60
