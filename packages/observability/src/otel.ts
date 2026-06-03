@@ -49,7 +49,9 @@ export const startTracing = async ({
     ),
   ]
 
-  if (apiKey !== "" && projectSlug !== "") {
+  const isLatitudeTelemetryEnabled = false
+
+  if (isLatitudeTelemetryEnabled && apiKey !== "" && projectSlug !== "") {
     const latitudeIngestTracesUrl = `${latitudeIngestBase.replace(/\/$/, "")}/v1/traces`
     spanProcessors.push(
       new LatitudeSpanProcessor(apiKey, projectSlug, {
