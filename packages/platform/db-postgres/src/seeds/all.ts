@@ -5,6 +5,7 @@ import { datasetSeeders } from "./datasets/index.ts"
 import { evaluationSeeders } from "./evaluations/index.ts"
 import { bootstrapTelemetryFlaggerSeeders, flaggerSeeders } from "./flaggers/index.ts"
 import { issueSeeders } from "./issues/index.ts"
+import { monitorSeeders } from "./monitors/index.ts"
 import { notificationSeeders } from "./notifications/index.ts"
 import { organizationSeeders } from "./organizations/index.ts"
 import { projectSeeders } from "./projects/index.ts"
@@ -41,6 +42,9 @@ export const contentSeeders: readonly Seeder[] = [
   // the bell instead of leaving it empty. Must run after
   // alertIncidentSeeders.
   ...notificationSeeders,
+  // Must run after notificationSeeders so it fully controls which of its own
+  // incidents read as "Notified" vs "Muted".
+  ...monitorSeeders,
 ]
 
 export const allSeeders: readonly Seeder[] = [

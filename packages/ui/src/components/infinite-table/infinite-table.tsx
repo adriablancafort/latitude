@@ -282,8 +282,9 @@ export function InfiniteTable<T>({
                     ref={virtualizer.measureElement}
                     data-index={virtualRow.index}
                   >
-                    <tr className="bg-secondary" style={{ opacity: 1 - skeletonIndex / SKELETON_ROW_COUNT }}>
-                      <td colSpan={colCount} className="h-9" />
+                    <tr style={{ opacity: 1 - skeletonIndex / SKELETON_ROW_COUNT }}>
+                      {/* Background+radius on the <td>, not the <tr>: a row box can't clip its corners. */}
+                      <td colSpan={colCount} className="h-9 rounded-lg bg-secondary" />
                     </tr>
                   </tbody>
                 )

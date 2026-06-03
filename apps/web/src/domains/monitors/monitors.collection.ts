@@ -9,10 +9,12 @@ import {
   deleteMonitor,
   deleteMonitorAlert,
   getMonitorBySlug,
+  getMonitorIncidentStats,
   listMonitorIncidents,
   listMonitors,
   type MonitorIncidentRecord,
   type MonitorIncidentsCursor,
+  type MonitorListRowRecord,
   type MonitorRecord,
   muteMonitor,
   unmuteMonitor,
@@ -28,7 +30,7 @@ export interface MonitorAlertDraft {
   readonly severity?: AlertSeverity
 }
 
-export type { MonitorRecord }
+export type { MonitorListRowRecord, MonitorRecord }
 /** @public Consumed by the M4 details panel incidents table; not yet wired in M2. */
 export type { MonitorIncidentRecord }
 
@@ -41,8 +43,11 @@ const getListMonitorsQueryKey = (projectId: string, limit: number, searchQuery: 
 
 const getMonitorQueryKey = (projectId: string, slug: string) => ["monitors", "get", projectId, slug] as const
 
-const getMonitorIncidentsQueryKey = (monitorId: string, limit: number) =>
-  ["monitors", "incidents", monitorId, limit] as const
+const getMonitorIncidentsQueryKey = (projectId: string, monitorId: string, limit: number) =>
+  ["monitors", "incidents", projectId, monitorId, limit] as const
+
+const getMonitorIncidentStatsQueryKey = (projectId: string, monitorId: string) =>
+  ["monitors", "incident-stats", projectId, monitorId] as const
 
 export function useMonitors(input: {
   readonly projectId: string
@@ -76,9 +81,11 @@ export function useMonitors(input: {
     [fetchNextPage, hasNextPage, isFetchingNextPage],
   )
 
-  const monitors = useMemo<readonly MonitorRecord[]>(() => data?.pages.flatMap((page) => page.items) ?? [], [data])
+  const rows = useMemo<readonly MonitorListRowRecord[]>(() => data?.pages.flatMap((page) => page.items) ?? [], [data])
+  const monitors = useMemo<readonly MonitorRecord[]>(() => rows.map((row) => row.monitor), [rows])
 
   return {
+    rows,
     monitors,
     totalCount: data?.pages[0]?.totalCount ?? 0,
     isLoading,
@@ -100,6 +107,7 @@ export function useMonitor(input: { readonly projectId: string; readonly slug: s
 
 /** @public Consumed by the M4 details panel incidents table; not yet wired in M2. */
 export function useMonitorIncidents(input: {
+  readonly projectId: string
   readonly monitorId: string
   readonly limit?: number
   readonly enabled?: boolean
@@ -107,10 +115,15 @@ export function useMonitorIncidents(input: {
   const limit = input.limit ?? DEFAULT_INCIDENTS_PAGE_SIZE
 
   const { data, isLoading, isFetchingNextPage, fetchNextPage, hasNextPage } = useInfiniteQuery({
-    queryKey: getMonitorIncidentsQueryKey(input.monitorId, limit),
+    queryKey: getMonitorIncidentsQueryKey(input.projectId, input.monitorId, limit),
     queryFn: ({ pageParam }) =>
       listMonitorIncidents({
-        data: { monitorId: input.monitorId, limit, ...(pageParam ? { cursor: pageParam } : {}) },
+        data: {
+          projectId: input.projectId,
+          monitorId: input.monitorId,
+          limit,
+          ...(pageParam ? { cursor: pageParam } : {}),
+        },
       }),
     initialPageParam: null as MonitorIncidentsCursor | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
@@ -130,6 +143,25 @@ export function useMonitorIncidents(input: {
   )
 
   return { incidents, isLoading, infiniteScroll }
+}
+
+interface MonitorIncidentStats {
+  readonly total: number
+  readonly firstStartedAtIso: string | null
+  readonly lastStartedAtIso: string | null
+}
+
+export function useMonitorIncidentStats(input: {
+  readonly projectId: string
+  readonly monitorId: string
+  readonly enabled?: boolean
+}) {
+  return useQuery({
+    queryKey: getMonitorIncidentStatsQueryKey(input.projectId, input.monitorId),
+    queryFn: (): Promise<MonitorIncidentStats> => getMonitorIncidentStats({ data: { monitorId: input.monitorId } }),
+    staleTime: MONITORS_QUERY_STALE_TIME_MS,
+    enabled: (input.enabled ?? true) && Boolean(input.monitorId),
+  })
 }
 
 /**
@@ -229,6 +261,7 @@ export function useMonitorAlertActions(projectId: string) {
     mutationFn: (input: {
       readonly monitorId: string
       readonly alertId: string
+      readonly kind?: AlertIncidentKind
       readonly source?: { readonly type: AlertIncidentSourceType; readonly id: string | null }
       readonly condition?: AlertIncidentCondition | null
       readonly severity?: AlertSeverity

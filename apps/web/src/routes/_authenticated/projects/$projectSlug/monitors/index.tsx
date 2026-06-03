@@ -1,7 +1,9 @@
 import { Button, Icon, Input, Text, useValueWithDefault } from "@repo/ui"
 import { createFileRoute } from "@tanstack/react-router"
 import { BellPlusIcon, LockIcon, SearchIcon } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
+import { useRegisterCommands } from "../../../../../components/command-palette/command-palette-provider.tsx"
+import type { PaletteCommand } from "../../../../../components/command-palette/types.ts"
 import { useHasFeatureFlag } from "../../../../../domains/feature-flags/feature-flags.collection.ts"
 import { useMonitors } from "../../../../../domains/monitors/monitors.collection.ts"
 import { ListingLayout as Layout } from "../../../../../layouts/ListingLayout/index.tsx"
@@ -10,11 +12,38 @@ import { useParamState } from "../../../../../lib/hooks/useParamState.ts"
 import { BreadcrumbText } from "../../../-components/breadcrumb-ui.tsx"
 import { useRouteProject } from "../-route-data.ts"
 import { MonitorCreateModal } from "./-components/monitor-create-modal.tsx"
-import { MonitorDetailDrawer } from "./-components/monitor-detail-drawer.tsx"
+import { MonitorDetailDrawer, MonitorDetailDrawerSkeleton } from "./-components/monitor-detail-drawer.tsx"
 import { MonitorsEmptyState } from "./-components/monitors-empty-state.tsx"
-import { type MonitorsTableRow, MonitorsView } from "./-components/monitors-view.tsx"
+import {
+  DEFAULT_MONITORS_SORTING,
+  type MonitorsTableSorting,
+  MonitorsView,
+  sortMonitorRows,
+} from "./-components/monitors-view.tsx"
 
 const MONITORS_SEARCH_DEBOUNCE_MS = 300
+
+const SORT_COLUMNS = ["name", "status", "lastIncident"] as const satisfies readonly MonitorsTableSorting["column"][]
+const SORT_DIRECTIONS = ["asc", "desc"] as const satisfies readonly MonitorsTableSorting["direction"][]
+const SORT_PARAM_PATTERN = /^(name|status|lastIncident):(asc|desc)$/
+
+function serializeSorting(sorting: MonitorsTableSorting): string {
+  return `${sorting.column}:${sorting.direction}`
+}
+
+function parseSorting(raw: string): MonitorsTableSorting {
+  const [column, direction] = raw.split(":")
+  if (
+    SORT_COLUMNS.includes(column as MonitorsTableSorting["column"]) &&
+    SORT_DIRECTIONS.includes(direction as MonitorsTableSorting["direction"])
+  ) {
+    return {
+      column: column as MonitorsTableSorting["column"],
+      direction: direction as MonitorsTableSorting["direction"],
+    }
+  }
+  return DEFAULT_MONITORS_SORTING
+}
 
 function MonitorsBreadcrumb() {
   return <BreadcrumbText variant="current">Monitors</BreadcrumbText>
@@ -46,9 +75,31 @@ function MonitorsPage() {
 function MonitorsPageContent() {
   const project = useRouteProject()
   const [monitorSlug, setMonitorSlug] = useParamState("monitorSlug", "")
-  const [searchQuery, setSearchQuery] = useParamState("q", "")
+  const [searchQuery, setSearchQuery] = useParamState("monitorsSearch", "")
   const [searchInput, setSearchInput] = useValueWithDefault(searchQuery)
   const [createOpen, setCreateOpen] = useState(false)
+  const [rawSorting, setRawSorting] = useParamState("monitorsSort", serializeSorting(DEFAULT_MONITORS_SORTING), {
+    validate: (value): value is string => SORT_PARAM_PATTERN.test(value),
+  })
+  const sorting = useMemo(() => parseSorting(rawSorting), [rawSorting])
+  const setSorting = useCallback((next: MonitorsTableSorting) => setRawSorting(serializeSorting(next)), [setRawSorting])
+
+  // Registered only while this page is mounted, so it's implicitly gated to the monitors flag.
+  const paletteCommands = useMemo<readonly PaletteCommand[]>(
+    () => [
+      {
+        id: "monitor:create",
+        title: "Create monitor",
+        icon: BellPlusIcon,
+        section: "context",
+        group: "Monitors",
+        keywords: "create monitor new add alert",
+        perform: () => setCreateOpen(true),
+      },
+    ],
+    [],
+  )
+  useRegisterCommands(paletteCommands)
 
   useDebounce(
     () => {
@@ -61,15 +112,13 @@ function MonitorsPageContent() {
     [searchInput, searchQuery, setSearchQuery],
   )
 
-  const { monitors, totalCount, isLoading, isReloading, infiniteScroll } = useMonitors({
+  const { rows, totalCount, isLoading, isReloading, infiniteScroll } = useMonitors({
     projectId: project.id,
     ...(searchQuery ? { searchQuery } : {}),
   })
 
-  const rows = useMemo<readonly MonitorsTableRow[]>(
-    () => monitors.map((monitor) => ({ monitor, lastIncident: null })),
-    [monitors],
-  )
+  const sortedRows = useMemo(() => sortMonitorRows(rows, sorting), [rows, sorting])
+  const monitors = useMemo(() => sortedRows.map((row) => row.monitor), [sortedRows])
 
   const activeMonitor = monitorSlug ? monitors.find((monitor) => monitor.slug === monitorSlug) : undefined
   const activeIndex = activeMonitor ? monitors.findIndex((monitor) => monitor.slug === activeMonitor.slug) : -1
@@ -126,12 +175,14 @@ function MonitorsPageContent() {
           </Layout.ActionsRow>
         </Layout.Actions>
         <MonitorsView
-          rows={rows}
+          rows={sortedRows}
           isLoading={isLoading || isReloading}
           infiniteScroll={infiniteScroll}
           activeMonitorSlug={monitorSlug || undefined}
           onActiveMonitorChange={(slug) => setMonitorSlug(slug ?? "")}
           projectId={project.id}
+          sorting={sorting}
+          onSortChange={setSorting}
         />
         {createModal}
       </Layout.Content>
@@ -148,6 +199,11 @@ function MonitorsPageContent() {
             canNavigateNext={nextMonitor !== undefined}
             canNavigatePrev={prevMonitor !== undefined}
           />
+        </Layout.Aside>
+      ) : monitorSlug && isLoading ? (
+        // Deep link / refresh: skeleton until the list resolves and the monitor is found.
+        <Layout.Aside>
+          <MonitorDetailDrawerSkeleton onClose={() => setMonitorSlug("")} />
         </Layout.Aside>
       ) : null}
     </Layout>

@@ -6,30 +6,47 @@ import {
   alertIncidentSchema,
 } from "@domain/alerts"
 import { type AlertIncidentId, NotFoundError, SqlClient, type SqlClientShape } from "@domain/shared"
-import { and, asc, desc, eq, getTableColumns, gte, inArray, isNull, lt, lte, or, type SQL } from "drizzle-orm"
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  max,
+  min,
+  or,
+  type SQL,
+} from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { alertIncidents } from "../schema/alert-incidents.ts"
 import { monitorAlerts } from "../schema/monitor-alerts.ts"
 
-/**
- * Keyset predicate for the `(started_at DESC, id DESC)` order: rows strictly
- * after `cursor`. `undefined` cursor → no predicate (first page).
- */
-const afterCursor = (cursor: AlertIncidentCursor | undefined): SQL | undefined =>
-  cursor
-    ? or(
-        lt(alertIncidents.startedAt, cursor.startedAt),
-        and(eq(alertIncidents.startedAt, cursor.startedAt), lt(alertIncidents.id, cursor.id)),
-      )
-    : undefined
+/** Keyset predicate for `ended_at DESC NULLS FIRST, id DESC`: a null `endedAt` cursor is still inside the ongoing block (remaining ongoing rows + all closed rows); a non-null cursor compares closed rows on `(ended_at, id)`. */
+const afterCursor = (cursor: AlertIncidentCursor | undefined): SQL | undefined => {
+  if (!cursor) return undefined
+  if (cursor.endedAt === null) {
+    return or(and(isNull(alertIncidents.endedAt), lt(alertIncidents.id, cursor.id)), isNotNull(alertIncidents.endedAt))
+  }
+  return or(
+    lt(alertIncidents.endedAt, cursor.endedAt),
+    and(eq(alertIncidents.endedAt, cursor.endedAt), lt(alertIncidents.id, cursor.id)),
+  )
+}
 
 /** Trim the `limit + 1` probe row, deriving `hasMore` + `nextCursor` from the last kept incident. */
 const toKeysetPage = (rows: readonly AlertIncident[], limit: number): AlertIncidentListPage => {
   const hasMore = rows.length > limit
   const items = hasMore ? rows.slice(0, limit) : rows
   const last = items[items.length - 1]
-  return { items, hasMore, nextCursor: hasMore && last ? { startedAt: last.startedAt, id: last.id } : null }
+  return { items, hasMore, nextCursor: hasMore && last ? { endedAt: last.endedAt, id: last.id } : null }
 }
 
 const toInsertRow = (incident: AlertIncident): typeof alertIncidents.$inferInsert => ({
@@ -179,10 +196,37 @@ export const AlertIncidentRepositoryLive = Layer.effect(
               .from(alertIncidents)
               .innerJoin(monitorAlerts, eq(monitorAlerts.id, alertIncidents.monitorAlertId))
               .where(where)
-              .orderBy(desc(alertIncidents.startedAt), desc(alertIncidents.id))
+              // ended_at DESC defaults to NULLS FIRST in Postgres, so ongoing incidents lead.
+              .orderBy(desc(alertIncidents.endedAt), desc(alertIncidents.id))
               .limit(limit + 1),
           )
           return toKeysetPage(rows.map(toDomain), limit)
+        }),
+      statsByMonitorId: (monitorId) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          // No deleted_at filter: soft-deleted alerts still count toward history.
+          const where = and(
+            eq(alertIncidents.organizationId, sqlClient.organizationId),
+            eq(monitorAlerts.monitorId, monitorId),
+          )
+          const rows = yield* sqlClient.query((db) =>
+            db
+              .select({
+                total: count(),
+                firstStartedAt: min(alertIncidents.startedAt),
+                lastStartedAt: max(alertIncidents.startedAt),
+              })
+              .from(alertIncidents)
+              .innerJoin(monitorAlerts, eq(monitorAlerts.id, alertIncidents.monitorAlertId))
+              .where(where),
+          )
+          const row = rows[0]
+          return {
+            total: row?.total ?? 0,
+            firstStartedAt: row?.firstStartedAt ? new Date(row.firstStartedAt) : null,
+            lastStartedAt: row?.lastStartedAt ? new Date(row.lastStartedAt) : null,
+          }
         }),
       listByMonitorAlertId: ({ monitorAlertId, limit, cursor }) =>
         Effect.gen(function* () {
@@ -197,7 +241,7 @@ export const AlertIncidentRepositoryLive = Layer.effect(
               .select()
               .from(alertIncidents)
               .where(where)
-              .orderBy(desc(alertIncidents.startedAt), desc(alertIncidents.id))
+              .orderBy(desc(alertIncidents.endedAt), desc(alertIncidents.id))
               .limit(limit + 1),
           )
           return toKeysetPage(rows.map(toDomain), limit)

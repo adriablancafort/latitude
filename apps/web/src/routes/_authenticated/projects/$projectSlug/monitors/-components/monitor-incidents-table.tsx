@@ -1,37 +1,62 @@
 import { CopyableText, InfiniteTable, type InfiniteTableColumn, Status, Text } from "@repo/ui"
-import { relativeTime } from "@repo/utils"
+import { formatDuration } from "@repo/utils"
+import { Link } from "@tanstack/react-router"
+import { type ReactNode, useCallback } from "react"
 import {
   type MonitorIncidentRecord,
   useMonitorIncidents,
 } from "../../../../../../domains/monitors/monitors.collection.ts"
+import { IncidentStatus } from "./incident-status.tsx"
 
-const columns: InfiniteTableColumn<MonitorIncidentRecord>[] = [
-  {
-    key: "startedAt",
-    header: "Started",
-    width: 160,
-    minWidth: 120,
-    render: (incident) => <Text.H6 noWrap>{relativeTime(new Date(incident.startedAt))}</Text.H6>,
-  },
+/** Falls back to a copyable raw id when the source was deleted and its name is unresolved. */
+function SourceCell({ incident }: { readonly incident: MonitorIncidentRecord }) {
+  if (!incident.sourceName) {
+    return <CopyableText value={incident.sourceId} size="sm" ellipsis tooltip="Copy source id" />
+  }
+  return (
+    <Text.H6 noWrap ellipsis>
+      {incident.sourceName}
+    </Text.H6>
+  )
+}
+
+/** Ongoing incidents run up to now; blank for a point-in-time incident (`endedAt === startedAt`). */
+function DurationCell({ incident }: { readonly incident: MonitorIncidentRecord }) {
+  const endMs = incident.endedAt ? Date.parse(incident.endedAt) : Date.now()
+  const elapsedMs = endMs - Date.parse(incident.startedAt)
+  if (incident.endedAt && elapsedMs <= 0) {
+    return (
+      <Text.H6 color="foregroundMuted" noWrap>
+        —
+      </Text.H6>
+    )
+  }
+  return <Text.H6 noWrap>{formatDuration(elapsedMs * 1_000_000)}</Text.H6>
+}
+
+const INCIDENT_COLUMNS: InfiniteTableColumn<MonitorIncidentRecord>[] = [
   {
     key: "status",
     header: "Status",
+    // `sortKey` + `defaultSorting` with no `onSortChange` renders a static (non-interactive) arrow.
+    sortKey: "status",
     width: 200,
     minWidth: 150,
-    render: (incident) =>
-      incident.endedAt ? (
-        <Status variant="warning" label={`Closed ${relativeTime(new Date(incident.endedAt))}`} />
-      ) : (
-        <Status variant="destructive" label={`Ongoing since ${relativeTime(new Date(incident.startedAt))}`} />
-      ),
+    render: (incident) => <IncidentStatus startedAtIso={incident.startedAt} endedAtIso={incident.endedAt} />,
   },
   {
-    // Deep-linking to the issue / saved search (and resolving its name) is a UX-milestone polish item.
     key: "source",
     header: "Source",
     width: 180,
     minWidth: 120,
-    render: (incident) => <CopyableText value={incident.sourceId} size="sm" ellipsis tooltip="Copy source id" />,
+    render: (incident) => <SourceCell incident={incident} />,
+  },
+  {
+    key: "duration",
+    header: "Duration",
+    width: 120,
+    minWidth: 90,
+    render: (incident) => <DurationCell incident={incident} />,
   },
   {
     key: "notified",
@@ -43,19 +68,77 @@ const columns: InfiniteTableColumn<MonitorIncidentRecord>[] = [
   },
 ]
 
-export function MonitorIncidentsTable({ monitorId }: { readonly monitorId: string }) {
-  const { incidents, isLoading, infiniteScroll } = useMonitorIncidents({ monitorId })
+const INCIDENT_DEFAULT_SORTING = { column: "status", direction: "desc" } as const
+
+const INCIDENT_TABLE_CLASS = "max-h-[min(28rem,50vh)]"
+
+export function MonitorIncidentsTableSkeleton() {
+  return (
+    <InfiniteTable<MonitorIncidentRecord>
+      data={[]}
+      isLoading
+      columns={INCIDENT_COLUMNS}
+      getRowKey={(incident) => incident.id}
+      defaultSorting={INCIDENT_DEFAULT_SORTING}
+      scrollAreaLayout="intrinsic"
+      className={INCIDENT_TABLE_CLASS}
+    />
+  )
+}
+
+export function MonitorIncidentsTable({
+  projectId,
+  projectSlug,
+  monitorId,
+}: {
+  readonly projectId: string
+  readonly projectSlug: string
+  readonly monitorId: string
+}) {
+  const { incidents, isLoading, infiniteScroll } = useMonitorIncidents({ projectId, monitorId })
+
+  // Rows whose source was deleted (or can't be deep-linked) return null and aren't navigable.
+  const renderRowLink = useCallback(
+    (incident: MonitorIncidentRecord, props: { className: string }): ReactNode => {
+      if (incident.sourceType === "issue" && incident.sourceName) {
+        return (
+          <Link
+            to="/projects/$projectSlug/issues"
+            params={{ projectSlug }}
+            search={{ issueId: incident.sourceId }}
+            aria-label={`Open issue ${incident.sourceName}`}
+            {...props}
+          />
+        )
+      }
+      if (incident.sourceType === "savedSearch" && incident.sourceSlug) {
+        return (
+          <Link
+            to="/projects/$projectSlug/search"
+            params={{ projectSlug }}
+            search={{ savedSearch: incident.sourceSlug }}
+            aria-label={`Open saved search ${incident.sourceName ?? incident.sourceSlug}`}
+            {...props}
+          />
+        )
+      }
+      return null
+    },
+    [projectSlug],
+  )
 
   return (
     <InfiniteTable
       data={incidents}
       isLoading={isLoading}
-      columns={columns}
+      columns={INCIDENT_COLUMNS}
       getRowKey={(incident) => incident.id}
       infiniteScroll={infiniteScroll}
+      renderRowLink={renderRowLink}
+      defaultSorting={INCIDENT_DEFAULT_SORTING}
       blankSlate="No incidents yet."
       scrollAreaLayout="intrinsic"
-      className="max-h-[min(28rem,50vh)]"
+      className={INCIDENT_TABLE_CLASS}
     />
   )
 }

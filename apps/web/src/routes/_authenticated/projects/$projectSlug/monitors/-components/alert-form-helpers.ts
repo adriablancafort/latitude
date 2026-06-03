@@ -18,18 +18,6 @@ export type WindowUnit = "minutes" | "hours" | "days"
 export type BaselineKind = "average" | "period" | "expected"
 export type LookbackUnit = "hours" | "days"
 
-export const USER_ALERT_KINDS: readonly UserAlertKind[] = [
-  "savedSearch.match",
-  "savedSearch.threshold",
-  "savedSearch.escalating",
-]
-
-export const USER_ALERT_KIND_LABEL: Record<UserAlertKind, string> = {
-  "savedSearch.match": "Search match",
-  "savedSearch.threshold": "Search threshold",
-  "savedSearch.escalating": "Search escalating",
-}
-
 /**
  * Flat, UI-only working state for one alert card. Captures every control so
  * switching modes keeps sensible values; `draftTo*` collapse it back onto the
@@ -63,6 +51,43 @@ export const emptyAlertDraft = (overrides?: Partial<AlertDraft>): AlertDraft => 
   windowUnit: "minutes",
   ...overrides,
 })
+
+/** Switch kind, resetting threshold/window fields (each kind has a different condition shape) but keeping source/severity. */
+export const draftWithKind = (draft: AlertDraft, kind: UserAlertKind): AlertDraft =>
+  emptyAlertDraft({ kind, sourceId: draft.sourceId, severity: draft.severity })
+
+export interface AlertFieldErrors {
+  readonly source?: readonly string[]
+  readonly threshold?: readonly string[]
+  readonly window?: readonly string[]
+}
+
+export const hasAlertFieldErrors = (errors: AlertFieldErrors): boolean =>
+  Boolean(errors.source?.length || errors.threshold?.length || errors.window?.length)
+
+/** Project a server Zod field-error map onto one alert's fields; pass `index` for the create modal's `alerts.N.…` paths, `null` for the single-alert modal. */
+export const alertFieldErrorsFrom = (
+  fieldErrors: Record<string, string[]> | null,
+  index: number | null,
+): AlertFieldErrors => {
+  if (!fieldErrors) return {}
+  const prefix = index === null ? "" : `alerts.${index}.`
+  const source: string[] = []
+  const threshold: string[] = []
+  const window: string[] = []
+  for (const [path, messages] of Object.entries(fieldErrors)) {
+    if (prefix && !path.startsWith(prefix)) continue
+    const rel = path.slice(prefix.length)
+    if (rel.startsWith("source")) source.push(...messages)
+    else if (rel.startsWith("condition.window")) window.push(...messages)
+    else if (rel.startsWith("condition.threshold")) threshold.push(...messages)
+  }
+  return {
+    ...(source.length ? { source } : {}),
+    ...(threshold.length ? { threshold } : {}),
+    ...(window.length ? { window } : {}),
+  }
+}
 
 const lookbackToDuration = (amount: number, unit: LookbackUnit): AlertDuration =>
   unit === "hours" ? { unit: "hours", hours: amount } : { unit: "days", days: amount }

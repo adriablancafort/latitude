@@ -61,8 +61,9 @@ function SeenAtSummaryValue({
 }) {
   const { lastSeenLabel, firstSeenLabel } = formatSeenAgeParts(lastSeenAtIso, firstSeenAtIso)
 
+  // Flex `div` not `Text`: `Text`'s `display:inline` collapses the `gap-*` around the separator. Bare `<span>` triggers so Radix's hover handlers land on a real DOM node.
   return (
-    <Text.H5 color="foreground" className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-sm leading-5">
       <Tooltip asChild trigger={<span className="break-words">{lastSeenLabel}</span>}>
         <div className="flex flex-col gap-0.5">
           <Text.H6 color="foregroundMuted">Last seen at</Text.H6>
@@ -76,7 +77,7 @@ function SeenAtSummaryValue({
           <Text.H6B>{new Date(firstSeenAtIso).toLocaleString()}</Text.H6B>
         </div>
       </Tooltip>
-    </Text.H5>
+    </div>
   )
 }
 

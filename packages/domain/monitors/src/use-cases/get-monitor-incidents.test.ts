@@ -56,7 +56,7 @@ const makeNotification = (
 
 const buildIncidentRepo = (page: {
   items: readonly AlertIncident[]
-  nextCursor: { startedAt: Date; id: AlertIncident["id"] } | null
+  nextCursor: { endedAt: Date | null; id: AlertIncident["id"] } | null
   hasMore: boolean
 }): AlertIncidentRepositoryShape => ({
   insert: () => Effect.die("insert not used"),
@@ -67,6 +67,7 @@ const buildIncidentRepo = (page: {
   listByProjectId: () => Effect.die("listByProjectId not used"),
   listOpenByKind: () => Effect.die("listOpenByKind not used"),
   listByMonitorId: () => Effect.succeed(page),
+  statsByMonitorId: () => Effect.die("statsByMonitorId not used"),
   listByMonitorAlertId: () => Effect.die("listByMonitorAlertId not used"),
 })
 

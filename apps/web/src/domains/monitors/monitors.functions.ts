@@ -1,3 +1,5 @@
+import { AlertIncidentRepository } from "@domain/alerts"
+import { IssueRepository } from "@domain/issues"
 import {
   createMonitorAlertUseCase,
   createMonitorUseCase,
@@ -11,6 +13,7 @@ import {
   type Monitor,
   type MonitorAlert,
   type MonitorAlertInput,
+  type MonitorLastIncident,
   muteMonitorUseCase,
   unmuteMonitorUseCase,
   updateMonitorAlertUseCase,
@@ -23,6 +26,7 @@ import {
   alertIncidentKindSchema,
   alertIncidentSourceTypeSchema,
   alertSeveritySchema,
+  IssueId,
   MonitorAlertId,
   MonitorId,
   OrganizationId,
@@ -30,6 +34,7 @@ import {
 } from "@domain/shared"
 import {
   AlertIncidentRepositoryLive,
+  IssueRepositoryLive,
   MonitorRepositoryLive,
   NotificationRepositoryLive,
   SavedSearchRepositoryLive,
@@ -107,8 +112,31 @@ const toMonitorRecordResolved = async (orgId: OrganizationId, monitor: Monitor):
   return toMonitorRecord(monitor, names)
 }
 
+export interface MonitorLastIncidentRecord {
+  readonly startedAtIso: string
+  readonly endedAtIso: string | null
+}
+
+export interface MonitorListRowRecord {
+  readonly monitor: MonitorRecord
+  readonly lastIncident: MonitorLastIncidentRecord | null
+}
+
+const toMonitorListRowRecord = (
+  monitor: Monitor,
+  savedSearchNames: ReadonlyMap<string, string>,
+  last: MonitorLastIncident | undefined,
+): MonitorListRowRecord => ({
+  monitor: toMonitorRecord(monitor, savedSearchNames),
+  lastIncident: last
+    ? { startedAtIso: last.startedAt.toISOString(), endedAtIso: last.endedAt?.toISOString() ?? null }
+    : null,
+})
+
 const toListMonitorsResultRecord = (result: ListMonitorsResult, savedSearchNames: ReadonlyMap<string, string>) => ({
-  items: result.items.map((monitor) => toMonitorRecord(monitor, savedSearchNames)),
+  items: result.items.map((monitor) =>
+    toMonitorListRowRecord(monitor, savedSearchNames, result.lastIncidentByMonitorId.get(monitor.id)),
+  ),
   totalCount: result.totalCount,
   hasMore: result.hasMore,
   limit: result.limit,
@@ -295,6 +323,7 @@ export const createMonitorAlert = createServerFn({ method: "POST" })
 const updateMonitorAlertInputSchema = z.object({
   monitorId: z.string(),
   alertId: z.string(),
+  kind: alertIncidentKindSchema.optional(),
   source: monitorAlertSourceSchema.optional(),
   condition: alertIncidentConditionSchema.nullish(),
   severity: alertSeveritySchema.optional(),
@@ -310,6 +339,7 @@ export const updateMonitorAlert = createServerFn({ method: "POST" })
       updateMonitorAlertUseCase({
         monitorId: MonitorId(data.monitorId),
         alertId: MonitorAlertId(data.alertId),
+        ...(data.kind !== undefined ? { kind: data.kind } : {}),
         ...(data.source !== undefined ? { source: { type: data.source.type, id: data.source.id } } : {}),
         ...(data.condition !== undefined ? { condition: data.condition } : {}),
         ...(data.severity !== undefined ? { severity: data.severity } : {}),
@@ -333,28 +363,63 @@ export const deleteMonitorAlert = createServerFn({ method: "POST" })
     return toMonitorRecordResolved(orgId, monitor)
   })
 
-/** Keyset cursor over `(startedAt, id)`; `startedAt` is an ISO string on the wire. */
-const incidentCursorSchema = z.object({ startedAt: z.iso.datetime(), id: z.string() })
+/** Keyset cursor over `(endedAt, id)`; `endedAt` is `null` while paging ongoing incidents. */
+const incidentCursorSchema = z.object({ endedAt: z.iso.datetime().nullable(), id: z.string() })
 export type MonitorIncidentsCursor = z.infer<typeof incidentCursorSchema>
 
+const getMonitorIncidentStatsInputSchema = z.object({ monitorId: z.string() })
+
+export const getMonitorIncidentStats = createServerFn({ method: "GET" })
+  .inputValidator(getMonitorIncidentStatsInputSchema)
+  .handler(
+    async ({
+      data,
+    }): Promise<{
+      readonly total: number
+      readonly firstStartedAtIso: string | null
+      readonly lastStartedAtIso: string | null
+    }> => {
+      const { organizationId } = await requireSession()
+      const orgId = OrganizationId(organizationId)
+
+      const stats = await Effect.runPromise(
+        Effect.gen(function* () {
+          const repository = yield* AlertIncidentRepository
+          return yield* repository.statsByMonitorId(MonitorId(data.monitorId))
+        }).pipe(withPostgres(AlertIncidentRepositoryLive, getPostgresClient(), orgId), withTracing),
+      )
+
+      return {
+        total: stats.total,
+        firstStartedAtIso: stats.firstStartedAt?.toISOString() ?? null,
+        lastStartedAtIso: stats.lastStartedAt?.toISOString() ?? null,
+      }
+    },
+  )
+
 const listMonitorIncidentsInputSchema = z.object({
+  projectId: z.string(),
   monitorId: z.string(),
   limit: z.number().int().min(1).max(100).optional(),
   cursor: incidentCursorSchema.optional(),
 })
 
-const toMonitorIncidentRecord = (item: {
-  readonly incident: {
-    readonly id: string
-    readonly startedAt: Date
-    readonly endedAt: Date | null
-    readonly kind: string
-    readonly sourceType: string
-    readonly sourceId: string
-    readonly severity: string
-  }
-  readonly notified: boolean
-}) => ({
+const toMonitorIncidentRecord = (
+  item: {
+    readonly incident: {
+      readonly id: string
+      readonly startedAt: Date
+      readonly endedAt: Date | null
+      readonly kind: string
+      readonly sourceType: string
+      readonly sourceId: string
+      readonly severity: string
+    }
+    readonly notified: boolean
+  },
+  sourceName: string | null,
+  sourceSlug: string | null,
+) => ({
   id: item.incident.id,
   startedAt: item.incident.startedAt.toISOString(),
   endedAt: item.incident.endedAt?.toISOString() ?? null,
@@ -363,6 +428,8 @@ const toMonitorIncidentRecord = (item: {
   sourceId: item.incident.sourceId,
   severity: item.incident.severity,
   notified: item.notified,
+  sourceName,
+  sourceSlug,
 })
 
 export type MonitorIncidentRecord = ReturnType<typeof toMonitorIncidentRecord>
@@ -379,6 +446,7 @@ export const listMonitorIncidents = createServerFn({ method: "GET" })
     }> => {
       const { organizationId } = await requireSession()
       const orgId = OrganizationId(organizationId)
+      const projectId = ProjectId(data.projectId)
       const pgClient = getPostgresClient()
 
       const result = await Effect.runPromise(
@@ -387,7 +455,12 @@ export const listMonitorIncidents = createServerFn({ method: "GET" })
           monitorId: MonitorId(data.monitorId),
           ...(data.limit !== undefined ? { limit: data.limit } : {}),
           ...(data.cursor
-            ? { cursor: { startedAt: new Date(data.cursor.startedAt), id: AlertIncidentId(data.cursor.id) } }
+            ? {
+                cursor: {
+                  endedAt: data.cursor.endedAt ? new Date(data.cursor.endedAt) : null,
+                  id: AlertIncidentId(data.cursor.id),
+                },
+              }
             : {}),
         }).pipe(
           withPostgres(Layer.mergeAll(AlertIncidentRepositoryLive, NotificationRepositoryLive), pgClient, orgId),
@@ -395,10 +468,38 @@ export const listMonitorIncidents = createServerFn({ method: "GET" })
         ),
       )
 
+      // Resolve source names/slugs for the "Source" column; unresolved ids fall back to the id in the UI.
+      const issueIds = [
+        ...new Set(result.items.filter((i) => i.incident.sourceType === "issue").map((i) => i.incident.sourceId)),
+      ]
+      const issueNameById = new Map<string, string>()
+      if (issueIds.length > 0) {
+        const issues = await Effect.runPromise(
+          Effect.gen(function* () {
+            const repository = yield* IssueRepository
+            return yield* repository.findByIds({ projectId, issueIds: issueIds.map(IssueId) })
+          }).pipe(withPostgres(IssueRepositoryLive, pgClient, orgId), withTracing),
+        )
+        for (const issue of issues) issueNameById.set(issue.id, issue.name)
+      }
+
+      const savedSearchById = new Map<string, { readonly name: string; readonly slug: string }>()
+      if (result.items.some((i) => i.incident.sourceType === "savedSearch")) {
+        const page = await Effect.runPromise(
+          listSavedSearches({ projectId }).pipe(withPostgres(SavedSearchRepositoryLive, pgClient, orgId), withTracing),
+        )
+        for (const search of page.items) savedSearchById.set(search.id, { name: search.name, slug: search.slug })
+      }
+
       return {
-        items: result.items.map(toMonitorIncidentRecord),
+        items: result.items.map((item) => {
+          const { sourceType, sourceId } = item.incident
+          const saved = sourceType === "savedSearch" ? savedSearchById.get(sourceId) : undefined
+          const sourceName = sourceType === "issue" ? (issueNameById.get(sourceId) ?? null) : (saved?.name ?? null)
+          return toMonitorIncidentRecord(item, sourceName, saved?.slug ?? null)
+        }),
         nextCursor: result.nextCursor
-          ? { startedAt: result.nextCursor.startedAt.toISOString(), id: result.nextCursor.id }
+          ? { endedAt: result.nextCursor.endedAt?.toISOString() ?? null, id: result.nextCursor.id }
           : null,
         hasMore: result.hasMore,
       }

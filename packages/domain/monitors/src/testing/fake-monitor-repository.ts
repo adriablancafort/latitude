@@ -48,7 +48,15 @@ export const createFakeMonitorRepository = (seed: readonly Monitor[] = []) => {
             return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
           })
         const items = all.slice(offset, offset + limit)
-        return { items, totalCount: all.length, hasMore: offset + items.length < all.length, limit, offset }
+        // The fake doesn't model incidents; last-incident behavior is covered by the live repo.
+        return {
+          items,
+          lastIncidentByMonitorId: new Map(),
+          totalCount: all.length,
+          hasMore: offset + items.length < all.length,
+          limit,
+          offset,
+        }
       }),
     provisionSystemMonitors: (toProvision) =>
       Effect.sync(() => {
@@ -125,14 +133,16 @@ export const createFakeMonitorRepository = (seed: readonly Monitor[] = []) => {
         replace(id, { ...monitor, name, slug, description, updatedAt: new Date() })
         return Effect.void
       }),
-    updateAlert: ({ alertId, sourceId, condition, severity }) =>
+    updateAlert: ({ alertId, kind, sourceId, condition, severity }) =>
       Effect.suspend(() => {
         const monitor = monitors.find((m) => isLive(m) && m.alerts.some((alert) => alert.id === alertId))
         if (!monitor) return Effect.fail(new NotFoundError({ entity: "MonitorAlert", id: alertId }))
         replace(monitor.id, {
           ...monitor,
           alerts: monitor.alerts.map((alert) =>
-            alert.id === alertId ? { ...alert, source: { ...alert.source, id: sourceId }, condition, severity } : alert,
+            alert.id === alertId
+              ? { ...alert, kind, source: { ...alert.source, id: sourceId }, condition, severity }
+              : alert,
           ),
         })
         return Effect.void

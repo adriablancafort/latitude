@@ -1,13 +1,9 @@
-import { Select, Text } from "@repo/ui"
-import { Link } from "@tanstack/react-router"
+import { Icon, Select } from "@repo/ui"
+import { useNavigate } from "@tanstack/react-router"
+import { ZoomInIcon } from "lucide-react"
 import { useSavedSearchesList } from "../../../../../../domains/saved-searches/saved-searches.collection.ts"
 
-/**
- * Searchable saved-search picker for an alert's source. There is **no "All
- * saved searches" option** — the user must pick a concrete saved search. When
- * the project has none, an inline link points at the search page where saved
- * searches are created.
- */
+/** Saved-search picker for an alert's source: no "All" option, the user must pick a concrete saved search. */
 export function SavedSearchSourcePicker({
   projectId,
   projectSlug,
@@ -23,32 +19,14 @@ export function SavedSearchSourcePicker({
   readonly disabled?: boolean
   readonly errors?: string[] | undefined
 }) {
+  const navigate = useNavigate()
   const { data: savedSearches, isLoading } = useSavedSearchesList(projectId)
-
-  if (!isLoading && savedSearches.length === 0) {
-    return (
-      <div className="flex flex-col gap-1">
-        <Text.H6M>Saved search</Text.H6M>
-        <Text.H6 color="foregroundMuted">
-          This project has no saved searches yet.{" "}
-          <Link
-            to="/projects/$projectSlug/search"
-            params={{ projectSlug }}
-            className="text-primary underline underline-offset-2"
-          >
-            Create a saved search
-          </Link>{" "}
-          to monitor.
-        </Text.H6>
-      </div>
-    )
-  }
 
   return (
     <Select<string>
       name="savedSearch"
       label="Saved search"
-      info="The saved search whose matching traces this alert watches."
+      description="The alert will watch for matching traces on this saved search"
       options={savedSearches.map((search) => ({ label: search.name, value: search.id }))}
       value={value ?? undefined}
       placeholder="Select a saved search"
@@ -56,6 +34,11 @@ export function SavedSearchSourcePicker({
       searchPlaceholder="Search saved searches…"
       searchableEmptyMessage="No saved searches found"
       loading={isLoading}
+      footerAction={{
+        label: "Create a new saved search",
+        icon: <Icon icon={ZoomInIcon} size="sm" />,
+        onClick: () => void navigate({ to: "/projects/$projectSlug/search", params: { projectSlug } }),
+      }}
       {...(disabled ? { disabled: true } : {})}
       {...(errors ? { errors } : {})}
       onChange={(id) => onChange(id ?? null)}
