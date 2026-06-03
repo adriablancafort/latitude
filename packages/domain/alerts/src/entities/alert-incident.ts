@@ -5,11 +5,13 @@ import {
   type AlertIncidentKind,
   type AlertIncidentSourceType,
   type AlertSeverity,
+  alertIncidentConditionSchema,
   alertIncidentIdSchema,
   alertIncidentKindSchema,
   alertIncidentSourceTypeSchema,
   alertSeveritySchema,
   cuidSchema,
+  monitorAlertIdSchema,
   organizationIdSchema,
   projectIdSchema,
   SEVERITY_FOR_KIND,
@@ -76,6 +78,10 @@ export const alertIncidentSchema = z.object({
   createdAt: z.date(),
   entrySignals: entrySignalsSnapshotSchema.nullable(),
   exitEligibleSince: z.date().nullable(),
+  // Firing monitor alert; `null` on legacy/flag-off rows. `.default(null)` keeps pre-monitors `.parse` callers valid.
+  monitorAlertId: monitorAlertIdSchema.nullable().default(null),
+  // Condition snapshot frozen at open time; `null` for no-condition kinds.
+  condition: alertIncidentConditionSchema.nullable().default(null),
 })
 
 export type AlertIncident = z.infer<typeof alertIncidentSchema>

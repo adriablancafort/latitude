@@ -3,10 +3,9 @@ import type { AlertIncidentKind } from "@domain/shared"
 import { Label, Slider, Switch, Text, useToast, useValueWithDefault } from "@repo/ui"
 import { eq } from "@tanstack/react-db"
 import { useForm } from "@tanstack/react-form"
-import { useQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 import { useState } from "react"
-import { hasFeatureFlag } from "../../../../../domains/feature-flags/feature-flags.functions.ts"
+import { useHasFeatureFlag } from "../../../../../domains/feature-flags/feature-flags.collection.ts"
 import { updateProjectMutation, useProjectsCollection } from "../../../../../domains/projects/projects.collection.ts"
 import { toUserMessage } from "../../../../../lib/errors.ts"
 import { createFormSubmitHandler } from "../../../../../lib/form-server-action.ts"
@@ -50,10 +49,11 @@ function ProjectIssuesSettingsPage() {
   const [isSavingKeepMonitoring, setIsSavingKeepMonitoring] = useState(false)
   const [savingAlertKind, setSavingAlertKind] = useState<AlertIncidentKind | null>(null)
 
-  const { data: notificationsEnabled = false } = useQuery({
-    queryKey: ["feature-flag", "notifications"],
-    queryFn: () => hasFeatureFlag({ data: { identifier: "notifications" } }),
-  })
+  const notificationsEnabled = useHasFeatureFlag("notifications")
+
+  // TODO: Remove after releasing monitors for everybody. With the flag on, the system
+  // monitors own incident notifications + sensitivity, so the legacy controls are hidden.
+  const monitorsEnabled = useHasFeatureFlag("monitors")
 
   const { data: project } = useProjectsCollection(
     (projects) => projects.where(({ project }) => eq(project.slug, projectSlug)).findOne(),
@@ -156,7 +156,7 @@ function ProjectIssuesSettingsPage() {
             onCheckedChange={(checked) => void handleKeepMonitoringChange(checked)}
           />
         </div>
-        {notificationsEnabled ? (
+        {notificationsEnabled && !monitorsEnabled ? (
           <>
             {ALERT_NOTIFICATION_TOGGLES.map((toggle) => {
               const inputId = `alert-notification-${toggle.kind}`

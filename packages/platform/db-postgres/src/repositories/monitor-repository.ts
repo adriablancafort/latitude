@@ -6,7 +6,7 @@ import {
   monitorSchema,
 } from "@domain/monitors"
 import { NotFoundError, SqlClient, type SqlClientShape } from "@domain/shared"
-import { and, asc, count, desc, eq, getTableColumns, ilike, inArray, isNull, max, ne, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, getTableColumns, ilike, inArray, isNull, max, ne, or, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { alertIncidents } from "../schema/alert-incidents.ts"
@@ -427,6 +427,30 @@ export const MonitorRepositoryLive = Layer.effect(
               .returning({ id: monitorAlerts.id }),
           )
           if (updated.length === 0) return yield* new NotFoundError({ entity: "MonitorAlert", id: alertId })
+        }),
+      listActiveAlertsForSourceEvent: ({ projectId, kind, sourceType, sourceId }) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const { organizationId } = sqlClient
+          // Project-scoped via monitors; both `deleted_at` filters exclude deleted monitors / soft-deleted alerts.
+          const rows = yield* sqlClient.query((db) =>
+            db
+              .select(getTableColumns(monitorAlerts))
+              .from(monitorAlerts)
+              .innerJoin(monitors, eq(monitors.id, monitorAlerts.monitorId))
+              .where(
+                and(
+                  eq(monitorAlerts.organizationId, organizationId),
+                  eq(monitors.projectId, projectId),
+                  eq(monitorAlerts.kind, kind),
+                  eq(monitorAlerts.sourceType, sourceType),
+                  or(isNull(monitorAlerts.sourceId), eq(monitorAlerts.sourceId, sourceId)),
+                  isNull(monitorAlerts.deletedAt),
+                  isNull(monitors.deletedAt),
+                ),
+              ),
+          )
+          return rows.map(toMonitorAlert)
         }),
       countActiveBySlug: ({ projectId, slug, excludeId }) =>
         Effect.gen(function* () {

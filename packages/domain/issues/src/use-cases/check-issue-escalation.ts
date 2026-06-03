@@ -21,7 +21,69 @@ export interface CheckIssueEscalationInput {
   readonly organizationId: string
   readonly projectId: string
   readonly issueId: string
+  /**
+   * Flag-on override resolved by the caller (`@domain/issues` can't import
+   * `@domain/monitors`): the system monitor's sensitivity. Omitted → project settings.
+   */
+  readonly escalationSensitivity?: number
 }
+
+/** Look-back window + bucket for `startedAt` backtracking on the escalation `enter` transition. */
+const BACKTRACK_WINDOW_MS = 24 * 60 * 60 * 1000
+const BACKTRACK_BUCKET_SECONDS = 60 * 60
+
+/**
+ * The detector flags late (the band must hold a while), so backtrack: return the
+ * first bucket whose count cleared the seasonal threshold (same `kShort`). No
+ * crossing in the window → the event time (`now`).
+ */
+const backtrackEscalationStart = (input: {
+  readonly organizationId: OrganizationId
+  readonly projectId: ProjectId
+  readonly issueId: IssueId
+  readonly kShort: number
+  readonly now: Date
+}) =>
+  Effect.gen(function* () {
+    const analytics = yield* ScoreAnalyticsRepository
+    const to = input.now
+    const from = new Date(to.getTime() - BACKTRACK_WINDOW_MS)
+    const [counts, thresholds] = yield* Effect.all(
+      [
+        analytics.histogramByIssues({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          issueIds: [input.issueId],
+          timeRange: { from, to },
+          bucketSeconds: BACKTRACK_BUCKET_SECONDS,
+        }),
+        analytics.escalationThresholdHistogramByIssues({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          issueIds: [input.issueId],
+          timeRange: { from, to },
+          bucketSeconds: BACKTRACK_BUCKET_SECONDS,
+          kShort: input.kShort,
+        }),
+      ],
+      { concurrency: "unbounded" },
+    )
+
+    const thresholdByBucket = new Map<string, number>()
+    for (const entry of thresholds[0]?.buckets ?? []) {
+      if (Number.isFinite(entry.thresholdCount)) thresholdByBucket.set(entry.bucket, entry.thresholdCount)
+    }
+
+    const ascending = [...counts].sort((a, b) => a.bucket.localeCompare(b.bucket))
+    for (const bucket of ascending) {
+      const threshold = thresholdByBucket.get(bucket.bucket)
+      if (threshold !== undefined && bucket.count >= threshold) {
+        const ts = new Date(bucket.bucket)
+        if (!Number.isNaN(ts.getTime())) return ts
+      }
+    }
+    return input.now
+  })
 
 export type CheckIssueEscalationTransition = "entered" | "exited" | "none"
 
@@ -109,7 +171,9 @@ export const checkIssueEscalationUseCase = (input: CheckIssueEscalationInput) =>
       return { transition: "none", currentlyEscalating: wasEscalating } satisfies CheckIssueEscalationResult
     }
 
-    const kShort = projectSettings?.escalation?.sensitivity ?? DEFAULT_ESCALATION_SENSITIVITY_K
+    // Flag-on override (system monitor) → else project settings → default.
+    const kShort =
+      input.escalationSensitivity ?? projectSettings?.escalation?.sensitivity ?? DEFAULT_ESCALATION_SENSITIVITY_K
 
     const decision = evaluateSeasonalEscalation({
       signals,
@@ -123,6 +187,15 @@ export const checkIssueEscalationUseCase = (input: CheckIssueEscalationInput) =>
     })
 
     if (decision.transition === "enter") {
+      // Backtrack the start; the worker forwards `escalatedAt` as the incident's `occurredAt`.
+      const startedAt = yield* backtrackEscalationStart({
+        organizationId: OrganizationId(input.organizationId),
+        projectId: ProjectId(input.projectId),
+        issueId: IssueId(input.issueId),
+        kShort,
+        now,
+      })
+
       yield* sqlClient.transaction(
         Effect.gen(function* () {
           if (issueWithLifecycle.resolvedAt !== null) {
@@ -142,7 +215,7 @@ export const checkIssueEscalationUseCase = (input: CheckIssueEscalationInput) =>
               organizationId: issueWithLifecycle.organizationId,
               projectId: issueWithLifecycle.projectId,
               issueId: issueWithLifecycle.id,
-              escalatedAt: now.toISOString(),
+              escalatedAt: startedAt.toISOString(),
               entrySignals: decision.entrySignalsSnapshot ?? null,
             },
           })
