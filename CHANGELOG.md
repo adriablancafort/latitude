@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.1.47 - 2026-06-03
+
+### Traces and sessions
+
+- Switched trace and session outlier baselines to project-wide cohorts so percentile badges appear reliably on low-volume or heavily tagged projects, with matching UI copy and repository/use-case updates (ref: #3371).
+
+### Flaggers
+
+- Requested classifier message indexes as quoted strings and recovered no-output structured generation failures as no-match classifications to avoid Bedrock/Claude runaway numeric literals (ref: #3377).
+
+### Models and observability
+
+- Refreshed bundled `models.dev` metadata used by model selection and pricing data (ref: #3376).
+- Temporarily disabled Latitude telemetry span export while keeping the setup ready for re-enablement (ref: fd4b8e7).
+
 ## v0.1.46 - 2026-06-02
 
 ### Monitors and incidents
