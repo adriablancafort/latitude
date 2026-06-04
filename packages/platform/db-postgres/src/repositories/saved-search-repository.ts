@@ -3,6 +3,7 @@ import {
   type SavedSearch,
   SavedSearchNotFoundError,
   SavedSearchRepository,
+  type SavedSearchSearchResult,
 } from "@domain/saved-searches"
 import {
   OrganizationId,
@@ -13,10 +14,12 @@ import {
   type SqlClientShape,
   UserId,
 } from "@domain/shared"
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm"
+import { and, desc, eq, ilike, isNull, ne, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
+import { projects } from "../schema/projects.ts"
 import { savedSearches } from "../schema/saved-searches.ts"
+import { nameMatchScore, preferProjectFirst } from "./org-search.ts"
 
 const isUniqueViolation = (cause: unknown): boolean => {
   let current: unknown = cause
@@ -157,6 +160,58 @@ export const SavedSearchRepositoryLive = Layer.effect(
             db.select().from(savedSearches).where(conditions).orderBy(desc(savedSearches.createdAt)),
           )
           return { items: rows.map(toSavedSearch) }
+        }),
+
+      searchOrgWide: (args) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const trimmed = args.searchQuery?.trim()
+          const conditions = and(
+            eq(savedSearches.organizationId, sqlClient.organizationId),
+            isNull(savedSearches.deletedAt),
+            isNull(projects.deletedAt),
+            ...(trimmed ? [ilike(savedSearches.name, `%${trimmed}%`)] : []),
+          )
+          // Preferred project first, then best name match (exact > prefix > substring), then most
+          // recent. With no query the score is uniform, so it falls back to newest-first.
+          const orderBy = [
+            ...preferProjectFirst(savedSearches.projectId, args.preferProjectId),
+            ...(trimmed
+              ? [
+                  desc(nameMatchScore(savedSearches.name, trimmed)),
+                  desc(savedSearches.createdAt),
+                  desc(savedSearches.id),
+                ]
+              : [desc(savedSearches.createdAt), desc(savedSearches.id)]),
+          ]
+
+          const rows = yield* sqlClient.query((db) =>
+            db
+              .select({
+                id: savedSearches.id,
+                projectId: savedSearches.projectId,
+                projectSlug: projects.slug,
+                projectName: projects.name,
+                slug: savedSearches.slug,
+                name: savedSearches.name,
+              })
+              .from(savedSearches)
+              .innerJoin(projects, eq(projects.id, savedSearches.projectId))
+              .where(conditions)
+              .orderBy(...orderBy)
+              .limit(args.limit),
+          )
+
+          return rows.map(
+            (row): SavedSearchSearchResult => ({
+              id: SavedSearchId(row.id),
+              projectId: ProjectId(row.projectId),
+              projectSlug: row.projectSlug,
+              projectName: row.projectName,
+              slug: row.slug,
+              name: row.name,
+            }),
+          )
         }),
 
       update: (args) =>

@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
 import { datasets } from "../schema/datasets.ts"
 import { datasetVersions } from "../schema/datasetVersions.ts"
+import { projects } from "../schema/projects.ts"
 import { setupTestPostgres } from "../test/in-memory-postgres.ts"
 import { withPostgres } from "../with-postgres.ts"
 import { DatasetRepositoryLive } from "./dataset-repository.ts"
@@ -330,5 +331,203 @@ describe("DatasetRepositoryLive listByProject", () => {
         ),
       ).rejects.toThrow()
     })
+  })
+})
+
+const SEARCH_ORG_ID = OrganizationId("org-search-ds-test")
+const SEARCH_OTHER_ORG_ID = OrganizationId("org-search-ds-other")
+const SEARCH_PROJECT_A = ProjectId("proj-search-ds-a")
+const SEARCH_PROJECT_B = ProjectId("proj-search-ds-b")
+const SEARCH_PROJECT_DELETED = ProjectId("proj-search-ds-del")
+const SEARCH_PROJECT_OTHER = ProjectId("proj-search-ds-oth")
+
+describe("DatasetRepositoryLive searchOrgWide", () => {
+  const runSearch = <A, E>(effect: Effect.Effect<A, E, DatasetRepository | SqlClient>) =>
+    Effect.runPromise(effect.pipe(withPostgres(DatasetRepositoryLive, pg.adminPostgresClient, SEARCH_ORG_ID)))
+
+  beforeAll(async () => {
+    const db = pg.db
+    const baseTime = new Date("2025-02-01T12:00:00.000Z")
+
+    await db.insert(projects).values([
+      { id: SEARCH_PROJECT_A, organizationId: SEARCH_ORG_ID, name: "Alpha Project", slug: "alpha" },
+      { id: SEARCH_PROJECT_B, organizationId: SEARCH_ORG_ID, name: "Beta Project", slug: "beta" },
+      {
+        id: SEARCH_PROJECT_DELETED,
+        organizationId: SEARCH_ORG_ID,
+        name: "Gone Project",
+        slug: "gone",
+        deletedAt: baseTime,
+      },
+      { id: SEARCH_PROJECT_OTHER, organizationId: SEARCH_OTHER_ORG_ID, name: "Other Org Project", slug: "other" },
+    ])
+
+    await db.insert(datasets).values([
+      {
+        id: makeId("sds1"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "customer-reviews",
+        name: "Customer Reviews",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+      {
+        id: makeId("sds2"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_B,
+        slug: "customer-orders",
+        name: "Customer Orders",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+      {
+        id: makeId("sds3"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "unrelated",
+        name: "Unrelated Logs",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+      {
+        id: makeId("sds4"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "customer-deleted",
+        name: "Customer Deleted",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+        deletedAt: baseTime,
+      },
+      {
+        id: makeId("sds5"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_DELETED,
+        slug: "customer-in-deleted-project",
+        name: "Customer In Deleted Project",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+      {
+        id: makeId("sds6"),
+        organizationId: SEARCH_OTHER_ORG_ID,
+        projectId: SEARCH_PROJECT_OTHER,
+        slug: "customer-secret",
+        name: "Customer Secret",
+        currentVersion: 0,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+    ])
+  })
+
+  it("matches datasets across multiple projects in the org and tags them with the project", async () => {
+    const results = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "customer", limit: 25 })
+      }),
+    )
+
+    expect(results.map((r) => r.name).sort()).toEqual(["Customer Orders", "Customer Reviews"])
+    const reviews = results.find((r) => r.name === "Customer Reviews")
+    const orders = results.find((r) => r.name === "Customer Orders")
+    expect(reviews).toMatchObject({ projectId: SEARCH_PROJECT_A, projectSlug: "alpha", projectName: "Alpha Project" })
+    expect(orders).toMatchObject({ projectId: SEARCH_PROJECT_B, projectSlug: "beta", projectName: "Beta Project" })
+  })
+
+  it("excludes soft-deleted datasets, datasets in soft-deleted projects, and other organizations", async () => {
+    const results = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "customer", limit: 25 })
+      }),
+    )
+    const names = results.map((r) => r.name)
+    expect(names).not.toContain("Customer Deleted")
+    expect(names).not.toContain("Customer In Deleted Project")
+    expect(names).not.toContain("Customer Secret")
+  })
+
+  it("respects the limit", async () => {
+    const results = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "customer", limit: 1 })
+      }),
+    )
+    expect(results).toHaveLength(1)
+  })
+
+  it("orders by name-match quality: exact, then prefix, then substring", async () => {
+    const t = new Date("2025-02-02T12:00:00.000Z")
+    await pg.db.insert(datasets).values([
+      // Inserted substring-first to prove ordering isn't just insertion/recency order.
+      {
+        id: makeId("dsm3"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "my-zebra-log",
+        name: "My Zebra Log",
+        currentVersion: 0,
+        createdAt: t,
+        updatedAt: t,
+      },
+      {
+        id: makeId("dsm2"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "zebra-report",
+        name: "Zebra Report",
+        currentVersion: 0,
+        createdAt: t,
+        updatedAt: t,
+      },
+      {
+        id: makeId("dsm1"),
+        organizationId: SEARCH_ORG_ID,
+        projectId: SEARCH_PROJECT_A,
+        slug: "zebra",
+        name: "Zebra",
+        currentVersion: 0,
+        createdAt: t,
+        updatedAt: t,
+      },
+    ])
+
+    const results = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "zebra", limit: 25 })
+      }),
+    )
+    expect(results.map((r) => r.name)).toEqual(["Zebra", "Zebra Report", "My Zebra Log"])
+  })
+
+  it("ranks the preferred project's datasets first", async () => {
+    // "Customer Reviews" (project A) and "Customer Orders" (project B) score equally for "customer".
+    const withoutPreference = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "customer", limit: 25 })
+      }),
+    )
+    expect(withoutPreference.map((r) => r.name).sort()).toEqual(["Customer Orders", "Customer Reviews"])
+
+    const preferB = await runSearch(
+      Effect.gen(function* () {
+        const repo = yield* DatasetRepository
+        return yield* repo.searchOrgWide({ searchQuery: "customer", preferProjectId: SEARCH_PROJECT_B, limit: 25 })
+      }),
+    )
+    // Project B's dataset now leads, even though match quality/recency are equal.
+    expect(preferB[0]?.name).toBe("Customer Orders")
+    expect(preferB[0]?.projectId).toBe(SEARCH_PROJECT_B)
   })
 })

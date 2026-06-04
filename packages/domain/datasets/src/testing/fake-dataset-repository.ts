@@ -141,6 +141,32 @@ export const createFakeDatasetRepository = (
         return page
       }),
 
+    searchOrgWide: (args) =>
+      Effect.sync(() => {
+        const q = args.searchQuery?.trim().toLowerCase()
+        const matched = [...datasets.values()].filter((d) => !d.deletedAt && (!q || d.name.toLowerCase().includes(q)))
+        // Preferred project first, then best name match, then newest — mirroring the live repo.
+        const prefer = (projectId: string) => (args.preferProjectId && projectId === args.preferProjectId ? 1 : 0)
+        const score = (name: string) =>
+          !q ? 1 : name.toLowerCase() === q ? 3 : name.toLowerCase().startsWith(q) ? 2 : 1
+        const sorted = matched.sort(
+          (a, b) =>
+            prefer(b.projectId) - prefer(a.projectId) ||
+            score(b.name) - score(a.name) ||
+            b.createdAt.getTime() - a.createdAt.getTime() ||
+            cmpStrings(b.id, a.id),
+        )
+        return sorted.slice(0, args.limit).map((d) => ({
+          id: d.id,
+          projectId: d.projectId,
+          // Fakes have no `projects` table; synthesize stable project display fields from the id.
+          projectSlug: `project-${d.projectId}`,
+          projectName: `Project ${d.projectId}`,
+          slug: d.slug,
+          name: d.name,
+        }))
+      }),
+
     existsByNameInProject: (args) =>
       Effect.sync(() =>
         [...datasets.values()].some(

@@ -65,6 +65,25 @@ export const createFakeIssueRepository = (
           })),
       ),
 
+    searchOrgWide: ({ query, preferProjectId, limit }) =>
+      Effect.sync(() => {
+        // Default fake behavior: org-wide case-insensitive name match, embedding-agnostic, with the
+        // preferred project's issues first. Tests that need distinct lexical vs semantic tiers
+        // override this method.
+        const q = query.trim().toLowerCase()
+        const prefer = (projectId: string) => (preferProjectId && projectId === preferProjectId ? 1 : 0)
+        return [...issues.values()]
+          .filter((issue) => issue.name.toLowerCase().includes(q))
+          .sort((a, b) => prefer(b.projectId) - prefer(a.projectId))
+          .slice(0, limit)
+          .map((issue) => ({
+            issue: withLifecycle(issue),
+            projectSlug: `project-${issue.projectId}`,
+            projectName: `Project ${issue.projectId}`,
+            score: 1,
+          }))
+      }),
+
     findBySlug: ({ projectId, slug }) =>
       Effect.gen(function* () {
         const issue = [...issues.values()].find((i) => i.projectId === projectId && i.slug === slug)

@@ -19,7 +19,7 @@ import { useIssueSearchCommands } from "./commands/use-issue-search-commands.ts"
 import { useMonitorSearchCommands } from "./commands/use-monitor-search-commands.ts"
 import { useNavigationCommands } from "./commands/use-navigation-commands.ts"
 import { useProjectCommands } from "./commands/use-project-commands.tsx"
-import { useProjectSearchCommands } from "./commands/use-project-search-commands.ts"
+import { useProjectSearchCommands } from "./commands/use-project-search-commands.tsx"
 import { COMMAND_SECTION_LABELS, COMMAND_SECTION_ORDER, type PaletteCommand, type ParentCommand } from "./types.ts"
 
 /**
@@ -100,8 +100,9 @@ export function CommandPalette() {
     // Contextual commands (contributed by the current view) render first, grouped by sub-heading.
     const contextGroups = buildContextGroups(registeredCommands.filter(matches))
 
-    // In-project search results. Issues are already curated by the hook (semantic + substring),
-    // so they render as-is; datasets/saved searches are full project lists we filter here.
+    // Org-wide search results (every project in the organization, each row tagged with its
+    // project). Issues are already curated and ranked by the hook (lexical + semantic), so they
+    // render as-is; datasets/saved searches/monitors get a secondary client-side token filter.
     const entityGroups: CommandGroupView[] = []
     if (issueResults.length > 0) entityGroups.push({ key: "issues", label: "Issues", commands: issueResults })
     const monitors = monitorResults.filter(matches)
@@ -234,7 +235,7 @@ export function CommandPalette() {
                 {command.leading ?? <Icon icon={command.icon} size="sm" color="foregroundMuted" />}
                 <span className="flex min-w-0 flex-1 items-center gap-2">
                   <Text.H5 ellipsis noWrap>
-                    {command.title}
+                    {command.titleNode ?? command.title}
                   </Text.H5>
                   {command.subtitle ? (
                     <Text.H6 color="foregroundMuted" ellipsis noWrap>

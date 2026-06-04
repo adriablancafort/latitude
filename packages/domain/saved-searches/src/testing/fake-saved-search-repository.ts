@@ -79,6 +79,34 @@ export const createFakeSavedSearchRepository = (seed: readonly SavedSearch[] = [
         return { items }
       }),
 
+    searchOrgWide: ({ searchQuery, preferProjectId, limit }) =>
+      Effect.sync(() => {
+        const q = searchQuery?.trim().toLowerCase()
+        // Preferred project first, then best name match, then newest — mirroring the live repo.
+        const prefer = (projectId: string) => (preferProjectId && projectId === preferProjectId ? 1 : 0)
+        const score = (name: string) =>
+          !q ? 1 : name.toLowerCase() === q ? 3 : name.toLowerCase().startsWith(q) ? 2 : 1
+        return [...rows.values()]
+          .filter(isLive)
+          .filter((row) => (q ? row.name.toLowerCase().includes(q) : true))
+          .sort(
+            (a, b) =>
+              prefer(b.projectId) - prefer(a.projectId) ||
+              score(b.name) - score(a.name) ||
+              b.createdAt.getTime() - a.createdAt.getTime(),
+          )
+          .slice(0, limit)
+          .map((row) => ({
+            id: row.id,
+            projectId: row.projectId,
+            // Fakes have no `projects` table; synthesize stable project display fields from the id.
+            projectSlug: `project-${row.projectId}`,
+            projectName: `Project ${row.projectId}`,
+            slug: row.slug,
+            name: row.name,
+          }))
+      }),
+
     update: (args) =>
       Effect.gen(function* () {
         const current = rows.get(args.id)

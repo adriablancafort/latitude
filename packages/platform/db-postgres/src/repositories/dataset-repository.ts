@@ -1,4 +1,4 @@
-import type { Dataset, DatasetListCursor, DatasetListPage, DatasetVersion } from "@domain/datasets"
+import type { Dataset, DatasetListCursor, DatasetListPage, DatasetSearchResult, DatasetVersion } from "@domain/datasets"
 import { type DATASET_LIST_SORT_COLUMNS, DatasetNotFoundError, DatasetRepository } from "@domain/datasets"
 import {
   DatasetId,
@@ -9,11 +9,13 @@ import {
   SqlClient,
   type SqlClientShape,
 } from "@domain/shared"
-import { and, asc, desc, eq, getColumns, gt, isNull, lt, ne, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, getColumns, gt, ilike, isNull, lt, ne, or, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { datasets } from "../schema/datasets.ts"
 import { datasetVersions } from "../schema/datasetVersions.ts"
+import { projects } from "../schema/projects.ts"
+import { nameMatchScore, preferProjectFirst } from "./org-search.ts"
 
 const toDomainDataset = (row: typeof datasets.$inferSelect, latestVersionId?: string | null): Dataset => ({
   id: DatasetId(row.id),
@@ -211,6 +213,54 @@ export const DatasetRepositoryLive = Layer.effect(
             ? { datasets: items, hasMore, nextCursor }
             : { datasets: items, hasMore }
           return page
+        }),
+
+      searchOrgWide: (args) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const trimmed = args.searchQuery?.trim()
+          const where = and(
+            eq(datasets.organizationId, sqlClient.organizationId),
+            isNull(datasets.deletedAt),
+            isNull(projects.deletedAt),
+            ...(trimmed ? [ilike(datasets.name, `%${trimmed}%`)] : []),
+          )
+          const orderBy = [
+            ...preferProjectFirst(datasets.projectId, args.preferProjectId),
+            ...(trimmed
+              ? [desc(nameMatchScore(datasets.name, trimmed)), desc(datasets.createdAt), desc(datasets.id)]
+              : [desc(datasets.createdAt), desc(datasets.id)]),
+          ]
+
+          const rows = yield* sqlClient.query((db) =>
+            db
+              .select({
+                id: datasets.id,
+                projectId: datasets.projectId,
+                projectSlug: projects.slug,
+                projectName: projects.name,
+                slug: datasets.slug,
+                name: datasets.name,
+              })
+              .from(datasets)
+              .innerJoin(projects, eq(projects.id, datasets.projectId))
+              .where(where)
+              // Best name match first (exact > prefix > substring), then most recent. With no
+              // query every row scores equally, so it falls back to newest-first.
+              .orderBy(...orderBy)
+              .limit(args.limit),
+          )
+
+          return rows.map(
+            (row): DatasetSearchResult => ({
+              id: DatasetId(row.id),
+              projectId: ProjectId(row.projectId),
+              projectSlug: row.projectSlug,
+              projectName: row.projectName,
+              slug: row.slug,
+              name: row.name,
+            }),
+          )
         }),
 
       existsByNameInProject: (args) =>
