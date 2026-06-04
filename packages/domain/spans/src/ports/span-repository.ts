@@ -4,6 +4,7 @@ import type {
   OrganizationId,
   ProjectId,
   RepositoryError,
+  SessionId,
   SpanId,
   TraceId,
 } from "@domain/shared"
@@ -35,6 +36,20 @@ export interface SpanRepositoryShape {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
     readonly traceId: TraceId
+    readonly startTimeFrom?: Date
+    readonly startTimeTo?: Date
+  }): Effect.Effect<readonly Span[], RepositoryError, ChSqlClient>
+
+  /**
+   * Every span in a session. Membership mirrors the `sessions_mv` grouping key
+   * (`coalesce(nullIf(session_id, ''), toString(trace_id))`), so it covers both
+   * conversation-id sessions and orphan single-trace sessions (whose spans carry
+   * no `session_id` and are keyed on their `trace_id`).
+   */
+  listBySessionId(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly sessionId: SessionId
     readonly startTimeFrom?: Date
     readonly startTimeTo?: Date
   }): Effect.Effect<readonly Span[], RepositoryError, ChSqlClient>

@@ -1,4 +1,4 @@
-import { OrganizationId, ProjectId, SpanId, TraceId } from "@domain/shared"
+import { OrganizationId, ProjectId, SessionId, SpanId, TraceId } from "@domain/shared"
 import type { Operation, Span, SpanDetail, SpanKind, SpanStatusCode } from "@domain/spans"
 import { buildConversationSpanMaps, SpanRepository, TraceRepository } from "@domain/spans"
 import { withAi } from "@platform/ai"
@@ -162,6 +162,33 @@ export const listSpansByTrace = createServerFn({ method: "GET" })
           organizationId: orgId,
           projectId: ProjectId(data.projectId),
           traceId: TraceId(data.traceId),
+          ...(data.startTimeFrom ? { startTimeFrom: data.startTimeFrom } : {}),
+          ...(data.startTimeTo ? { startTimeTo: data.startTimeTo } : {}),
+        })
+      }).pipe(withClickHouse(SpanRepositoryLive, getClickhouseClient(), orgId), withTracing),
+    )
+    return spans.map(serializeSpan)
+  })
+
+export const listSpansBySession = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      sessionId: z.string(),
+      startTimeFrom: dateTimeParamSchema.optional(),
+      startTimeTo: dateTimeParamSchema.optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<SpanRecord[]> => {
+    const { organizationId } = await requireSession()
+    const orgId = OrganizationId(organizationId)
+    const spans = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* SpanRepository
+        return yield* repo.listBySessionId({
+          organizationId: orgId,
+          projectId: ProjectId(data.projectId),
+          sessionId: SessionId(data.sessionId),
           ...(data.startTimeFrom ? { startTimeFrom: data.startTimeFrom } : {}),
           ...(data.startTimeTo ? { startTimeTo: data.startTimeTo } : {}),
         })

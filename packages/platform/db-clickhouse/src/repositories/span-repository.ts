@@ -404,6 +404,58 @@ export const SpanRepositoryLive = Layer.effect(
           )
       })
 
+    const listBySessionId: SpanRepositoryShape["listBySessionId"] = ({
+      organizationId,
+      projectId,
+      sessionId,
+      startTimeFrom,
+      startTimeTo,
+    }) =>
+      Effect.gen(function* () {
+        const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
+        const startFromClause = startTimeFrom
+          ? "AND start_time >= parseDateTime64BestEffort({startTimeFrom:String}, 9, 'UTC')"
+          : ""
+        const startToClause = startTimeTo
+          ? "AND start_time <= parseDateTime64BestEffort({startTimeTo:String}, 9, 'UTC')"
+          : ""
+        return yield* chSqlClient
+          .query(async (client) => {
+            const result = await client.query({
+              // Session membership mirrors the sessions_mv grouping key exactly:
+              // conversation-id sessions match on session_id, orphan single-trace
+              // sessions (empty session_id) match on toString(trace_id). Same
+              // `LIMIT 1 BY span_id` dedupe as listByTraceId.
+              query: `SELECT ${LIST_COLUMNS}
+                    FROM (
+                      SELECT ${LIST_COLUMNS}
+                      FROM spans
+                      WHERE organization_id = {organizationId:String}
+                        AND project_id = {projectId:String}
+                        AND coalesce(nullIf(session_id, ''), toString(trace_id)) = {sessionId:String}
+                        ${startFromClause}
+                        ${startToClause}
+                      ORDER BY span_id, ingested_at DESC
+                      LIMIT 1 BY span_id
+                    )
+                    ORDER BY start_time ASC`,
+              query_params: {
+                organizationId: organizationId as string,
+                projectId: projectId as string,
+                sessionId: sessionId as string,
+                ...(startTimeFrom ? { startTimeFrom: toClickhouseDateTime(startTimeFrom) } : {}),
+                ...(startTimeTo ? { startTimeTo: toClickhouseDateTime(startTimeTo) } : {}),
+              },
+              format: "JSONEachRow",
+            })
+            return result.json<SpanListRow>()
+          })
+          .pipe(
+            Effect.map((rows) => rows.map(toDomainSpan)),
+            Effect.mapError((error) => toRepositoryError(error, "listBySessionId")),
+          )
+      })
+
     return {
       // TODO(repositories): rename insert -> save to keep repository write
       // verbs consistent across append-only and upsert-backed stores.
@@ -428,6 +480,8 @@ export const SpanRepositoryLive = Layer.effect(
         }),
 
       listByTraceId,
+
+      listBySessionId,
 
       listByProjectId,
 
