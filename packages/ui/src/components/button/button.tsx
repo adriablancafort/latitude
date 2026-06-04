@@ -86,7 +86,7 @@ const buttonVariantsConfig = cva(
           "after:pointer-events-none",
           "after:absolute",
           "after:inset-0",
-          "after:z-0",
+          "after:-z-10",
           "after:rounded-[inherit]",
           "after:content-['']",
           "after:transition-[background-color,box-shadow]",
