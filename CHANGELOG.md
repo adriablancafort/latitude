@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## v0.1.48 - 2026-06-04
+
+### Monitors
+
+- Wired saved-search alert sources into the monitor firing pipeline so monitors alert on saved-search-matched sessions (ref: #3392).
+- Connected issue events to monitors with mute-aware notifications, so muted monitors suppress incident alerts correctly (ref: #3387).
+- Polished monitor dashboard, detail panel, and alert forms UX (ref: #3381).
+
+### Issues
+
+- Closed escalation automatically when an issue is resolved or ignored, and added a cold-start exit to prevent stale escalation loops (ref: #3396).
+
+### Traces
+
+- Added a duration composition bar to trace and session drawers showing the proportional time breakdown across spans (ref: #3382).
+
+### Command palette
+
+- Added org-wide search across all projects so users can jump to sessions, traces, and monitors without switching project context first (ref: #3378).
+
+### Search
+
+- Split session search into a candidate-fetch and literal-IN rollup for a significant query performance improvement (ref: #3380).
+- Fixed the session panel sliding left on the first-hit scroll (ref: #3388).
+
+### Analytics
+
+- Fixed PostHog org-group attribution so organization-level analytics are correctly attributed end to end (ref: #3391).
+
+### Claude Code telemetry
+
+- Fixed silent hook failure on Node.js < 20.12 by adding a version check in a thin entry-point wrapper that prints a clear error instead of crashing invisibly (ref: #3405).
+- Fixed `BUN_OPTIONS` not reaching the Claude binary on Linux when launched from VS Code by adding a systemd user environment path during install (ref: #3405).
+
+### UI
+
+- Kept Button text visible when using `asChild` with default, destructive, and secondary variants (ref: 805502e).
+
 ## v0.1.47 - 2026-06-03
 
 ### Traces and sessions
