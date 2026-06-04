@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## v0.1.49 - 2026-06-04
+
+### Monitors
+
+- Fixed "last incident" and "detected at" timestamps to align with the values shown in the incidents table (ref: #3418).
+- Fixed throttled saved-search monitor checks not re-firing after the throttle window expired (ref: #3416).
+
+### Notifications
+
+- Aligned the incident-trend chart in email notifications with the layout used in the issue-detail drawer (ref: #3406).
+
+### Traces and sessions
+
+- Fixed the Spans tab not appearing for sessions that contain only a single trace (ref: #3407).
+- Added an in-product connect experience on empty Traces pages to guide users through sending their first traces (ref: #3413).
+
+### UI
+
+- Fixed markdown annotation rendering in the genai-conversation component (ref: #3419).
+
 ## v0.1.48 - 2026-06-04
 
 ### Monitors
