@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.1.50 - 2026-06-05
+
+### Datasets
+
+- Fixed `listDatasetRows` (API and MCP) failing with an output validation error when a row cell held a JSON array, number, or boolean; dataset cells now accept and round-trip all JSON value types on both read and insert (ref: #3420).
+
+### Test mode
+
+- Added the initial sandbox routing and middleware scaffold for test-mode organizations (ref: #3410).
+
 ## v0.1.49 - 2026-06-04
 
 ### Monitors
