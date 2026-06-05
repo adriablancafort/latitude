@@ -1,19 +1,19 @@
 import { datasetIdSchema, datasetRowIdSchema } from "@domain/shared"
 import { z } from "zod"
 
-const rowFieldValueSchema: z.ZodType<string | Record<string, unknown>> = z.union([
+// Any JSON value a cell round-trips as. No null: it's stored as "" and reads back as "".
+const rowFieldValueSchema: z.ZodType<string | number | boolean | Record<string, unknown> | unknown[]> = z.union([
   z.string(),
+  z.number(),
+  z.boolean(),
+  z.array(z.unknown()),
   z.record(z.string(), z.unknown()),
 ])
 
 export type RowFieldValue = z.infer<typeof rowFieldValueSchema>
 
-const insertRowFieldValueSchema: z.ZodType<RowFieldValue | number | boolean | null> = z.union([
-  rowFieldValueSchema,
-  z.number(),
-  z.boolean(),
-  z.null(),
-])
+// Read shapes plus null (coerced to "" on storage).
+const insertRowFieldValueSchema: z.ZodType<RowFieldValue | null> = z.union([rowFieldValueSchema, z.null()])
 
 export type InsertRowFieldValue = z.infer<typeof insertRowFieldValueSchema>
 

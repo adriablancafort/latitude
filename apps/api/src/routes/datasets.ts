@@ -362,7 +362,15 @@ const deleteDatasetEndpoint = datasetEndpoint({
 
 // ─── Rows ────────────────────────────────────────────────────────────────────
 
-const InsertRowCellSchema = z.union([z.string(), z.record(z.string(), z.unknown()), z.number(), z.boolean(), z.null()])
+// Mirrors the read-side RowFieldValue, plus null (coerced to "" on storage).
+const InsertRowCellSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.array(z.unknown()),
+  z.record(z.string(), z.unknown()),
+  z.null(),
+])
 
 const PaginatedDatasetRowsSchema = Paginated(DatasetRowSchema, "PaginatedDatasetRows")
 
