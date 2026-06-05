@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## v0.1.51 - 2026-06-05
+
+### Monitors and API
+
+- Added the full monitor and monitor-alert REST surface under `/v1/projects/{projectSlug}/monitors` (list/create/get/update/delete monitors and alerts, list incidents, mute/unmute), surfaced `monitorAlertId` and `condition` on the `Incident` entity, and regenerated the OpenAPI/MCP specs and TS SDK (new `client.monitors` resource, SDK `6.0.0-alpha.6`) (ref: #3431).
+- Fixed saved-search monitor checks missing a discrete burst into an idle project by switching to a leading-edge throttle, so the trailing evaluation window now covers the triggering activity (ref: #3433).
+- Fixed `savedSearch.threshold` sustained-incident alerts falling through to the "Unsupported notification" fallback in the in-app bell (ref: #3433).
+
+### Search
+
+- Folded the standalone `/search` page into the project page (Sessions/Traces tabs) with query and saved-search deep-link params, retired the `/search` route, and dropped saved-search user assignment (removed the assign use-case and endpoint) (ref: #3427).
+
+### Test mode
+
+- Blocked all outbound notification channels (email, Slack) for sandbox organizations; in-app notification rows are unaffected (ref: #3408).
+
+### Analytics
+
+- Added the browser's PostHog `$session_id` (plus referrer/UTM) to the server-side `UserSignedUp` event for magic-link signups, so PostHog can bind it to the originating session (ref: #3428).
+
+### Docs
+
+- Polished the README with status/social badges, free-tier and MCP-server callouts, inline provider/framework links, a contributors wall, and reliable npm/PyPI download badges backed by a daily workflow (ref: #3379).
+
 ## v0.1.50 - 2026-06-05
 
 ### Datasets
