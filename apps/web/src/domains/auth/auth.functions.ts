@@ -1,17 +1,21 @@
+import { signupAttributionInputSchema, stashSignupAttribution } from "@domain/marketing"
 import { InvitationRepository } from "@domain/organizations"
+import { RedisCacheStoreLive } from "@platform/cache-redis"
 import { InvitationRepositoryLive, withPostgres } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { getRequestHeaders } from "@tanstack/react-start/server"
 import { Effect } from "effect"
 import z from "zod"
-import { getAdminPostgresClient, getBetterAuth } from "../../server/clients.ts"
+import { getAdminPostgresClient, getBetterAuth, getRedisClient } from "../../server/clients.ts"
 
 const sendMagicLinkInputSchema = z.object({
   email: z.email(),
   callbackURL: z.string().optional(),
   newUserCallbackURL: z.string().optional(),
   captchaToken: z.string().optional(),
+  // Browser-captured attribution; stashed by email for `onUserCreated`. Best-effort.
+  attribution: signupAttributionInputSchema.optional(),
 })
 
 export const sendMagicLink = createServerFn({ method: "POST" })
@@ -21,6 +25,19 @@ export const sendMagicLink = createServerFn({ method: "POST" })
     const headers = new Headers(requestHeaders)
     if (data.captchaToken) {
       headers.set("x-captcha-response", data.captchaToken)
+    }
+
+    if (data.attribution) {
+      try {
+        await Effect.runPromise(
+          stashSignupAttribution({ email: data.email, attribution: data.attribution }).pipe(
+            Effect.provide(RedisCacheStoreLive(getRedisClient())),
+            withTracing,
+          ),
+        )
+      } catch {
+        // Never block the magic link on attribution.
+      }
     }
 
     await getBetterAuth().api.signInMagicLink({
