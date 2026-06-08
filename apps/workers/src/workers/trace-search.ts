@@ -19,6 +19,7 @@ import type { ClickHouseClient } from "@platform/db-clickhouse"
 import { TraceRepositoryLive, TraceSearchRepositoryLive, withClickHouse } from "@platform/db-clickhouse"
 import {
   BillingOverrideRepositoryLive,
+  OrganizationRepositoryLive,
   type PostgresClient,
   resolveEffectivePlanCached,
   SettingsReaderLive,
@@ -264,7 +265,12 @@ export const runTraceSearchRefresh = (payload: RefreshTracePayload, deps: TraceS
 
   return processRefreshTrace(payload).pipe(
     withPostgres(
-      Layer.mergeAll(BillingOverrideRepositoryLive, SettingsReaderLive, StripeSubscriptionLookupLive),
+      Layer.mergeAll(
+        BillingOverrideRepositoryLive,
+        SettingsReaderLive,
+        StripeSubscriptionLookupLive,
+        OrganizationRepositoryLive,
+      ),
       postgresClient,
       OrganizationId(payload.organizationId),
     ),
