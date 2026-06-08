@@ -20,7 +20,6 @@ import type { Hono } from "hono"
 import { getPostgresClient, getQueuePublisher, getRedisClient, getStorageDisk } from "../clients.ts"
 import { authMiddleware } from "../middleware/auth.ts"
 import { projectMiddleware } from "../middleware/project.ts"
-import { SANDBOX_TRACE_INGESTION_RATE_LIMIT } from "../rate-limit/sandbox-rate-limit.ts"
 import { checkTraceIngestionRateLimit } from "../rate-limit/trace-ingestion.ts"
 import type { IngestEnv } from "../types.ts"
 
@@ -49,18 +48,11 @@ export const registerTracesRoute = ({ app }: TracesRouteContext) => {
     const body = await c.req.arrayBuffer()
     if (!body.byteLength) return c.json({}, 202)
 
-    const organizationId = c.get("organizationId")
-    const isSandbox = c.get("isSandbox")
-
-    // Sandbox keys get a lower per-key throughput ceiling (Test Mode): a flat
-    // constant applied to every sandbox, independent of the parent org's plan.
-    // Same limiter, 429 + Retry-After — just a lower threshold.
     const rateLimit = await checkTraceIngestionRateLimit({
       redis: getRedisClient(),
-      organizationId,
+      organizationId: c.get("organizationId"),
       apiKeyId: c.get("apiKeyId"),
       payloadBytes: body.byteLength,
-      ...(isSandbox ? { config: SANDBOX_TRACE_INGESTION_RATE_LIMIT } : {}),
     })
 
     if (!rateLimit.allowed) {
@@ -79,8 +71,9 @@ export const registerTracesRoute = ({ app }: TracesRouteContext) => {
       )
     }
 
-    const organization = OrganizationId(organizationId)
+    const organization = OrganizationId(c.get("organizationId"))
     const apiKeyId = c.get("apiKeyId")
+    const isSandbox = c.get("isSandbox")
     const defaultProjectSlug = c.get("defaultProjectSlug")
 
     const disk = getStorageDisk()

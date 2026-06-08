@@ -137,20 +137,6 @@ describe("checkTraceIngestionRateLimit", () => {
     expect(result).toEqual({ allowed: true })
   })
 
-  it("enforces a lower sandbox ceiling when a sandbox config is passed", async () => {
-    // Sandbox keys reuse this limiter with a lower per-minute config sourced from
-    // the parent plan's `sandboxRateLimit`. One request over the lower request
-    // ceiling is refused with the standard 429 shape.
-    const redis = new FakeRedis()
-    const sandboxConfig = { maxRequests: 1, maxBytes: 1_000, windowSeconds: 60 } as const
-
-    const first = await checkTraceIngestionRateLimit({ ...createInput(redis, 10), config: sandboxConfig })
-    const second = await checkTraceIngestionRateLimit({ ...createInput(redis, 10), config: sandboxConfig })
-
-    expect(first).toEqual({ allowed: true })
-    expect(second).toEqual({ allowed: false, limitedBy: "requests", retryAfterSeconds: 60 })
-  })
-
   it("rate-limits across projects within the same org+apiKey (no `projectId` in the key)", async () => {
     // Per-span project scoping moved project resolution into the use case. The rate-limit
     // bucket is now `org + apiKey`, matching billing's scope — two projects in the same org

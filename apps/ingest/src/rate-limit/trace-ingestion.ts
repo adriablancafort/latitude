@@ -13,7 +13,7 @@ const developmentTraceRateLimitDefaults = {
   windowSeconds: 60,
 } as const
 
-export interface TraceIngestionRateLimitConfig {
+interface TraceIngestionRateLimitConfig {
   readonly maxRequests: number
   readonly maxBytes: number
   readonly windowSeconds: number
