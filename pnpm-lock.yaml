@@ -314,6 +314,9 @@ importers:
       '@domain/queue':
         specifier: workspace:*
         version: link:../../packages/domain/queue
+      '@domain/sandboxes':
+        specifier: workspace:*
+        version: link:../../packages/domain/sandboxes
       '@domain/shared':
         specifier: workspace:*
         version: link:../../packages/domain/shared
@@ -1553,6 +1556,18 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
+  packages/domain/sandboxes:
+    dependencies:
+      '@domain/shared':
+        specifier: workspace:*
+        version: link:../shared
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.57
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
+
   packages/domain/saved-searches:
     dependencies:
       '@domain/events':
@@ -1643,6 +1658,9 @@ importers:
       '@domain/queue':
         specifier: workspace:*
         version: link:../queue
+      '@domain/sandboxes':
+        specifier: workspace:*
+        version: link:../sandboxes
       '@domain/shared':
         specifier: workspace:*
         version: link:../shared
@@ -1857,6 +1875,12 @@ importers:
       '@domain/api-keys':
         specifier: workspace:*
         version: link:../../domain/api-keys
+      '@domain/organizations':
+        specifier: workspace:*
+        version: link:../../domain/organizations
+      '@domain/shared':
+        specifier: workspace:*
+        version: link:../../domain/shared
       '@platform/cache-redis':
         specifier: workspace:*
         version: link:../cache-redis
@@ -1888,6 +1912,9 @@ importers:
       '@domain/integrations':
         specifier: workspace:*
         version: link:../../domain/integrations
+      '@domain/sandboxes':
+        specifier: workspace:*
+        version: link:../../domain/sandboxes
       '@domain/shared':
         specifier: workspace:*
         version: link:../../domain/shared
@@ -2036,6 +2063,9 @@ importers:
       '@domain/projects':
         specifier: workspace:*
         version: link:../../domain/projects
+      '@domain/sandboxes':
+        specifier: workspace:*
+        version: link:../../domain/sandboxes
       '@domain/saved-searches':
         specifier: workspace:*
         version: link:../../domain/saved-searches
