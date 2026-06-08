@@ -1,88 +1,107 @@
-# Live Taxonomy
+# Taxonomy — the unified topic cluster tree
 
-Live taxonomy clusters project sessions into behavior categories for product and observability exploration. It is project-scoped at every boundary and organization-scoped in storage, queueing, Redis locks, and cache keys.
+Taxonomy organizes live-retained session-level **topic observations** produced by [conversation intelligence](./conversation-intelligence.md) into a **single tree of clusters** per project. There is no separate category model: every tree level is the same kind of node, and **depth is clustering density** — depth-0 roots form at fixed coarse topic thresholds, and each level below re-clusters its parent's directly assigned members at a tighter density derived from that parent's own similarity distribution. "Categories" in the product UI are simply depth-0 nodes.
+
+Domain code: `packages/domain/taxonomy`. Postgres adapters: `packages/platform/db-postgres/src/repositories/taxonomy-*.ts`. ClickHouse adapter: `packages/platform/db-clickhouse/src/repositories/taxonomy-observation-repository.ts`. Orchestration: `apps/workflows/src/workflows/taxonomy-gardening-workflow.ts` + `apps/workflows/src/activities/taxonomy-gardening-activities.ts`. Temporal is the **only** gardening orchestrator — the legacy in-process path was removed; a missing workflow starter is a logged misconfiguration, not a fallback.
+
+## Tree model
+
+`taxonomy_clusters` (Postgres) rows carry the tree shape:
+
+- `parent_cluster_id` — null for roots.
+- `depth` — 0 for roots, bounded by `TAXONOMY_TREE_MAX_DEPTH`.
+- `path` — slash-terminated ancestor id chain (`"rootId/parentId/"`, empty for roots). Subtree membership is `path LIKE '%${id}/%'` (`listSubtreeIds`), safe because cuids contain no LIKE metacharacters and segments are slash-delimited.
+- `split_link_threshold` — the link density this node's children were split at; null until the node recurses. Child-level merge floors and descent gates read it so every decision at a level uses the density that created that level.
+- `centroid` (JSONB decayed weighted sum, shared math with issues via `@domain/shared/centroid`) plus a derived `centroid_embedding vector(2048)` for pgvector ANN. An interior node deliberately **keeps its full-topic centroid after a split** — it represents the parent topic for the first hop of descent while direct assignments represent residue.
+- `observation_count` — a **cached counter**; ClickHouse rows are the truth (see "Counter discipline").
+- Lifecycle `state` (`active`/`merged`/`deprecated`), `merged_into_cluster_id`, observed/clustered timestamps.
+
+### Residue is a feature
+
+Observations are **not** pushed to the deepest leaves. A node holds *residue*: members that belong to the topic but match none of its tighter children. Residue comes from two sources — deepest-fit routing stopping at the level where the observation genuinely fits, and recursion leaving uncovered members on the parent. Residue is real information ("a Retail Order Management conversation, but not specifically any subtopic") and the **birth pool for new subtopics**: once a node's residue crosses the recursion floor, the next garden pass re-clusters it into new children. Consequently, "sessions of a node" always means *residue + entire subtree* — every read surface (drawer, filters, behaviours table) resolves subtrees, never single nodes.
+
+### Counter discipline
+
+`observation_count` in Postgres caches what ClickHouse `taxonomy_observations` knows. Three rules keep them honest:
+
+1. **Every path that moves CH rows must move the PG counter** under the per-cluster Redis lock with a fresh `findById` (sweep absorption, noise reassign, merges, live assignment, live re-analysis replace). The replace path (`replaceObservationInClusterUseCase`) is the exception that **does not** move the counter: re-analyzing an existing session reuses the stable observation id, so it removes the prior embedding from the centroid and adds the new one while leaving `observation_count` unchanged (see the CI doc's idempotency section).
+2. **Recursion computes residue from the live CH window**, not the stored counter — the counter can lag, and taxonomy formation deliberately ignores rows outside the newest-observation gardening window.
+3. **State-aware writes**: a cluster can merge or deprecate between routing and lock acquisition. Counter writers check `state` after the locked re-read; live assignment **redirects increments to `merged_into_cluster_id`** (bounded hops) instead of resurrecting a merged row.
 
 ## Data model
 
-Postgres stores the durable taxonomy graph:
+Postgres (`@platform/db-postgres`):
 
-- `taxonomy_clusters`: leaf behavior clusters. Each row has `organization_id`, `project_id`, an optional `parent_category_id`, generated `name` and `description`, lifecycle `state`, `observation_count`, merge target, and a JSONB centroid. The repository derives and stores a nullable `centroid_embedding vector(2048)` from that centroid for exact pgvector search.
-- `taxonomy_categories`: navigation groups rebuilt from active cluster centroids. Categories have generated names/descriptions, `cluster_count`, `observation_count`, lifecycle `state`, and a normalized `centroid_embedding` used for continuation matching between rebuilds.
-- `taxonomy_cluster_lineage`: leaf-level birth, merge, and death transitions emitted by gardening runs. Category evolution is derived and not represented as lineage in the MVP.
-- `taxonomy_runs`: one row per project gardening run, with trigger, status, started/completed timestamps, counters, and error text.
+- `taxonomy_clusters` — the tree (above).
+- `taxonomy_runs` — one row per gardening run: trigger, status, scanned/born/merged/deprecated counters, error.
+- `taxonomy_cluster_lineage` — append-only `birth` / `merge` / `split` transitions with from/to cluster ids; drives naming plans and the activity feed.
 
-ClickHouse stores `behavior_observations`, one row per observed session summary/embedding assignment. Rows are rewritten through `ReplacingMergeTree` semantics when gardening reassigns noise or merged-cluster observations. Observation rows carry the session id, time range, trace ids, summary/hash, embedding/model, assigned cluster id, confidence, assignment method, reassignment run id, retention days, and indexed timestamp.
+ClickHouse:
 
-Centroid math is shared with issues through `@domain/shared/centroid`: centroids are decayed weighted running sums, persisted as JSONB, and normalized only for query/storage of the derived pgvector embedding.
+- `taxonomy_observations` — live-retained moment topic projections: embedding, `assigned_cluster_id` (empty = noise), assignment method (`centroid_online` / `gardening_birth` / `gardening_reassign` / `noise`), confidence, `analysis_hash`, `reassignment_run_id`. Rows use the semantic-search embedding horizon (`TAXONOMY_OBSERVATION_RETENTION_DAYS`, 30 days); gardening/query batch reads bound work by taking the newest `TAXONOMY_GARDENING_OBSERVATION_WINDOW_MAX` project rows first. `ReplacingMergeTree(indexed_at)` is ordered for gardening and read paths by `(org, project, assigned_cluster_id, start_time, observation_id)`, with bloom indexes on `session_id`, `analysis_hash`, and `observation_id`. The deprecated observation `dimension` column is not part of this table; clusters and run records may still carry the singleton `topic` dimension while the broader taxonomy naming cleanup completes.
 
-## Online observation pipeline
+### Live window
 
-Trace completion is the runtime trigger. After `trace-end:run` finishes trace-search refresh work, it publishes `taxonomy:observeSession` with a per-session org-prefixed debounce key:
+Taxonomy observations are always ingested when the analyzer emits a taxonomy projection; there is no project-level sample cap and no separate noise cap. Conversation intelligence stores every semantic moment and moment label on the broader conversation horizon, while taxonomy observations expire on the shorter embedding horizon. Gardening remains non-paginated and predictable by operating on the newest `TAXONOMY_GARDENING_OBSERVATION_WINDOW_MAX` taxonomy observations per project, ordered newer to older, then filtering/sampling within that live window.
 
-```text
-org:${organizationId}:taxonomy:observeSession:${projectId}:${sessionId}
+### ReplacingMergeTree version discipline
+
+`indexed_at` is the replace **version**. Two writers touching the same observation with the same timestamp produce a tie ClickHouse resolves arbitrarily — silent, nondeterministic assignment corruption. Therefore:
+
+- Gardening stages share one run timestamp but write with **deterministic per-stage millisecond offsets** (`GARDEN_STAGE_OFFSET_MS`: sweep +0 … recurse +4) so later stages always win and Temporal retries reproduce identical versions.
+- The domain test fake mirrors real semantics (max version wins; ties keep the existing row) so version bugs surface in unit tests instead of production.
+
+## Assignment: deepest-fit descent
+
+`routeToDeepestClusterUseCase` is the single router used by live analysis and gardening's noise reassignment:
+
+1. Start at the roots: pgvector ANN (`listNearestActive` with `parentClusterId = null`) returns top-K active candidates.
+2. Gate with the fixed absolute threshold plus a softmax relative margin between top-1 and top-2 (`decideClusterAssignment`). The margin measures ambiguity *between* candidates — a lone child passes it trivially by design.
+3. While a level clears the gates, descend into the winner's children. Descent into a recursed node's children additionally requires `max(absoluteGate, parent.split_link_threshold)` — the global gate is tuned for root coarseness and would otherwise walk into a tight subtree on marginal similarity.
+4. The observation lands on the **deepest node that cleared**; stopping at an interior node leaves honest residue.
+
+The router only decides placement. Applying that placement to a cluster's centroid and counter goes through two locked use-cases: `assignObservationToClusterUseCase` for a new observation (+1, add to centroid, following `merged_into_cluster_id` redirects up to `MAX_MERGE_REDIRECTS`), and `replaceObservationInClusterUseCase` when a re-analyzed session keeps its existing cluster but its projection changed (remove the prior embedding, add the new, counter unchanged). Both no-op when the locked re-read finds the cluster non-`active`.
+
+Known imprecision sources, in priority order: ambiguous near-duplicate siblings parking observations one level up (mitigated by sibling merges), and greedy single-path descent (beam width 1 — an observation never recovers into a different root's subtree).
+
+## Gardening
+
+`gardenProjectTaxonomyWorkflow` (deterministic workflow id `org:${org}:taxonomy:garden:${project}`) runs the singleton topic gardening child with this activity sequence; each activity is idempotent under retries via the run-scoped deterministic `runId`:
+
+```
+sweep births ─► noise reassign ─► reconcile counts ─► tree recursion ─► naming plan ─► name clusters ─► sibling merges ─► reconcile counts ─► leaf deprecation ─► emit lineage ─► complete run
 ```
 
-The taxonomy worker loads the session and trace details, builds a normalized conversation document, skips very short sessions as cheap noise, embeds the behavior text with Voyage (`voyage-4-large`, 2048 dimensions), retrieves nearest active clusters, and applies the two-gate decision:
+- **Sweep births** (`sweepNoiseAndBirthClustersUseCase`): greedy diameter-bounded clustering over at most the newest `TAXONOMY_CLUSTERING_PROPOSAL_SAMPLE_MAX` recent noise observations at root density. A root birth must clear `max(TAXONOMY_NOISE_BIRTH_MIN_MEMBERS_FLOOR, ceil(min(total recent observations, TAXONOMY_CLUSTERING_PROPOSAL_SAMPLE_MAX) * TAXONOMY_VISIBLE_BIRTH_MIN_OBSERVATION_RATIO))`, so visible roots represent at least 5% of the sampled observed corpus. Near-existing groups are **absorbed** into the nearest root instead of birthing.
+- **Noise reassign** (`reassignNoiseToCurrentClustersUseCase`): routes recent noise through the same deepest-fit descent as live assignment, so recovered observations land on the most specific defensible node instead of parking on roots.
+- **Reconcile counts** (`reconcileClusterCountsUseCase`): rebuilds Postgres counters from ClickHouse before recursion and again after merges so split decisions and read paths see fresh current counts.
+- **Tree recursion** (`recurseTreeClustersUseCase`): the top fat nodes (direct count >= floor, depth < max) stream direct members and build a bounded proposal sample from closest-to-parent-centroid, farthest-from-parent-centroid, and random reservoir bands. The proposal re-clusters at a per-node child density taken from a quantile of the node's own internal pairwise similarities (clamped). Candidate children must clear 5% of the parent proposal sample and then 5% of the full streamed parent corpus; confident members move to children, ambiguous members remain parent residue. Splits **roll back** when no real structure exists (too few children, low coverage, one dominant child, or near-duplicate final child centroids). Emits `split` lineage.
+- **Naming** (`nameClusterUseCase`): farthest-point-sampled member summaries -> map-reduce naming on the project model; children are named **within their parent's context** ("name what distinguishes them inside it; do not restate the parent topic"). Renames trigger on birth/split lineage and on the pending placeholder.
+- **Sibling merges** (`mergeNearDuplicateClustersUseCase`): merges are **sibling-only** (cross-parent merges would give a node two ancestries) and centroid-only. A pair must clear `TAXONOMY_MERGE_THRESHOLD`; children also respect at least their parent's `split_link_threshold`. There is no LLM merge judge and no name-token nomination. Approved pairs assemble via **complete-linkage components** — best pairs first, a component only grows while every cross-pair clears the floor — so one weak transitive edge can no longer drop a whole component's high-confidence merges. The survivor absorbs the loser's live-window observations and **adopts its subtree** (children re-parent, path prefixes rewrite, from fresh locked reads).
+- **Leaf deprecation** (`deprecateInactiveClustersUseCase`): decayed-mass floor + inactivity window, **leaf-only** — a node with active children never deprecates.
 
-- absolute top cosine must be at least `TAXONOMY_ASSIGN_ABSOLUTE_THRESHOLD`
-- softmax probability margin between top-1 and top-2 must be at least `TAXONOMY_ASSIGN_RELATIVE_MARGIN`
-
-Assigned observations update the target cluster through the Redis-backed per-cluster lock and are written to ClickHouse with `assignment_method = "centroid_online"`. Unassigned observations are written as noise. The worker logs observe-session outcome, duration, and confidence; assignment decision spans annotate top-1/top-2 cosine and spread.
-
-## Gardening pipeline
-
-Gardening is a BullMQ per-project task, not a Temporal workflow. A repeatable `taxonomy:gardenSweep` job enumerates non-deleted projects with enough recent observations and publishes throttled `taxonomy:gardenProject` jobs by org-prefixed project key. Manual admin triggering uses the same `gardenProject` queue path.
-
-A `gardenProject` run acquires the per-project Redis garden lock, inserts a running `taxonomy_runs` row, runs activities A through G, then saves completed or failed status. The run is capped by `TAXONOMY_GARDENING_MAX_RUNTIME_MS`; failures replay from scratch on a later task.
-
-Activities:
-
-1. **Noise sweep / births**: pull recent noise, compute the proportional `minMembers`, run pure TypeScript single-linkage candidates with diameter filtering, absorb candidates near existing clusters, otherwise create new active clusters and rewrite member observations as `gardening_birth`.
-2. **Merge pass**: find connected components of near-duplicate active clusters, choose the survivor by observation count then id, fold all loser observations into the survivor centroid, mark losers merged, and emit merge lineage. Observation pagination for this internal path uses a full cluster scan so same-timestamp rows are not skipped.
-3. **Death pass**: deprecate active clusters that have no new observations for `TAXONOMY_DEAD_CLUSTER_INACTIVITY_DAYS` and whose decayed centroid mass is below `TAXONOMY_DEAD_CLUSTER_MASS_FLOOR`. Observations remain attached.
-4. **Noise reassignment**: re-evaluate recent noise against the current active cluster set and rewrite assigned rows as `gardening_reassign`, using the same Redis-locked centroid update path as online assignment.
-5. **Hierarchy rebuild**: cluster active leaf centroids with pure TypeScript average-linkage agglomerative clustering. K is `clamp(round(sqrt(activeClusters.length)), 3, TAXONOMY_HIERARCHY_MAX_CATEGORIES)`. Candidate category centroids match prior active categories by cosine continuation threshold; unmatched candidates create `Pending` categories; orphan prior categories are deprecated; member clusters get `parent_category_id` in one batch.
-6. **Naming**: clusters and categories named `Pending`, newly born clusters, or refreshed clusters are named with a map/reduce `AI.generate` flow. Clusters sample member observations with farthest-point sampling over embeddings; categories summarize member cluster names/descriptions rather than raw observations.
-7. **Lineage emission**: birth, merge, and death lineage rows are appended in Postgres.
-
-The worker emits structured gardening counters, cluster counts, and a `taxonomy.zero_births_streak` warning when a project is past the cold-start gate and the latest three completed runs all scanned noise but produced zero births.
+The tree converges over passes: pass 1 births roots and starts splitting, later passes deepen, merge near-duplicates, and stabilize; a pass with zero born/merged/deprecated is the fixed point.
 
 ## Read paths
 
-`@domain/taxonomy` exposes project-scoped read use-cases for the web/API composition layer:
+- **Behaviours page** (`listProjectBehavioursUseCase` → `getProjectBehaviours`): returns the literal tree (`ProjectBehaviourNode`: cluster, trend, novelty, `subtreeObservationCount`, children). Nodes show on their own merit (min observations + segment match) or as scaffolding for surviving children; zero-residue interior nodes synthesize a zero trend rather than vanish with their subtree. The web layer rolls conversation-intelligence rates/signals up each subtree weighted by sessions and renders an indented, expandable tree; the `high_escalation` segment is resolved in the web layer where escalation rates exist.
+- **Behaviour drawer**: sessions list, histograms, and the intelligence profile are all **subtree-scoped** (`listSubtreeIds` → `assigned_cluster_id IN`), pinned to current analysis generations.
+- **Sessions table topics filter**: selected nodes expand to subtree ids server-side before ClickHouse; see the CI doc for the subquery shape and time-bound pruning.
+- **Backoffice** (`AdminTaxonomyRepositoryLive`): keeps the legacy category/subcategory DTO shape but sources it from the tree — roots as groups, descendants rolled up by first path segment, orphans in `uncategorized`.
 
-- `listCategoriesUseCase`: active non-empty categories by default, with optional state and `includeEmpty`.
-- `listClustersInCategoryUseCase`: active leaf clusters in a category, sorted by observation count by default, with cursor/page-size and sort options.
-- `listClustersUseCase`: flat cluster list with state/category filters, cursor/page-size, sort options, and optional hybrid search. Search embeds the query with Voyage `inputType: "query"`, uses Postgres vector + tsvector scoring over `taxonomy_clusters`, applies weak-match thresholds, and pages after repository-level state/category filtering.
-- `getClusterDetailsUseCase`: project-scoped cluster row plus a small recent ClickHouse observation sample.
-- `getCategoryDetailsUseCase`: project-scoped category row plus active member clusters.
-- `listObservationsInClusterUseCase`: ClickHouse observations ordered by `(start_time DESC, session_id ASC)` and paged by a compound cursor so same-timestamp observations are not skipped.
-- `getTaxonomyAnalyticsUseCase`: active category/cluster counts, total observations in the window, top clusters by windowed ClickHouse occurrence count, and ClickHouse-side current-vs-baseline trend summaries for those top clusters.
-- `getLastRunUseCase`: latest taxonomy run plus the last 10 birth/merge lineage transitions for the activity panel.
+## Trade-off decisions
 
-## Operational controls
+- **One tree instead of clusters + categories**: levels differ only by density, so a single node type with recursive splitting replaced the two-model design; it removed an entire data model and the singleton-category pathology, at the cost of residue semantics every read surface must respect.
+- **Top-down divisive, not bottom-up agglomerative**: a global "tight" density is unknowable up front (telecom separates at ~0.88 where airline only separates at ~0.80); per-node derived densities adapt, and residue gives general observations an honest home that leaves-only models lack. The cost is interior nodes holding direct members — see "Residue is a feature".
+- **Sibling-only merges with judge arbitration**: centroid cosine in the 0.86–0.92 band carries no merge signal on dense corpora, so the judge decides from names/descriptions and the floors are density thresholds, not magic constants.
+- **Cached counters over CH aggregation on read**: listing surfaces need counts without ClickHouse round-trips; the price is the counter discipline above.
+- **Live bounded clustering window**: taxonomy observations are always ingested, but formation uses only the newest 100k retained observations. Complete moment and label data remains in conversation intelligence tables; the taxonomy tree stays a live sliding-window representation instead of freezing at a filled project sample.
+- **Conservative-but-logged judge fallbacks** and **at-most-once centroid updates** (see CI doc) trade slight undercounting for the elimination of double-count corruption.
 
-`scripts/taxonomy/rerun-project.ts` is the ops/corpus-tuning script for re-enqueuing every ClickHouse session in a project through `taxonomy:observeSession`. It supports `--organization-id`, `--project-id`, `--dry-run`, and `--limit`, paginates through `SessionRepository.listByProjectId`, publishes debounced observe-session jobs, and closes queue/ClickHouse clients.
+## Future work
 
-Configuration lives in `packages/domain/taxonomy/src/constants.ts`. The constants are grouped by responsibility:
-
-- **Embedding and summaries**: `TAXONOMY_EMBEDDING_MODEL`, `TAXONOMY_EMBEDDING_DIMENSIONS`, `TAXONOMY_SUMMARY_MODEL`, `TAXONOMY_SUMMARY_STRATEGY`, and `TAXONOMY_SUMMARY_MIN_SESSION_TOKENS` define the text-to-vector path. The MVP default is `embed_direct`; the LLM summary branch is an operator-controlled quality knob.
-- **Session document limits**: `TAXONOMY_SESSION_DOCUMENT_MAX_LENGTH` and `TAXONOMY_SESSION_MIN_LENGTH` bound the conversation text that is summarized/embedded and cheaply skip too-short sessions.
-- **Online assignment**: `TAXONOMY_OBSERVATION_DEBOUNCE_MS`, `TAXONOMY_ASSIGN_TOPK`, `TAXONOMY_ASSIGN_ABSOLUTE_THRESHOLD`, `TAXONOMY_ASSIGN_RELATIVE_MARGIN`, and `TAXONOMY_ASSIGN_TEMPERATURE` govern observe-session coalescing and the two-gate cluster assignment decision.
-- **Gardening cadence and eligibility**: `TAXONOMY_GARDENING_CRON_KEY`, `TAXONOMY_GARDENING_CRON_PATTERN`, `TAXONOMY_GARDENING_THROTTLE_MS`, `TAXONOMY_GARDENING_MIN_OBSERVATIONS`, `TAXONOMY_GARDENING_MAX_RUNTIME_MS`, `TAXONOMY_GARDENING_STALE_GRACE_MS`, and `TAXONOMY_GARDENING_SWEEP_BATCH` define scheduled/offline run behavior.
-- **Birth, merge, and death thresholds**: `TAXONOMY_NOISE_LOOKBACK_DAYS`, `TAXONOMY_NOISE_BIRTH_MIN_OBSERVATIONS`, the proportional min-member floor/ratio/ceiling constants, `TAXONOMY_BIRTH_LINK_THRESHOLD`, `TAXONOMY_BIRTH_MAX_DIAMETER`, `TAXONOMY_ABSORPTION_THRESHOLD`, `TAXONOMY_MERGE_THRESHOLD`, `TAXONOMY_DEAD_CLUSTER_MASS_FLOOR`, and `TAXONOMY_DEAD_CLUSTER_INACTIVITY_DAYS` define the leaf lifecycle.
-- **Hierarchy and naming**: `TAXONOMY_HIERARCHY_MAX_CATEGORIES`, `TAXONOMY_CATEGORY_CONTINUATION_THRESHOLD`, `TAXONOMY_NAMING_MODEL`, `TAXONOMY_NAMING_REFRESH_OBSERVATIONS`, and the FPS sample budget constants govern category rebuilds and generated labels.
-- **Read search and storage**: `TAXONOMY_SEARCH_MIN_SCORE`, `TAXONOMY_SEARCH_MIN_VECTOR_SIMILARITY`, and `TAXONOMY_OBSERVATION_RETENTION_DAYS` define hybrid-search weak-match suppression and ClickHouse retention.
-- **Locks**: `TAXONOMY_CLUSTER_LOCK_TTL_SECONDS` and `TAXONOMY_GARDEN_LOCK_TTL_SECONDS` bound Redis lock lifetimes. Online cluster assignment treats cluster lock contention as transient backpressure: it retries with capped exponential backoff and full jitter (`TAXONOMY_CLUSTER_LOCK_MAX_RETRIES`, `TAXONOMY_CLUSTER_LOCK_RETRY_BASE_DELAY_MS`, `TAXONOMY_CLUSTER_LOCK_RETRY_MAX_DELAY_MS`) and, if contention persists, records the observation as noise so ingestion remains durable and gardening can reassign it later. The retry budget is sized so the worst-case cumulative wait (~29s) sits just under `TAXONOMY_CLUSTER_LOCK_TTL_SECONDS`, so a normally-held lock — including a gardening merge holding the same per-cluster lock — almost always frees before the observation degrades to noise.
-
-The seeded Acme corpus is the smoke-test and threshold tuning corpus. The most sensitive levers are `TAXONOMY_BIRTH_LINK_THRESHOLD` and `TAXONOMY_BIRTH_MAX_DIAMETER`, because they control single-linkage chaining and cluster sterility. A production-embedding pass over the full 1,574-session seeded Acme project used `pnpm --filter @tools/live-seeds taxonomy:tune-seeded-acme -- --limit 1600 --rebase-observations-to-now` plus an offline threshold grid over the stored Voyage embeddings. The pass raised `TAXONOMY_BIRTH_LINK_THRESHOLD` from `0.78` to `0.82` and kept `TAXONOMY_BIRTH_MAX_DIAMETER = 0.45`: looser thresholds produced only broad components, while `0.82/0.45` yielded six hand-recognizable behavior births (mobile/no-service support, order/account/storefront support, flight changes, address updates, airline disruption, and friend-booking flows) with a small residual noise floor. If TypeScript single-linkage cannot find a useful pair of birth threshold/diameter values on that corpus in future tuning, the Python UMAP/HDBSCAN sidecar becomes the next design step.
-
-## Decisions and tradeoffs
-
-- **Cluster sessions, not traces**: user behavior patterns are session-level intents. Trace-level clustering would over-count multi-turn conversations and fragment one user task into multiple clusters.
-- **Default to `embed_direct`**: the MVP embeds normalized conversation text directly. The LLM summary path exists, but it is opt-in because it adds per-session LLM cost and latency while the first durable requirement is stable clustering signal.
-- **Use exact pgvector search in Postgres**: cluster and issue counts are expected to stay low enough per project that exact project-scoped scans are simpler and more reliable than an external vector store or approximate index.
-- **Use TypeScript clustering at MVP scale**: single-linkage births and average-linkage category rebuilds are transparent, testable, and fast at expected noise/cluster counts. They intentionally expose failure modes before adding a sidecar.
-- **Run gardening as BullMQ work, not Temporal**: gardening is replayable from current Postgres/ClickHouse state and has no valuable in-flight history. A single capped BullMQ task with a per-project Redis lock is sufficient.
-- **Promote to Python UMAP/HDBSCAN only on evidence**: the sidecar is justified when real tuning shows TypeScript single-linkage cannot separate behavior modes, or when whale-scale O(n²) noise scans become the operational bottleneck.
+- **Single-child chain collapse**: post-merge consolidation can leave `parent (0 residue) → only-child` husks; a gardening rule should hoist the child into the parent's slot.
+- **Recurse-share scaling**: the recursion trigger (`share ≥ 0.12` of project observations) starves sizable topics on large corpora (a 279-observation root that deserves subtopics never recurses at 3.4k total); the floor should scale, e.g. `max(60, total × 0.05)`.
+- **Merge redirect read support**: live-window rows are currently rewritten during safe merges; read-time redirect resolution for `merged_into_cluster_id` would make old rows and interrupted compactions transparent.
+- **Beam or re-entrant descent** for cross-root boundary observations.
+- **Materialized "General" leaves**: if product wants strict leaves-partition semantics, residue can render as a synthetic per-node "General" child without changing the formation algorithm.

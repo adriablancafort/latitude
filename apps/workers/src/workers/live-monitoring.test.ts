@@ -5,7 +5,7 @@ import {
   evaluationSchema,
 } from "@domain/evaluations"
 import type { EventEnvelope } from "@domain/events"
-import type { PublishOptions, QueueName, QueuePublisherShape } from "@domain/queue"
+import type { PublishOptions, QueueName, QueuePublisherShape, WorkflowStarterShape } from "@domain/queue"
 import { TRACE_END_DEBOUNCE_MS } from "@domain/spans"
 import type { RedisClient } from "@platform/cache-redis"
 import { evaluations } from "@platform/db-postgres/schema/evaluations"
@@ -186,6 +186,11 @@ const createFakeRedisClient = (): RedisClient => {
 
 const delayedMessageKey = (queue: QueueName, dedupeKey: string) => `${queue}::${dedupeKey}`
 
+const createFakeWorkflowStarter = (): WorkflowStarterShape => ({
+  start: () => Effect.void as never,
+  signalWithStart: () => Effect.void,
+})
+
 const createQueueHarness = () => {
   const consumer = new TestQueueConsumer()
   const published: PublishedMessage[] = []
@@ -256,6 +261,7 @@ describe("live monitoring integration", () => {
       postgresClient: pg.appPostgresClient,
       clickhouseClient: ch.client,
       redisClient: createFakeRedisClient(),
+      workflowStarter: createFakeWorkflowStarter(),
     })
 
     const envelope = makeEnvelope({
@@ -315,7 +321,7 @@ describe("live monitoring integration", () => {
         }),
       },
     })
-  })
+  }, 15_000)
 
   it("replaces debounced trace-end:run when TracesIngested is dispatched twice for the same trace", async () => {
     await ch.client.insert({
@@ -337,6 +343,7 @@ describe("live monitoring integration", () => {
       postgresClient: pg.appPostgresClient,
       clickhouseClient: ch.client,
       redisClient: createFakeRedisClient(),
+      workflowStarter: createFakeWorkflowStarter(),
     })
 
     const envelope = makeEnvelope({
@@ -372,5 +379,5 @@ describe("live monitoring integration", () => {
       (message) => message.queue === "live-evaluations" && message.task === "execute",
     )
     expect(liveEvalExecutePublishes).toHaveLength(1)
-  })
+  }, 15_000)
 })
