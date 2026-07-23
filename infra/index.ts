@@ -3,7 +3,7 @@ import { defaults, type EnvironmentConfig, productionConfig, stagingConfig } fro
 import { createAlb } from "./lib/alb.ts"
 import { createBastion } from "./lib/bastion.ts"
 import { createDatadogSynthetics } from "./lib/datadog-synthetics.ts"
-import { createCertificate, createDnsRecords, createHostedZone, createTryLatitudeDnsRecords } from "./lib/dns.ts"
+import { createCertificate, createDnsRecords, createDnssecSigning, createHostedZone, createTryLatitudeDnsRecords } from "./lib/dns.ts"
 import { createEcs } from "./lib/ecs.ts"
 import { createGithubActionsOidc } from "./lib/github-actions.ts"
 import { createRds } from "./lib/rds.ts"
@@ -29,6 +29,8 @@ const bastionAmiId = config.require("bastionAmiId")
 const datadogSite = config.get("datadogSite") ?? "datadoghq.eu"
 const datadogSlackAlertHandle = config.get("datadogSlackAlertHandle") ?? "@slack-alerts"
 const enableDatadogSynthetics = config.getBoolean("enableDatadogSynthetics") ?? false
+const enableMaintenanceRedirect = config.getBoolean("enableWebMaintenanceRedirect") ?? false
+const enableDnssecSigning = config.getBoolean("enableDnssecSigning") ?? false
 
 const temporalCloudAddress = config.get("temporalCloudAddress") ?? `${envConfig.region}.aws.api.temporal.io:7233`
 const temporalCloudNamespace = config.get("temporalCloudNamespace") ?? ""
@@ -72,9 +74,12 @@ const alb = createAlb(
   vpc.publicSubnets,
   securityGroups.alb,
   certificate.certificateValidation?.certificateArn ?? certificate.certificate.arn,
+  enableMaintenanceRedirect,
 )
 
 const _dns = createDnsRecords(name, envConfig, alb.alb, hostedZoneId)
+
+const dnssec = environment === "production" && enableDnssecSigning ? createDnssecSigning(name, hostedZoneId) : undefined
 
 const rds = createRds(name, envConfig, vpc.privateSubnets, securityGroups.rds)
 
@@ -192,5 +197,9 @@ export const outputs = {
   ...(tryLatitudeZone ? {
     tryLatitudeZoneId: tryLatitudeZone.zone.zoneId,
     tryLatitudeNameServers: tryLatitudeZone.zone.nameServers,
+  } : {}),
+
+  ...(dnssec ? {
+    dnssecDsRecord: dnssec.dsRecord,
   } : {}),
 }

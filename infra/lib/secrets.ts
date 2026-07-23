@@ -110,7 +110,7 @@ export function createApplicationSecrets(baseName: string, environment: string):
     baseName,
     "clickhouse-url",
     "ClickHouse Cloud URL",
-    process.env.CLICKHOUSE_URL ?? "https://placeholder.clickhouse.cloud:8443",
+    process.env.LAT_CLICKHOUSE_URL ?? "https://placeholder.clickhouse.cloud:8443",
     environment,
     immutableSecretResourceOptions,
   )
@@ -121,7 +121,7 @@ export function createApplicationSecrets(baseName: string, environment: string):
     baseName,
     "clickhouse-user",
     "ClickHouse Cloud username",
-    process.env.CLICKHOUSE_USER ?? "default",
+    process.env.LAT_CLICKHOUSE_USER ?? "default",
     environment,
     immutableSecretResourceOptions,
   )
@@ -132,7 +132,7 @@ export function createApplicationSecrets(baseName: string, environment: string):
     baseName,
     "clickhouse-password",
     "ClickHouse Cloud password",
-    process.env.CLICKHOUSE_PASSWORD ?? "placeholder-change-me",
+    process.env.LAT_CLICKHOUSE_PASSWORD ?? "placeholder-change-me",
     environment,
     immutableSecretResourceOptions,
   )
@@ -143,7 +143,7 @@ export function createApplicationSecrets(baseName: string, environment: string):
     baseName,
     "clickhouse-db",
     "ClickHouse database name",
-    process.env.CLICKHOUSE_DB ?? "latitude",
+    process.env.LAT_CLICKHOUSE_DB ?? "latitude",
     environment,
     immutableSecretResourceOptions,
   )
@@ -154,7 +154,7 @@ export function createApplicationSecrets(baseName: string, environment: string):
     baseName,
     "clickhouse-migration-url",
     "ClickHouse native protocol URL for migrations",
-    process.env.CLICKHOUSE_MIGRATION_URL ?? "clickhouse://localhost:9000",
+    process.env.LAT_CLICKHOUSE_MIGRATION_URL ?? "clickhouse://localhost:9000",
     environment,
     immutableSecretResourceOptions,
   )
@@ -259,6 +259,72 @@ export function createApplicationSecrets(baseName: string, environment: string):
   )
   secrets["github-oauth-client-secret"] = githubOauthClientSecret.secret
   secretVersions["github-oauth-client-secret"] = githubOauthClientSecret.secretVersion
+
+  const githubAppId = createSingleSecret(
+    baseName,
+    "github-app-id",
+    "GitHub App ID — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_APP_ID ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-id"] = githubAppId.secret
+  secretVersions["github-app-id"] = githubAppId.secretVersion
+
+  const githubAppSlug = createSingleSecret(
+    baseName,
+    "github-app-slug",
+    "GitHub App slug — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_APP_SLUG ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-slug"] = githubAppSlug.secret
+  secretVersions["github-app-slug"] = githubAppSlug.secretVersion
+
+  const githubAppPrivateKey = createSingleSecret(
+    baseName,
+    "github-app-private-key",
+    "GitHub App private key (base64 of the .pem) — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_APP_PRIVATE_KEY ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-private-key"] = githubAppPrivateKey.secret
+  secretVersions["github-app-private-key"] = githubAppPrivateKey.secretVersion
+
+  const githubAppWebhookSecret = createSingleSecret(
+    baseName,
+    "github-app-webhook-secret",
+    "GitHub App webhook secret — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_WEBHOOK_SECRET ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-webhook-secret"] = githubAppWebhookSecret.secret
+  secretVersions["github-app-webhook-secret"] = githubAppWebhookSecret.secretVersion
+
+  const githubAppClientId = createSingleSecret(
+    baseName,
+    "github-app-client-id",
+    "GitHub App OAuth client ID — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_APP_CLIENT_ID ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-client-id"] = githubAppClientId.secret
+  secretVersions["github-app-client-id"] = githubAppClientId.secretVersion
+
+  const githubAppClientSecret = createSingleSecret(
+    baseName,
+    "github-app-client-secret",
+    "GitHub App OAuth client secret — replace placeholder-change-me in Secrets Manager",
+    process.env.LAT_GITHUB_APP_CLIENT_SECRET ?? "placeholder-change-me",
+    environment,
+    immutableSecretResourceOptions,
+  )
+  secrets["github-app-client-secret"] = githubAppClientSecret.secret
+  secretVersions["github-app-client-secret"] = githubAppClientSecret.secretVersion
 
   const stripeSecretKey = createSingleSecret(
     baseName,
@@ -391,28 +457,6 @@ export function createApplicationSecrets(baseName: string, environment: string):
   )
   secrets["posthog-api-key"] = posthogApiKey.secret
   secretVersions["posthog-api-key"] = posthogApiKey.secretVersion
-
-  const framerApiKey = createSingleSecret(
-    baseName,
-    "framer-api-key",
-    "Framer API key",
-    process.env.LAT_FRAMER_API_KEY ?? "placeholder-change-me",
-    environment,
-    immutableSecretResourceOptions,
-  )
-  secrets["framer-api-key"] = framerApiKey.secret
-  secretVersions["framer-api-key"] = framerApiKey.secretVersion
-
-  const framerProjectUrl = createSingleSecret(
-    baseName,
-    "framer-project-url",
-    "Framer project URL",
-    process.env.LAT_FRAMER_PROJECT_URL ?? "placeholder-change-me",
-    environment,
-    immutableSecretResourceOptions,
-  )
-  secrets["framer-project-url"] = framerProjectUrl.secret
-  secretVersions["framer-project-url"] = framerProjectUrl.secretVersion
 
   const loopsApiKey = createSingleSecret(
     baseName,

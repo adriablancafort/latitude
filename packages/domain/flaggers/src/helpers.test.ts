@@ -1,6 +1,10 @@
 import type { TraceDetail } from "@domain/spans"
 import { describe, expect, it } from "vitest"
-import { detectOutputSchemaValidationFlagger, detectToolCallErrorsFlagger } from "./helpers.ts"
+import {
+  detectEmptyResponseFlagger,
+  detectOutputSchemaValidationFlagger,
+  detectToolCallErrorsFlagger,
+} from "./helpers.ts"
 
 type TraceMessage = TraceDetail["allMessages"][number]
 
@@ -99,6 +103,43 @@ describe("detectToolCallErrorsFlagger", () => {
     expect(result).toEqual({ matched: false })
   })
 
+  it("matches a call to a tool missing from the declared toolset", () => {
+    const result = detectToolCallErrorsFlagger({
+      ...makeTrace([assistantToolCall("call-web", "WebSearch")]),
+      definedTools: ["Bash", "Read"],
+    })
+
+    expect(result.matched).toBe(true)
+    if (result.matched) {
+      expect(result.feedback).toContain('"WebSearch"')
+      expect(result.feedback).toContain("not in the declared toolset")
+    }
+  })
+
+  it("does not match an undeclared tool that executed successfully", () => {
+    const result = detectToolCallErrorsFlagger({
+      ...makeTrace([assistantToolCall("call-web", "WebSearch"), toolResponse("call-web", { results: ["ok"] })]),
+      definedTools: ["Bash", "Read"],
+    })
+
+    expect(result).toEqual({ matched: false })
+  })
+
+  it("still matches when an undeclared tool returns an error", () => {
+    const result = detectToolCallErrorsFlagger({
+      ...makeTrace([
+        assistantToolCall("call-web", "WebSearch"),
+        toolResponse("call-web", { isError: true, error: "InputValidationError" }),
+      ]),
+      definedTools: ["Bash", "Read"],
+    })
+
+    expect(result.matched).toBe(true)
+    if (result.matched) {
+      expect(result.feedback).toMatch(/not in the declared toolset|returned error/)
+    }
+  })
+
   it("does not match expected tool 4xx responses", () => {
     const result = detectToolCallErrorsFlagger(
       makeTrace([
@@ -142,13 +183,10 @@ describe("detectToolCallErrorsFlagger", () => {
     }
   })
 
-  it("matches tool responses that appear before any tool call", () => {
+  it("ignores tool responses with no tool calls anywhere (truncated telemetry)", () => {
     const result = detectToolCallErrorsFlagger(makeTrace([toolResponse("call-weather", { temp: 22 })]))
 
-    expect(result.matched).toBe(true)
-    if (result.matched) {
-      expect(result.feedback).toContain("unknown tool_call id")
-    }
+    expect(result).toEqual({ matched: false })
   })
 
   it("matches tool responses with unknown tool call ids", () => {
@@ -282,6 +320,18 @@ describe("detectOutputSchemaValidationFlagger", () => {
     expect(result).toEqual({ matched: false })
   })
 
+  it("does not match markdown links that start with [", () => {
+    const result = detectOutputSchemaValidationFlagger(
+      makeAssistantTrace([
+        assistantText(
+          "[Pull request #39](https://github.com/latitude-dev/latitude-llm-public/pull/39) is open against main.",
+        ),
+      ]),
+    )
+
+    expect(result).toEqual({ matched: false })
+  })
+
   it("matches with the trailing-comma message when JSON is truncated after a comma", () => {
     const result = detectOutputSchemaValidationFlagger(makeAssistantTrace([assistantText('{"a": 1,')]))
 
@@ -319,5 +369,44 @@ describe("detectOutputSchemaValidationFlagger", () => {
       expect(result.feedback).toBe("Assistant output failed JSON parse (malformed or truncated structured output)")
       expect(result.messageIndex).toBe(0)
     }
+  })
+})
+
+describe("malformed message parts", () => {
+  it("detectToolCallErrorsFlagger skips messages without iterable parts", () => {
+    expect(() =>
+      detectToolCallErrorsFlagger(
+        makeTrace([
+          { role: "assistant" } as unknown as TraceMessage,
+          assistantToolCall("call_1"),
+          toolResponse("call_1", { error: "boom" }),
+        ]),
+      ),
+    ).not.toThrow()
+  })
+
+  it("detectOutputSchemaValidationFlagger skips messages without iterable parts", () => {
+    expect(() =>
+      detectOutputSchemaValidationFlagger(
+        makeAssistantTrace([{ role: "assistant" } as unknown as TraceMessage, assistantText('{"ok": true}')]),
+      ),
+    ).not.toThrow()
+  })
+
+  it("detectEmptyResponseFlagger skips messages without iterable parts", () => {
+    expect(() =>
+      detectEmptyResponseFlagger(
+        makeAssistantTrace([
+          { role: "user", parts: null } as unknown as TraceMessage,
+          { role: "assistant" } as unknown as TraceMessage,
+          assistantText("done"),
+        ]),
+      ),
+    ).not.toThrow()
+    expect(detectEmptyResponseFlagger(makeAssistantTrace([{ role: "assistant" } as unknown as TraceMessage]))).toEqual({
+      matched: true,
+      feedback: "Assistant response was empty or whitespace only",
+      messageIndex: 0,
+    })
   })
 })

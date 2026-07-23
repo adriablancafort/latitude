@@ -24,9 +24,10 @@ import {
   type SlackRoutes,
 } from "@domain/integrations"
 import {
-  NOTIFICATION_GROUPS,
+  alertSeveritySchema,
   type NotificationGroup,
   type RepositoryError,
+  SLACK_ROUTABLE_NOTIFICATION_GROUPS,
   type SlackIntegrationId,
   SlackIntegrationId as SlackIntegrationIdBrand,
   type SqlClient,
@@ -178,7 +179,9 @@ export const disconnectSlackIntegrationEffect: Effect.Effect<
   return { revoked: true } as const
 })
 
-const notificationGroupValues = NOTIFICATION_GROUPS as readonly NotificationGroup[]
+// Only slack-routable groups can be configured as routes — `personal`
+// kinds target one user and never broadcast to channels.
+const notificationGroupValues = SLACK_ROUTABLE_NOTIFICATION_GROUPS as readonly NotificationGroup[]
 
 const configureSlackRouteSchema = z.object({
   group: z.enum(notificationGroupValues as [NotificationGroup, ...NotificationGroup[]]),
@@ -187,6 +190,7 @@ const configureSlackRouteSchema = z.object({
       z.object({
         channelId: z.string().min(1),
         channelName: z.string().min(1),
+        minSeverity: alertSeveritySchema.optional(),
       }),
     )
     .max(50),

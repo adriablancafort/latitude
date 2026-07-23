@@ -6,6 +6,16 @@ import type { TaxonomyObservationRepositoryShape } from "../ports/taxonomy-obser
 const observationKey = (organizationId: string, projectId: string, observationId: string): string =>
   `${organizationId}|${projectId}|${observationId}`
 
+// Deterministic stand-in for ClickHouse's cityHash64 — only needs stable,
+// well-distributed per-id ordering for the day-stratified clustering sample.
+const deterministicHash = (value: string): number => {
+  let hash = 0
+  for (let index = 0; index < value.length; index++) {
+    hash = (Math.imul(hash, 31) + value.charCodeAt(index)) >>> 0
+  }
+  return hash
+}
+
 export const createFakeTaxonomyObservationRepository = (
   seed: readonly TaxonomyMomentObservation[] = [],
   overrides?: Partial<TaxonomyObservationRepositoryShape>,
@@ -76,6 +86,30 @@ export const createFakeTaxonomyObservationRepository = (
         }
       }),
 
+    reassignManyById: ({ organizationId, projectId, assignments }) =>
+      Effect.sync(() => {
+        for (const {
+          observationId,
+          assignedClusterId,
+          assignmentMethod,
+          assignmentConfidence,
+          reassignmentRunId,
+          indexedAt,
+        } of assignments) {
+          const key = observationKey(organizationId, projectId, observationId)
+          const existing = rows.get(key)
+          if (!existing) continue
+          setVersioned(key, {
+            ...existing,
+            assignedClusterId,
+            assignmentMethod,
+            assignmentConfidence,
+            reassignmentRunId,
+            indexedAt,
+          })
+        }
+      }),
+
     filterExistingIds: ({ organizationId, projectId, observationIds }) =>
       Effect.sync(() => {
         const requested = new Set(observationIds)
@@ -100,6 +134,137 @@ export const createFakeTaxonomyObservationRepository = (
             (a, b) => b.startTime.getTime() - a.startTime.getTime() || a.observationId.localeCompare(b.observationId),
           )
         return typeof limit === "number" ? filtered.slice(0, limit) : filtered
+      }),
+
+    listForClustering: ({ organizationId, projectId, since, limit }) =>
+      Effect.sync(() => {
+        // Mirror the day-stratified round-robin the ClickHouse repo runs: rank
+        // each observation within its UTC day by a deterministic hash, then
+        // interleave days (all rank-1s, then all rank-2s, …) up to `limit`.
+        // Reads the full project history (not the newest-N window) so the
+        // sample is representative of the whole lookback span, not the tail.
+        const eligible = [...rows.values()].filter(
+          (observation) =>
+            observation.organizationId === organizationId &&
+            observation.projectId === projectId &&
+            observation.embedding.length > 0 &&
+            observation.startTime >= since,
+        )
+        const dayBuckets = new Map<string, TaxonomyMomentObservation[]>()
+        for (const observation of eligible) {
+          const day = observation.startTime.toISOString().slice(0, 10)
+          const bucket = dayBuckets.get(day) ?? []
+          bucket.push(observation)
+          dayBuckets.set(day, bucket)
+        }
+        const ranked = [...dayBuckets.values()].flatMap((bucket) =>
+          [...bucket]
+            .sort((a, b) => deterministicHash(a.observationId) - deterministicHash(b.observationId))
+            .map((observation, rank) => ({ observation, rank })),
+        )
+        return ranked
+          .sort((a, b) => a.rank - b.rank || a.observation.observationId.localeCompare(b.observation.observationId))
+          .slice(0, limit)
+          .map((entry) => entry.observation)
+          .sort(
+            (a, b) => b.startTime.getTime() - a.startTime.getTime() || a.observationId.localeCompare(b.observationId),
+          )
+      }),
+
+    listForClusteringSample: ({ organizationId, projectId, since, limit }) =>
+      Effect.sync(() => {
+        const eligible = [...rows.values()].filter(
+          (observation) =>
+            observation.organizationId === organizationId &&
+            observation.projectId === projectId &&
+            observation.embedding.length > 0 &&
+            observation.startTime >= since,
+        )
+        const dayBuckets = new Map<string, TaxonomyMomentObservation[]>()
+        for (const observation of eligible) {
+          const day = observation.startTime.toISOString().slice(0, 10)
+          const bucket = dayBuckets.get(day) ?? []
+          bucket.push(observation)
+          dayBuckets.set(day, bucket)
+        }
+        const ranked = [...dayBuckets.values()].flatMap((bucket) =>
+          [...bucket]
+            .sort((a, b) => deterministicHash(a.observationId) - deterministicHash(b.observationId))
+            .map((observation, rank) => ({ observation, rank })),
+        )
+        return ranked
+          .sort((a, b) => a.rank - b.rank || a.observation.observationId.localeCompare(b.observation.observationId))
+          .slice(0, limit)
+          .map((entry) => entry.observation)
+          .sort(
+            (a, b) => b.startTime.getTime() - a.startTime.getTime() || a.observationId.localeCompare(b.observationId),
+          )
+          .map((observation) => ({
+            observationId: observation.observationId,
+            embedding: observation.embedding,
+            startTime: observation.startTime,
+          }))
+      }),
+
+    // The fake does not compile `filterSet` (session-filter compilation is
+    // ClickHouse-specific and covered by the repository integration test); it
+    // returns the same day-stratified sample as `listForClusteringSample`,
+    // carrying each row's sessionId.
+    listForCustomBehaviorSample: ({ organizationId, projectId, since, limit }) =>
+      Effect.sync(() => {
+        const eligible = [...rows.values()].filter(
+          (observation) =>
+            observation.organizationId === organizationId &&
+            observation.projectId === projectId &&
+            observation.embedding.length > 0 &&
+            observation.startTime >= since,
+        )
+        const dayBuckets = new Map<string, TaxonomyMomentObservation[]>()
+        for (const observation of eligible) {
+          const day = observation.startTime.toISOString().slice(0, 10)
+          const bucket = dayBuckets.get(day) ?? []
+          bucket.push(observation)
+          dayBuckets.set(day, bucket)
+        }
+        const ranked = [...dayBuckets.values()].flatMap((bucket) =>
+          [...bucket]
+            .sort((a, b) => deterministicHash(a.observationId) - deterministicHash(b.observationId))
+            .map((observation, rank) => ({ observation, rank })),
+        )
+        return ranked
+          .sort((a, b) => a.rank - b.rank || a.observation.observationId.localeCompare(b.observation.observationId))
+          .slice(0, limit)
+          .map((entry) => entry.observation)
+          .sort(
+            (a, b) => b.startTime.getTime() - a.startTime.getTime() || a.observationId.localeCompare(b.observationId),
+          )
+          .map((observation) => ({
+            observationId: observation.observationId,
+            sessionId: observation.sessionId,
+            embedding: observation.embedding,
+            startTime: observation.startTime,
+          }))
+      }),
+
+    // Like listForCustomBehaviorSample, the fake does not compile `filterSet`;
+    // it returns the unsampled eligible totals over the window.
+    countForCustomBehaviorSample: ({ organizationId, projectId, since }) =>
+      Effect.sync(() => {
+        const sessions = new Set<string>()
+        let observationCount = 0
+        for (const observation of rows.values()) {
+          if (
+            observation.organizationId !== organizationId ||
+            observation.projectId !== projectId ||
+            observation.embedding.length === 0 ||
+            observation.startTime < since
+          ) {
+            continue
+          }
+          observationCount++
+          sessions.add(observation.sessionId)
+        }
+        return { observationCount, sessionCount: sessions.size }
       }),
 
     listByCluster: ({ organizationId, projectId, clusterId, limit, beforeStartTime, beforeObservationId }) =>
@@ -207,6 +372,42 @@ export const createFakeTaxonomyObservationRepository = (
         }
         return [...counts.entries()].map(([clusterId, count]) => ({ clusterId: clusterId as never, ...count }))
       }),
+
+    // The fake does not compile `filterSet` (session-filter compilation is
+    // ClickHouse-specific); it returns the full newest-N live window as slim
+    // reassignment rows carrying the current assignment. `excludeAssignedClusterIds`
+    // drops rows already pointing at one of those clusters (catch-up narrowing).
+    listWindowForReassignment: ({ organizationId, projectId, limit, excludeAssignedClusterIds }) =>
+      Effect.sync(() => {
+        const excluded = new Set((excludeAssignedClusterIds ?? []).map((id) => id as string))
+        return latestProjectWindow(organizationId, projectId)
+          .filter((observation) => observation.embedding.length > 0)
+          .filter(
+            (observation) => observation.assignedClusterId === null || !excluded.has(observation.assignedClusterId),
+          )
+          .slice(0, limit)
+          .map((observation) => ({
+            observationId: observation.observationId,
+            sessionId: observation.sessionId,
+            embedding: observation.embedding,
+            startTime: observation.startTime,
+            assignedClusterId: observation.assignedClusterId,
+          }))
+      }),
+
+    countWindowAssignedToClusters: ({ organizationId, projectId, limit, clusterIds }) =>
+      Effect.sync(() => {
+        const targets = new Set(clusterIds.map((id) => id as string))
+        const window = latestProjectWindow(organizationId, projectId)
+          .filter((observation) => observation.embedding.length > 0)
+          .slice(0, limit)
+        return {
+          total: window.length,
+          matching: window.filter((o) => o.assignedClusterId !== null && targets.has(o.assignedClusterId)).length,
+        }
+      }),
+
+    getClusterCountsByUser: () => Effect.succeed([]),
 
     getClusterTrendCounts: ({ organizationId, projectId, clusterIds, currentSince, baselineSince, baselineDays }) =>
       Effect.sync(() =>

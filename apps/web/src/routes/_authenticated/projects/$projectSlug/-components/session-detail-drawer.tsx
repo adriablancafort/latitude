@@ -1,14 +1,20 @@
 import type { MomentKind } from "@domain/conversation-intelligence"
 import type { FilterSet } from "@domain/shared"
-import { Button, DetailDrawer, Icon, Skeleton, Tooltip } from "@repo/ui"
+import { Button, DetailDrawer, Icon, Skeleton, Tooltip, useMountEffect } from "@repo/ui"
 import { useHotkeys } from "@tanstack/react-hotkeys"
 import { ChevronLeftIcon } from "lucide-react"
 import { HotkeyBadge } from "../../../../../components/hotkey-badge.tsx"
+import { useProjectScope } from "../../../../../domains/projects/project-scope.tsx"
 import { useSessionDetail } from "../../../../../domains/sessions/sessions.collection.ts"
 import { useParamState } from "../../../../../lib/hooks/useParamState.ts"
-import { IssueLifecycleActions } from "../issues/-components/issue-lifecycle-actions.tsx"
-import { IssueSlot } from "./session-detail-drawer/issue-slot.tsx"
-import { isSessionTab, SessionSlot, type SessionTabId } from "./session-detail-drawer/session-slot.tsx"
+import { SignalLifecycleActions } from "../signals/-components/signal-lifecycle-actions.tsx"
+import {
+  isSessionTab,
+  normalizeSessionTab,
+  SessionSlot,
+  type SessionTabId,
+} from "./session-detail-drawer/session-slot.tsx"
+import { SignalSlot } from "./session-detail-drawer/signal-slot.tsx"
 import { type DetailSlotKind, SlotTransition } from "./session-detail-drawer/slot-transition.tsx"
 import { isTraceDetailTab, type TraceDetailTabId, TraceSlot } from "./session-detail-drawer/trace-slot.tsx"
 import { useSessionTraces } from "./session-detail-drawer/use-session-traces.ts"
@@ -29,6 +35,7 @@ export function SessionDetailDrawer({
   onFiltersChange,
   focusMomentKind,
   focusMomentId,
+  focusSpan,
   defaultTab,
 }: {
   readonly projectId: string
@@ -41,25 +48,43 @@ export function SessionDetailDrawer({
   readonly focusMomentKind?: MomentKind | undefined
   /** Scrolls the Conversation tab to this semantic moment (no label required). */
   readonly focusMomentId?: string | undefined
+  /** Lands on the Spans tab with this span selected. Remount (re-key) to focus a different span. */
+  readonly focusSpan?: { readonly spanId: string; readonly traceId: string } | undefined
   /** Overrides which tab the drawer lands on when no URL param is set. */
   readonly defaultTab?: SessionTabId | undefined
 }) {
   const [traceId, setTraceId] = useParamState("traceId", "")
-  const [issueId, setIssueId] = useParamState("issueId", "")
+  const [signalId, setSignalId] = useParamState("signalId", "")
   const [, setFocusAnnotationId] = useParamState("annotationId", "")
+  const [, setSelectedSpanId] = useParamState("spanId", "")
+  const [, setSelectedSpanTraceId] = useParamState("spanTraceId", "")
+  const [, setSelectedAgentSpanId] = useParamState("agentSpanId", "")
+  const [, setSelectedAgentTraceId] = useParamState("agentTraceId", "")
   const [q] = useParamState("q", "")
   // Land on the conversation tab when arriving from an active search, so the
   // conversation tab's search-match autoscroll/highlight has something to scroll to.
   const defaultSessionTab =
-    defaultTab ?? ((searchQuery?.length ?? q.length) > 0 || focusMomentKind ? "conversation" : "session")
-  const [activeTab, setActiveTab] = useParamState("sessionTab", defaultSessionTab, {
+    defaultTab ??
+    (focusSpan ? "spans" : (searchQuery?.length ?? q.length) > 0 || focusMomentKind ? "conversation" : "session")
+  const [rawActiveTab, setActiveTab] = useParamState("sessionTab", defaultSessionTab, {
     validate: isSessionTab,
   })
+  const activeTab = normalizeSessionTab(rawActiveTab)
   // Owned by `TraceSlot` once it mounts, but written here when sliding into a
-  // trace so the slot lands on the requested tab (Issues → "trace",
+  // trace so the slot lands on the requested tab (Signals → "trace",
   // Annotations → "conversation"). Kept distinct from `sessionTab` so the two
   // never collide.
   const [, setTraceTab] = useParamState<TraceDetailTabId>("traceTab", "trace", { validate: isTraceDetailTab })
+
+  // Seed the span selection when a caller opens the drawer focused on a span.
+  // Mount-only: the drawer unmounts on close and is re-keyed per span, so each
+  // open re-seeds.
+  useMountEffect(() => {
+    if (!focusSpan) return
+    setActiveTab("spans")
+    setSelectedSpanId(focusSpan.spanId)
+    setSelectedSpanTraceId(focusSpan.traceId)
+  })
 
   const { data: session, isLoading: sessionLoading } = useSessionDetail({
     projectId,
@@ -87,25 +112,40 @@ export function SessionDetailDrawer({
   // Defensive precedence for URLs that arrive with both params already set
   // (deep links, browser history, hand-edited URLs). Our own code never sets
   // both at the same time — opening a trace from inside the issue slot uses
-  // `IssueDetailBody`'s local Sheet state, not the `traceId` param. Trace
-  // wins so a stale `issueId` doesn't shadow the requested trace; "View
+  // `SignalDetailBody`'s local Sheet state, not the `traceId` param. Trace
+  // wins so a stale `signalId` doesn't shadow the requested trace; "View
   // session" clears both so we can't land in an ambiguous state after close.
   // When the session itself is missing we suppress the back affordance —
   // there is nothing to go back to.
-  const detailKind: DetailSlotKind | null = traceId.length > 0 ? "trace" : issueId.length > 0 ? "issue" : null
+  // Signals are an analysis feature the sandbox doesn't surface — never resolve
+  // the issue slot under a sandbox scope, even from a deep-linked `?signalId=`
+  // (its `SignalLifecycleActions` registers command-palette commands, and the
+  // sandbox tree has no provider).
+  const isSandbox = useProjectScope().kind === "sandbox"
+  const signalsEnabled = !isSandbox
+  const detailKind: DetailSlotKind | null =
+    traceId.length > 0 ? "trace" : signalId.length > 0 && signalsEnabled ? "issue" : null
   const showDetail = detailKind !== null && !isSessionMissing
 
   const openTrace = (nextTraceId: string, options: OpenTraceOptions = {}) => {
     const { focusAnnotationId, targetTab } = options
+    setSelectedSpanId("")
+    setSelectedSpanTraceId("")
+    setSelectedAgentSpanId("")
+    setSelectedAgentTraceId("")
     setFocusAnnotationId(focusAnnotationId ?? "")
     setTraceTab(targetTab ?? (focusAnnotationId ? "conversation" : "trace"))
     setTraceId(nextTraceId)
   }
 
-  const openIssue = (nextIssueId: string) => {
+  const openSignal = (nextSignalId: string) => {
+    setSelectedSpanId("")
+    setSelectedSpanTraceId("")
+    setSelectedAgentSpanId("")
+    setSelectedAgentTraceId("")
     setFocusAnnotationId("")
     setTraceId("")
-    setIssueId(nextIssueId)
+    setSignalId(nextSignalId)
   }
 
   const focusAnnotationInConversation = (annotationId: string) => {
@@ -114,15 +154,23 @@ export function SessionDetailDrawer({
   }
 
   const backToSession = () => {
+    setSelectedSpanId("")
+    setSelectedSpanTraceId("")
+    setSelectedAgentSpanId("")
+    setSelectedAgentTraceId("")
     setFocusAnnotationId("")
     setTraceId("")
-    setIssueId("")
+    setSignalId("")
   }
 
   const handleClose = () => {
+    setSelectedSpanId("")
+    setSelectedSpanTraceId("")
+    setSelectedAgentSpanId("")
+    setSelectedAgentTraceId("")
     setFocusAnnotationId("")
     setTraceId("")
-    setIssueId("")
+    setSignalId("")
     onClose()
   }
 
@@ -160,7 +208,7 @@ export function SessionDetailDrawer({
         ) : undefined
       }
       rightActions={
-        detailKind === "issue" ? <IssueLifecycleActions projectId={projectId} issueId={issueId} /> : undefined
+        detailKind === "issue" ? <SignalLifecycleActions projectId={projectId} signalId={signalId} /> : undefined
       }
     >
       {sessionLoading && !session ? (
@@ -182,8 +230,9 @@ export function SessionDetailDrawer({
               latestTraceId={session.latestTraceId}
               activeTab={activeTab}
               onActiveTabChange={setActiveTab}
+              isActive={!showDetail}
               onOpenTrace={openTrace}
-              onOpenIssue={openIssue}
+              onOpenSignal={openSignal}
               onOpenInConversation={focusAnnotationInConversation}
               focusMomentKind={focusMomentKind}
               focusMomentId={focusMomentId}
@@ -197,7 +246,7 @@ export function SessionDetailDrawer({
               <TraceSlot projectId={projectId} traceId={traceId} {...(searchQuery ? { searchQuery } : {})} />
             ) : null
           }
-          issueSlot={detailKind === "issue" ? <IssueSlot projectId={projectId} issueId={issueId} /> : null}
+          signalSlot={detailKind === "issue" ? <SignalSlot projectId={projectId} signalId={signalId} /> : null}
         />
       )}
     </DetailDrawer>

@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-07-22
+
+### Changed
+
+- **Breaking:** `instrumentations` now accepts an array of instances created by opt-in `@latitude-data/telemetry/instrumentations/*` factories instead of an integration-name object map.
+- Provider instrumentations remain included with the package but are isolated behind subpath exports, preventing unused integrations and their transitive dependencies from entering consumer bundles.
+
+## [3.7.0] - 2026-07-20
+
+### Added
+
+- `createMemoryTelemetry()` emits OpenTelemetry GenAI memory-operation spans (`create_memory`, `update_memory`, `upsert_memory`, `delete_memory`, `search_memory`, `create_memory_store`, `delete_memory_store`). Each operation optionally wraps an `execute` callback — capturing latency, errors, and status — or emits a completed span. It sets `gen_ai.operation.name` and the `gen_ai.memory.*` attributes, stamps Latitude context, and maps a `search` result to the records it returned.
+- Content is opt-in via `captureContent` (off by default) and covers both record bodies (`gen_ai.memory.records`) and the search query (`gen_ai.memory.query.text`), with a `redact` hook to scrub records before they are sent.
+- `GEN_AI_MEMORY_ATTRIBUTES` and `MEMORY_OPERATIONS` constants are exported for raw OpenTelemetry instrumentation.
+
+## [3.6.0] - 2026-07-10
+
+### Added
+
+- `createCodemodeTelemetry()` wraps codemode `execute` tools and internal tool sets so tools called from inside codemode emit nested `ai.toolCall <name>` spans under the outer `execute` span. The helper stamps Latitude context, records AI SDK and GenAI tool attributes, supports input/output capture with redaction, and marks failed tool spans with exception details.
+- A public `@latitude-data/telemetry/cloudflare` subpath exports Cloudflare-specific helpers, starting with `createCodemodeTelemetry()`. Cloudflare helpers are not exported from the root SDK import.
+- The Cloudflare Think telemetry guide and runnable example now show codemode tracing with `createCodemodeTelemetry()` from the Cloudflare subpath.
+
+## [3.5.0] - 2026-06-29
+
+### Added
+
+- `capture.start()` and `capture.end()` support lifecycle capture boundaries for flows that cannot
+  wrap their work in a callback. `CaptureScope` can be ended directly, or `capture.end()` can end the
+  currently active lifecycle capture.
+- `Latitude#getTracer(scope, context?)` returns a tracer from the provider Latitude is exporting
+  from, prefixing scopes with `so.latitude.instrumentation.` when needed. Pass the optional context
+  to stamp spans with the same Latitude context accepted by `capture()` (`userId`, `sessionId`,
+  `tags`, `metadata`, and `project`), including when passing the tracer to the Vercel AI SDK v6
+  `experimental_telemetry.tracer` field.
+
+### Fixed
+
+- Capture root spans now record exceptions and set `ERROR` status when captured work raises or a
+  lifecycle capture ends with an error.
+
+## [3.4.0] - 2026-06-23
+
+### Added
+
+- **OpenAI Agents traces now capture system instructions.** The `openai-agents` instrumentation
+  forwards the agent's `instructions` (echoed on the Responses API `_response.instructions`) as
+  `gen_ai.system_instructions`, so the agent's system prompt populates the System Instructions field.
+
+### Changed
+
+- Bumped `@traceloop/instrumentation-bedrock` 0.26.0 → 0.27.0.
+- Bumped `@traceloop/instrumentation-llamaindex` 0.25.0 → 0.27.0.
+- Bumped `@traceloop/instrumentation-together` 0.25.0 → 0.27.0.
+- **LangChain is now instrumented via OpenInference** (`@arizeai/openinference-instrumentation-langchain`)
+  instead of Traceloop. OpenInference captures tool calls, tool definitions, and tool-call/result pairing
+  (which Traceloop dropped), and patches the callback manager synchronously so the first call in a process
+  is no longer missed. Pass `@langchain/core/callbacks/manager` as the `langchain` instrumentation. Removes
+  the `@traceloop/instrumentation-langchain` dependency.
+
+## [3.3.0] - 2026-06-22
+
+### Added
+
+- **OpenAI Agents traces now capture tool definitions.** The `openai-agents` instrumentation forwards the
+  Responses API's echoed tool schemas (`_response.tools`) as `gen_ai.tool.definitions`, so the available
+  tools surface on agent model spans like they already do for the OpenAI SDK integration.
+
+### Changed
+
+- Bumped Traceloop instrumentations: `@traceloop/instrumentation-openai` 0.25.0 → 0.27.0 and
+  `@traceloop/instrumentation-anthropic` 0.26.0 → 0.27.0.
+
+## [3.2.0] - 2026-06-18
+
+### Added
+
+- **Vercel AI SDK v7 support.** Telemetry from `ai@7` is now captured end-to-end. v7 moved
+  OpenTelemetry into the separate `@ai-sdk/otel` package (opt-out, registered via
+  `registerTelemetry(new OpenTelemetry())`); its `OpenTelemetry` integration emits standard
+  OpenTelemetry GenAI semantic-convention spans (`gen_ai.*`), and `LegacyOpenTelemetry` emits the
+  older `ai.*` spans. Both are exported by Latitude's smart filter with no configuration. The README
+  now documents the v6 (`experimental_telemetry: { isEnabled: true }`) and v7 setups side by side, and
+  a runnable `examples/test_vercel_ai_v7.ts` is included.
+- v6 (`ai@6`) support is unchanged and fully maintained.
+
+> No runtime change to the published SDK — the span processor already exported `gen_ai.*` and `ai.*`
+> spans. This release adds documentation, a v7 example, and tests that lock in v7 span coverage.
+
+## [3.1.1] - 2026-06-18
+
+### Added
+
+- Smart filtering now exports Flue framework spans that carry `flue.*` attributes, preserving workflow, operation, tool, task, compaction, and log spans alongside GenAI model turns.
+
+## [3.1.0] - 2026-06-12
+
+### Added
+
+- `userEmail` option on `capture()` (`ContextOptions`), emitted as the `user.email` span attribute alongside the existing `userId` → `user.id`. Both follow the same context-merging rules as `sessionId`: last-write-wins, with nested captures overriding the parent.
+
+## [3.0.1] - 2026-06-10
+
+### Changed
+
+- **First stable release of the 3.x line.** No code changes since `3.0.0-alpha.13` — this promotes the alpha channel to stable. The npm `latest` dist-tag, previously pointing at `3.0.0-alpha.13`, now resolves to a stable version.
+- Version `3.0.0` is skipped on purpose: it was published in February for the deprecated pre-rewrite line, and npm versions are immutable.
+
 ## [3.0.0-alpha.13] - 2026-05-19
 
 ### Fixed

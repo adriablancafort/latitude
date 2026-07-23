@@ -9,15 +9,9 @@ import { WorkflowStarter } from "@domain/queue"
 import type { AnnotationScore, ScoreListPage } from "@domain/scores"
 import { annotationAnchorSchema, ScoreRepository, scoreDraftModeSchema } from "@domain/scores"
 import { ProjectId, ScoreId, TraceId } from "@domain/shared"
-import { withAi } from "@platform/ai"
-import { AIEmbedLive } from "@platform/ai-voyage"
-import {
-  ScoreAnalyticsRepositoryLive,
-  SpanRepositoryLive,
-  TraceRepositoryLive,
-  withClickHouse,
-} from "@platform/db-clickhouse"
-import { OutboxEventWriterLive, ScoreRepositoryLive, withPostgres } from "@platform/db-postgres"
+import { AIEmbedLive, withAi } from "@platform/ai"
+import { ScoreAnalyticsRepositoryLive, SpanRepositoryLive, TraceRepositoryLive } from "@platform/db-clickhouse"
+import { OutboxEventWriterLive, ScoreRepositoryLive } from "@platform/db-postgres"
 import { QueuePublisherLive } from "@platform/queue-bullmq"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
@@ -31,6 +25,10 @@ import {
   getRedisClient,
   getWorkflowStarter,
 } from "../../server/clients.ts"
+import { spanIdSchema, traceIdSchema } from "../../server/id-validation.ts"
+import { resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedClickHouse } from "../../server/scoped-clickhouse.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 
 const toRecord = (score: AnnotationScore) => ({
   id: score.id as string,
@@ -39,10 +37,10 @@ const toRecord = (score: AnnotationScore) => ({
   sessionId: score.sessionId,
   traceId: score.traceId,
   spanId: score.spanId,
-  source: score.source,
+  source: score.sourceType,
   sourceId: score.sourceId,
   simulationId: score.simulationId,
-  issueId: score.issueId,
+  signalId: score.signalId,
   value: score.value,
   passed: score.passed,
   feedback: score.feedback,
@@ -91,8 +89,8 @@ export const createAnnotation = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      traceId: z.string().length(32),
-      spanId: z.string().optional(),
+      traceId: traceIdSchema,
+      spanId: spanIdSchema.optional(),
       sessionId: z.string().optional(),
       queueId: z.string().optional(),
       value: z.number(),
@@ -100,11 +98,12 @@ export const createAnnotation = createServerFn({ method: "POST" })
       // Empty feedback is allowed — `passed` carries the signal. Downstream issue eligibility drops empty-feedback rows before embedding.
       feedback: z.string(),
       anchor: annotationAnchorSchema.optional(),
-      issueId: z.string().optional(),
+      signalId: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<AnnotationRecord> => {
-    const { userId, organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<AnnotationRecord> => {
+    const { userId } = await requireSession()
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
     const chClient = getClickhouseClient()
     const publisher = await getQueuePublisher()
@@ -119,15 +118,15 @@ export const createAnnotation = createServerFn({ method: "POST" })
         traceId: data.traceId,
         spanId: data.spanId ?? null,
         sessionId: data.sessionId ?? null,
-        issueId: data.issueId ?? null,
+        signalId: data.signalId ?? null,
         annotatorId: userId,
         value: data.value,
         passed: data.passed,
         feedback: data.feedback,
         anchor: data.anchor,
       }).pipe(
-        withPostgres(repositoriesLayer, client, organizationId),
-        withClickHouse(
+        withScopedPostgres(repositoriesLayer, client, organizationId),
+        withScopedClickHouse(
           Layer.mergeAll(ScoreAnalyticsRepositoryLive, TraceRepositoryLive, SpanRepositoryLive),
           chClient,
           organizationId,
@@ -144,16 +143,16 @@ export const updateAnnotation = createServerFn({ method: "POST" })
     z.object({
       scoreId: z.string(),
       projectId: z.string(),
-      traceId: z.string().length(32),
+      traceId: traceIdSchema,
       queueId: z.string().optional(),
       value: z.number(),
       passed: z.boolean(),
       feedback: z.string(),
-      issueId: z.string().optional(),
+      signalId: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<AnnotationRecord> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<AnnotationRecord> => {
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
     const chClient = getClickhouseClient()
     const publisher = await getQueuePublisher()
@@ -167,13 +166,13 @@ export const updateAnnotation = createServerFn({ method: "POST" })
         projectId: ProjectId(data.projectId),
         sourceId: getSourceId(data.queueId),
         traceId: data.traceId,
-        issueId: data.issueId ?? null,
+        signalId: data.signalId ?? null,
         value: data.value,
         passed: data.passed,
         feedback: data.feedback,
       }).pipe(
-        withPostgres(repositoriesLayer, client, organizationId),
-        withClickHouse(
+        withScopedPostgres(repositoriesLayer, client, organizationId),
+        withScopedClickHouse(
           Layer.mergeAll(ScoreAnalyticsRepositoryLive, TraceRepositoryLive, SpanRepositoryLive),
           chClient,
           organizationId,
@@ -188,15 +187,15 @@ export const updateAnnotation = createServerFn({ method: "POST" })
 
 export const deleteAnnotation = createServerFn({ method: "POST" })
   .inputValidator(z.object({ scoreId: z.string(), projectId: z.string() }))
-  .handler(async ({ data }): Promise<void> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<void> => {
+    const organizationId = await resolveOrgScope(context)
     const pgClient = getPostgresClient()
 
     const postgresLayer = Layer.mergeAll(ScoreRepositoryLive, OutboxEventWriterLive)
 
     await Effect.runPromise(
       deleteAnnotationUseCase({ scoreId: ScoreId(data.scoreId) }).pipe(
-        withPostgres(postgresLayer, pgClient, organizationId),
+        withScopedPostgres(postgresLayer, pgClient, organizationId),
         withTracing,
       ),
     )
@@ -206,14 +205,14 @@ export const listAnnotationsByTrace = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      traceId: z.string(),
+      traceId: traceIdSchema,
       limit: z.number().optional(),
       offset: z.number().optional(),
       draftMode: scoreDraftModeSchema.optional(),
     }),
   )
-  .handler(async ({ data }): Promise<AnnotationListResult> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<AnnotationListResult> => {
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
 
     const result = await Effect.runPromise(
@@ -223,7 +222,7 @@ export const listAnnotationsByTrace = createServerFn({ method: "GET" })
         limit: data.limit,
         offset: data.offset,
         draftMode: data.draftMode ?? "include", // draft-aware by default for trace-scoped reads
-      }).pipe(withPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
+      }).pipe(withScopedPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
     )
 
     return toListResult(result)
@@ -239,18 +238,18 @@ export const listAnnotationsBySession = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      traceIds: z.array(z.string().length(32)).max(500),
+      traceIds: z.array(traceIdSchema).max(500),
       limit: z.number().optional(),
       offset: z.number().optional(),
       draftMode: scoreDraftModeSchema.optional(),
     }),
   )
-  .handler(async ({ data }): Promise<AnnotationListResult> => {
+  .handler(async ({ data, context }): Promise<AnnotationListResult> => {
     if (data.traceIds.length === 0) {
       return { items: [], hasMore: false, limit: data.limit ?? 50, offset: data.offset ?? 0 }
     }
 
-    const { organizationId } = await requireSession()
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
 
     const result = await Effect.runPromise(
@@ -266,7 +265,7 @@ export const listAnnotationsBySession = createServerFn({ method: "GET" })
             draftMode: data.draftMode ?? "include",
           },
         })
-      }).pipe(withPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
+      }).pipe(withScopedPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
     )
 
     return toListResult(result)
@@ -276,14 +275,14 @@ export const listAnnotationCountsByTraceIds = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      traceIds: z.array(z.string().length(32)).max(500),
+      traceIds: z.array(traceIdSchema).max(500),
       draftMode: scoreDraftModeSchema.optional(),
     }),
   )
-  .handler(async ({ data }): Promise<readonly TraceAnnotationCountsRecord[]> => {
+  .handler(async ({ data, context }): Promise<readonly TraceAnnotationCountsRecord[]> => {
     if (data.traceIds.length === 0) return []
 
-    const { organizationId } = await requireSession()
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
 
     const result = await Effect.runPromise(
@@ -294,7 +293,7 @@ export const listAnnotationCountsByTraceIds = createServerFn({ method: "GET" })
           traceIds: data.traceIds.map(TraceId),
           options: { draftMode: data.draftMode ?? "include" },
         })
-      }).pipe(withPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
+      }).pipe(withScopedPostgres(ScoreRepositoryLive, client, organizationId), withTracing),
     )
 
     return result.map(toCountsRecord)
@@ -302,8 +301,8 @@ export const listAnnotationCountsByTraceIds = createServerFn({ method: "GET" })
 
 export const approveSystemAnnotation = createServerFn({ method: "POST" })
   .inputValidator(z.object({ scoreId: z.string(), comment: z.string().optional() }))
-  .handler(async ({ data }): Promise<{ action: "approved" | "already-published" }> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<{ action: "approved" | "already-published" }> => {
+    const organizationId = await resolveOrgScope(context)
     const client = getPostgresClient()
     const workflowStarter = await getWorkflowStarter()
     const publisher = await getQueuePublisher()
@@ -314,7 +313,7 @@ export const approveSystemAnnotation = createServerFn({ method: "POST" })
         ...(data.comment !== undefined ? { comment: data.comment } : {}),
       }).pipe(
         Effect.provide(Layer.mergeAll(Layer.succeed(WorkflowStarter, workflowStarter), QueuePublisherLive(publisher))),
-        withPostgres(ScoreRepositoryLive, client, organizationId),
+        withScopedPostgres(ScoreRepositoryLive, client, organizationId),
         withTracing,
       ),
     )
@@ -324,8 +323,8 @@ export const approveSystemAnnotation = createServerFn({ method: "POST" })
 
 export const rejectSystemAnnotation = createServerFn({ method: "POST" })
   .inputValidator(z.object({ scoreId: z.string(), comment: z.string().min(1) }))
-  .handler(async ({ data }): Promise<{ action: "rejected" }> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<{ action: "rejected" }> => {
+    const organizationId = await resolveOrgScope(context)
     const pgClient = getPostgresClient()
     const publisher = await getQueuePublisher()
 
@@ -334,7 +333,7 @@ export const rejectSystemAnnotation = createServerFn({ method: "POST" })
     await Effect.runPromise(
       rejectSystemAnnotationUseCase({ scoreId: ScoreId(data.scoreId), comment: data.comment }).pipe(
         Effect.provide(QueuePublisherLive(publisher)),
-        withPostgres(postgresLayer, pgClient, organizationId),
+        withScopedPostgres(postgresLayer, pgClient, organizationId),
         withTracing,
       ),
     )

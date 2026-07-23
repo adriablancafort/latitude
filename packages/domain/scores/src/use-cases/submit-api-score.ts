@@ -26,7 +26,7 @@ const parseOrBadRequest = <T>(schema: z.ZodType<T>, input: unknown, fallbackMess
  * Reuses `baseWriteScoreInputSchema` for the lifecycle fields (value, passed,
  * feedback, error, duration, tokens, cost, simulationId) but drops:
  *
- *   - `id` / `projectId` / `issueId` / `annotatorId` / `draftedAt` — managed
+ *   - `id` / `projectId` / `signalId` / `annotatorId` / `draftedAt` — managed
  *     by the platform (`projectId` comes from the URL).
  *   - `traceId` / `sessionId` / `spanId` — replaced by a required `trace`
  *     ref. `traceId` is resolved (by id or filter set), and `sessionId` /
@@ -36,7 +36,7 @@ export const baseSubmitApiScoreSchema = baseWriteScoreInputSchema
   .omit({
     id: true,
     projectId: true,
-    issueId: true,
+    signalId: true,
     annotatorId: true,
     draftedAt: true,
     traceId: true,
@@ -47,14 +47,16 @@ export const baseSubmitApiScoreSchema = baseWriteScoreInputSchema
     trace: traceRefSchema,
   })
 
+// The public `/scores` wire key stays `source` (the internal field is `sourceType`); the use-case
+// maps it when delegating to writeScoreUseCase, so renaming the internal field is not an SDK break.
 export const submitApiScoreInputSchema = z.discriminatedUnion("source", [
   baseSubmitApiScoreSchema.extend({
-    source: evaluationScoreSchema.shape.source,
+    source: evaluationScoreSchema.shape.sourceType,
     sourceId: evaluationScoreSchema.shape.sourceId,
     metadata: evaluationScoreSchema.shape.metadata,
   }),
   baseSubmitApiScoreSchema.extend({
-    source: customScoreSchema.shape.source,
+    source: customScoreSchema.shape.sourceType,
     sourceId: customScoreSchema.shape.sourceId,
     metadata: customScoreSchema.shape.metadata.default({}),
   }),
@@ -115,8 +117,8 @@ export const submitApiScoreUseCase = Effect.fn("scores.submitApiScore")(function
 
   const writeInput: WriteScoreInput =
     parsed.source === "evaluation"
-      ? { ...sharedWriteInput, source: "evaluation", sourceId: parsed.sourceId, metadata: parsed.metadata }
-      : { ...sharedWriteInput, source: "custom", sourceId: parsed.sourceId, metadata: parsed.metadata }
+      ? { ...sharedWriteInput, sourceType: "evaluation", sourceId: parsed.sourceId, metadata: parsed.metadata }
+      : { ...sharedWriteInput, sourceType: "custom", sourceId: parsed.sourceId, metadata: parsed.metadata }
 
   return yield* writeScoreUseCase(writeInput)
 })

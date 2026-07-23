@@ -1,17 +1,15 @@
 import { createRequire } from "node:module"
 import {
-  AIEmbed,
-  type AIEmbedShape,
   AIError,
-  AIRerank,
-  type AIRerankShape,
+  EMBEDDING_DIMENSIONS,
   type EmbedInput,
   type EmbedResult,
   type RerankInput,
   type RerankResult,
 } from "@domain/ai"
+import { runWithAiTelemetry } from "@platform/ai-latitude"
 import { parseEnv } from "@platform/env"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import type { VoyageAIClient } from "voyageai"
 
 const require = createRequire(import.meta.url)
@@ -55,19 +53,23 @@ const createVoyageClient = (): Effect.Effect<VoyageAIClient, AIError> =>
     ),
   )
 
-export const AIEmbedLive = Layer.succeed(AIEmbed, {
-  embed: (input: EmbedInput): Effect.Effect<EmbedResult, AIError> =>
-    Effect.gen(function* () {
-      const client = yield* createVoyageClient()
+export const embedWithVoyage = (input: EmbedInput): Effect.Effect<EmbedResult, AIError> =>
+  Effect.gen(function* () {
+    const client = yield* createVoyageClient()
 
-      return yield* Effect.tryPromise({
-        try: async () => {
+    return yield* Effect.tryPromise({
+      try: () =>
+        runWithAiTelemetry(input.telemetry, async () => {
           const response = await client.embed({
             input: input.text,
             model: input.model,
             inputType: input.inputType ?? "document",
-            truncation: false,
-            outputDimension: input.dimensions,
+            // Must stay true: the shared-embedding design embeds whole messages and
+            // relies on provider truncation for oversized ones. With `false`, Voyage
+            // 400s on any input past its 32k-token window, which both the trace-search
+            // indexer and CI session analysis feed it on long messages.
+            truncation: true,
+            outputDimension: EMBEDDING_DIMENSIONS,
             outputDtype: "float",
           })
 
@@ -76,30 +78,31 @@ export const AIEmbedLive = Layer.succeed(AIEmbed, {
             throw new Error("Voyage did not return an embedding")
           }
 
-          return { embedding: first.embedding }
-        },
-        catch: (cause) =>
-          new AIError({
-            message: `Embedding failed (${input.model}): ${cause instanceof Error ? cause.message : String(cause)}`,
-            cause,
-          }),
-      })
-    }),
-} satisfies AIEmbedShape)
+          return { embedding: first.embedding } satisfies EmbedResult
+        }),
+      catch: (cause) =>
+        new AIError({
+          message: `Embedding failed (${input.model}): ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    })
+  })
 
-export const AIRerankLive = Layer.succeed(AIRerank, {
-  rerank: (input: RerankInput): Effect.Effect<readonly RerankResult[], AIError> =>
-    Effect.gen(function* () {
-      const client = yield* createVoyageClient()
+export const rerankWithVoyage = (input: RerankInput): Effect.Effect<readonly RerankResult[], AIError> =>
+  Effect.gen(function* () {
+    const client = yield* createVoyageClient()
 
-      return yield* Effect.tryPromise({
-        try: async () => {
+    return yield* Effect.tryPromise({
+      try: () =>
+        runWithAiTelemetry(input.telemetry, async () => {
           const response = await client.rerank({
             query: input.query,
             documents: input.documents as string[],
             model: input.model,
             returnDocuments: false,
-            truncation: false,
+            // Truncate oversized documents to the model window rather than 400 the
+            // whole rerank request (same failure mode as embed above).
+            truncation: true,
           })
 
           if (!response.data) {
@@ -111,16 +114,17 @@ export const AIRerankLive = Layer.succeed(AIRerank, {
               (item): item is typeof item & { index: number; relevanceScore: number } =>
                 item.index !== undefined && item.relevanceScore !== undefined,
             )
-            .map((item) => ({
-              index: item.index,
-              relevanceScore: item.relevanceScore,
-            }))
-        },
-        catch: (cause) =>
-          new AIError({
-            message: `Rerank failed (${input.model}): ${cause instanceof Error ? cause.message : String(cause)}`,
-            cause,
-          }),
-      })
-    }),
-} satisfies AIRerankShape)
+            .map(
+              (item): RerankResult => ({
+                index: item.index,
+                relevanceScore: item.relevanceScore,
+              }),
+            )
+        }),
+      catch: (cause) =>
+        new AIError({
+          message: `Rerank failed (${input.model}): ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    })
+  })

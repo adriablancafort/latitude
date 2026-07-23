@@ -117,6 +117,78 @@ describe("OpenAIAgentsTraceProcessor", () => {
     expect(responseSpan.attributes["gen_ai.response.finish_reasons"]).toEqual(["stop"])
   })
 
+  it("forwards Responses API tool schemas as gen_ai.tool.definitions", async () => {
+    const t = makeTrace()
+    await processor.onTraceStart(t)
+    const span = makeSpan({
+      type: "response",
+      response_id: "resp_2",
+      _input: "What's the weather?",
+      _response: {
+        model: "gpt-5.5",
+        status: "completed",
+        output: [],
+        tools: [
+          {
+            type: "function",
+            name: "get_weather",
+            description: "Get the current weather for a city",
+            parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+            strict: true,
+          },
+        ],
+      },
+    })
+    await processor.onSpanStart(span as never)
+    await processor.onSpanEnd(span as never)
+    await processor.onTraceEnd(t)
+
+    await provider.forceFlush()
+    const responseSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.attributes["latitude.span.kind"] === "agents.response")
+    if (!responseSpan) throw new Error("expected a response span")
+
+    expect(JSON.parse(responseSpan.attributes["gen_ai.tool.definitions"] as string)).toEqual([
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        strict: true,
+      },
+    ])
+  })
+
+  it("forwards the agent instructions as gen_ai.system_instructions", async () => {
+    const t = makeTrace()
+    await processor.onTraceStart(t)
+    const span = makeSpan({
+      type: "response",
+      response_id: "resp_3",
+      _input: "Hi",
+      _response: {
+        model: "gpt-5.5",
+        status: "completed",
+        output: [],
+        instructions: "You are a helpful assistant participating in a telemetry QA test.",
+      },
+    })
+    await processor.onSpanStart(span as never)
+    await processor.onSpanEnd(span as never)
+    await processor.onTraceEnd(t)
+
+    await provider.forceFlush()
+    const responseSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.attributes["latitude.span.kind"] === "agents.response")
+    if (!responseSpan) throw new Error("expected a response span")
+
+    expect(JSON.parse(responseSpan.attributes["gen_ai.system_instructions"] as string)).toEqual([
+      { type: "text", content: "You are a helpful assistant participating in a telemetry QA test." },
+    ])
+  })
+
   it("converts Agents SDK function_call_result tool outputs into proper tool messages", async () => {
     const t = makeTrace()
     await processor.onTraceStart(t)

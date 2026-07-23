@@ -1,4 +1,4 @@
-import { AI } from "@domain/ai"
+import { AI, resolveGenerationConfig } from "@domain/ai"
 import {
   ALIGNMENT_CURATED_DATASET_MAX_ROWS,
   ALIGNMENT_DEFAULT_SEED,
@@ -8,7 +8,6 @@ import {
   evaluateOptimizationCandidate,
   type GeneratedEvaluationDraft,
   type HydratedEvaluationAlignmentExample,
-  validateEvaluationScript,
 } from "@domain/evaluations"
 import {
   hashOptimizationCandidateText,
@@ -20,64 +19,66 @@ import {
   Optimizer,
   splitOptimizationExamples,
 } from "@domain/optimizations"
-import { withAi } from "@platform/ai"
-import { AIGenerateLive } from "@platform/ai-vercel"
+import { BadRequestError } from "@domain/shared"
+import { AIGenerateLive, withAi } from "@platform/ai"
 import {
   buildGepaProposalPrompt,
+  GEPA_DEFAULT_PROPOSER_MODEL,
   GEPA_DEFAULT_REFLECTION_SIZE,
-  GEPA_PROPOSER_MODEL,
   GEPA_PROPOSER_SYSTEM_PROMPT,
   GepaOptimizerLive,
   gepaProposalOutputSchema,
 } from "@platform/op-gepa"
+import { QuickJsScriptRuntimeLive } from "@platform/sandbox-quickjs"
 import { withTracing } from "@repo/observability"
 import { Data, Effect } from "effect"
 import { getRedisClient } from "../clients.ts"
+import { describeActivityCause, logActivityFailure } from "./activity-error.ts"
 
-class EvaluationOptimizationActivityError extends Data.TaggedError("EvaluationAlignmentActivityError")<{
+class EvaluationOptimizationActivityError extends Data.TaggedError("EvaluationOptimizationActivityError")<{
   readonly activity: string
   readonly cause: unknown
+  readonly message: string
 }> {
   readonly httpStatus = 500
 
   get httpMessage() {
-    return `Evaluation alignment activity "${this.activity}" failed`
+    return `Evaluation optimization activity "${this.activity}" failed: ${this.message}`
   }
 }
+
+const toOptimizationActivityError = (activity: string, cause: unknown): EvaluationOptimizationActivityError =>
+  cause instanceof EvaluationOptimizationActivityError
+    ? cause
+    : new EvaluationOptimizationActivityError({ activity, cause, message: describeActivityCause(cause) })
 
 const proposeOptimizationCandidate = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string | null
   readonly jobId: string
   readonly draftEvaluationHash: string
   readonly candidate: OptimizationCandidate
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly context: readonly OptimizationTrajectory[]
 }): Promise<OptimizationCandidate> =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan("projectId", input.projectId)
-      yield* Effect.annotateCurrentSpan("issueId", input.issueId)
+      yield* Effect.annotateCurrentSpan("signalId", input.signalId)
       yield* Effect.annotateCurrentSpan("jobId", input.jobId)
       yield* Effect.annotateCurrentSpan("evaluation.candidateHash", input.candidate.hash)
 
-      if (!validateEvaluationScript(input.candidate.text)) {
-        return yield* new EvaluationOptimizationActivityError({
-          activity: "optimizeEvaluationDraft",
-          cause: new Error("Current candidate script does not match the expected LLM-as-judge template"),
-        })
-      }
-
       const ai = yield* AI
+      const modelConfig = yield* resolveGenerationConfig("GEPA_PROPOSER", GEPA_DEFAULT_PROPOSER_MODEL)
       const result = yield* ai.generate({
-        ...GEPA_PROPOSER_MODEL,
+        ...modelConfig,
         telemetry: buildEvaluationGepaProposeTelemetryCapture({
           organizationId: input.organizationId,
           projectId: input.projectId,
-          issueId: input.issueId,
+          signalId: input.signalId,
           evaluationId: input.evaluationId,
           jobId: input.jobId,
           evaluationHash: input.draftEvaluationHash,
@@ -85,8 +86,8 @@ const proposeOptimizationCandidate = (input: {
         }),
         system: GEPA_PROPOSER_SYSTEM_PROMPT,
         prompt: buildGepaProposalPrompt({
-          issueName: input.issueName,
-          issueDescription: input.issueDescription,
+          signalName: input.signalName,
+          signalDescription: input.signalDescription,
           currentScript: input.candidate.text,
           trajectories: input.context,
         }),
@@ -95,55 +96,38 @@ const proposeOptimizationCandidate = (input: {
 
       const script = result.object.script.trim()
 
-      if (!validateEvaluationScript(script)) {
-        return yield* new EvaluationOptimizationActivityError({
-          activity: "optimizeEvaluationDraft",
-          cause: new Error("Proposed evaluation script failed template validation"),
-        })
-      }
-
       return {
         componentId: input.candidate.componentId,
         text: script,
         hash: yield* Effect.tryPromise({
           try: () => hashOptimizationCandidateText(script),
-          catch: (cause) =>
-            new EvaluationOptimizationActivityError({
-              activity: "optimizeEvaluationDraft",
-              cause,
-            }),
+          catch: (cause) => toOptimizationActivityError("optimizeEvaluationDraft", cause),
         }),
       } satisfies OptimizationCandidate
     }).pipe(
       withAi(AIGenerateLive, getRedisClient()),
       withTracing,
       Effect.withSpan("evaluations.proposeOptimizationCandidate"),
-      Effect.mapError(
-        (cause) =>
-          new EvaluationOptimizationActivityError({
-            activity: "optimizeEvaluationDraft",
-            cause,
-          }),
-      ),
+      Effect.mapError((cause) => toOptimizationActivityError("optimizeEvaluationDraft", cause)),
     ),
   )
 
 export const optimizeEvaluationDraft = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string | null
   readonly jobId: string
   readonly draft: GeneratedEvaluationDraft
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly positiveExamples: readonly HydratedEvaluationAlignmentExample[]
   readonly negativeExamples: readonly HydratedEvaluationAlignmentExample[]
 }): Promise<GeneratedEvaluationDraft> =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan("projectId", input.projectId)
-      yield* Effect.annotateCurrentSpan("issueId", input.issueId)
+      yield* Effect.annotateCurrentSpan("signalId", input.signalId)
       yield* Effect.annotateCurrentSpan("jobId", input.jobId)
       yield* Effect.annotateCurrentSpan("alignment.positiveExampleCount", input.positiveExamples.length)
       yield* Effect.annotateCurrentSpan("alignment.negativeExampleCount", input.negativeExamples.length)
@@ -163,6 +147,15 @@ export const optimizeEvaluationDraft = (input: {
         trainRatio: ALIGNMENT_TRAIN_SPLIT,
         validationRatio: ALIGNMENT_VALIDATION_SPLIT,
       })
+
+      // A single example yields an empty valset, which GEPA tolerates (it reuses
+      // the trainset); only an empty trainset is unoptimizable. Non-retryable.
+      if (dataset.trainset.length === 0) {
+        return yield* new BadRequestError({
+          message:
+            "At least 1 of the signal's traces must be annotated by a human before its evaluation can be optimized.",
+        })
+      }
 
       // Stagnation budget sized so the proposer sees at least every curated
       // dataset row before we declare the search exhausted, regardless of how
@@ -185,35 +178,30 @@ export const optimizeEvaluationDraft = (input: {
         evaluate: async ({ candidate, example }: OptimizeEvaluationInput) => {
           const hydratedExample = examplesById.get(example.id)
           if (!hydratedExample) {
-            throw new EvaluationOptimizationActivityError({
-              activity: "optimizeEvaluationDraft",
-              cause: new Error(`Missing hydrated optimization example ${example.id}`),
-            })
+            throw toOptimizationActivityError(
+              "optimizeEvaluationDraft",
+              new Error(`Missing hydrated optimization example ${example.id}`),
+            )
           }
 
           return Effect.runPromiseWith(services)(
             evaluateOptimizationCandidate({
               candidate,
               example: hydratedExample,
-              issueName: input.issueName,
-              issueDescription: input.issueDescription,
+              signalName: input.signalName,
+              signalDescription: input.signalDescription,
               judgeTelemetry: {
                 organizationId: input.organizationId,
                 projectId: input.projectId,
-                issueId: input.issueId,
+                signalId: input.signalId,
                 evaluationId: input.evaluationId,
                 jobId: input.jobId,
               },
             }).pipe(
               withAi(AIGenerateLive, getRedisClient()),
+              Effect.provide(QuickJsScriptRuntimeLive),
               withTracing,
-              Effect.mapError(
-                (cause) =>
-                  new EvaluationOptimizationActivityError({
-                    activity: "optimizeEvaluationDraft",
-                    cause,
-                  }),
-              ),
+              Effect.mapError((cause) => toOptimizationActivityError("optimizeEvaluationDraft", cause)),
             ),
           )
         },
@@ -221,13 +209,13 @@ export const optimizeEvaluationDraft = (input: {
           proposeOptimizationCandidate({
             organizationId: input.organizationId,
             projectId: input.projectId,
-            issueId: input.issueId,
+            signalId: input.signalId,
             evaluationId: input.evaluationId,
             jobId: input.jobId,
             draftEvaluationHash: input.draft.evaluationHash,
             candidate,
-            issueName: input.issueName,
-            issueDescription: input.issueDescription,
+            signalName: input.signalName,
+            signalDescription: input.signalDescription,
             context,
           }),
       })
@@ -244,12 +232,9 @@ export const optimizeEvaluationDraft = (input: {
       Effect.provide(GepaOptimizerLive),
       withTracing,
       Effect.withSpan("evaluations.optimizeEvaluationDraft"),
-      Effect.mapError(
-        (cause) =>
-          new EvaluationOptimizationActivityError({
-            activity: "optimizeEvaluationDraft",
-            cause,
-          }),
+      Effect.tapError((cause) => logActivityFailure("optimizeEvaluationDraft", cause)),
+      Effect.mapError((cause) =>
+        cause instanceof BadRequestError ? cause : toOptimizationActivityError("optimizeEvaluationDraft", cause),
       ),
     ),
   )

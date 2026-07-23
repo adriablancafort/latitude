@@ -1,3 +1,4 @@
+import { ProjectRepository } from "@domain/projects"
 import type {
   NotFoundError,
   NotificationId,
@@ -10,7 +11,7 @@ import type {
 import { UserRepository } from "@domain/users"
 import { Effect } from "effect"
 import type { Notification, NotificationKind } from "../entities/notification.ts"
-import { shouldSendEmail } from "../entities/notification-preferences.ts"
+import { severityFromPayload, shouldSendEmail } from "../entities/notification-preferences.ts"
 import { NotificationRepository } from "../ports/notification-repository.ts"
 
 export interface CreateNotificationInput {
@@ -81,17 +82,29 @@ export const createNotificationUseCase = (input: CreateNotificationInput) =>
       return { notification: null, emailEligible: false } as const
     }
 
+    if (input.projectId !== null) {
+      const projects = yield* ProjectRepository
+      const project = yield* projects
+        .findById(input.projectId)
+        .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(null)))
+      if (project?.settings?.isSample === true) {
+        return { notification: inserted, emailEligible: false } as const
+      }
+    }
+
     // Read the recipient's prefs to decide email eligibility. Missing user
     // (impossible in practice — we just resolved them as a member) is
     // treated as "no email" rather than failing the insert.
     const users = yield* UserRepository
     const user = yield* users.findById(input.userId).pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(null)))
 
-    const emailEligible = user !== null && shouldSendEmail(user.notificationPreferences ?? null, input.kind)
+    const emailEligible =
+      user !== null &&
+      shouldSendEmail(user.notificationPreferences ?? null, input.kind, severityFromPayload(input.payload))
 
     return { notification: inserted, emailEligible } as const
   }).pipe(Effect.withSpan("notifications.createNotification")) as Effect.Effect<
     CreateNotificationResult,
     CreateNotificationError,
-    SqlClient | NotificationRepository | UserRepository
+    SqlClient | NotificationRepository | ProjectRepository | UserRepository
   >

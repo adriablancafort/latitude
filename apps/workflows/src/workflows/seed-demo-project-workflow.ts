@@ -6,11 +6,11 @@ import { gardenTaxonomyWorkflow } from "./taxonomy-gardening-workflow.ts"
 /**
  * Seeds the base demo content and the derived read models that make the
  * demo immediately usable. The first two activities write a fresh project's
- * worth of seed content (datasets, evaluations, issues, queues, scores,
+ * worth of seed content (datasets, evaluations, issues, scores,
  * tau telemetry) under the supplied `(organizationId, projectId)` pair.
- * The derived activities then build trace-search documents/embeddings and
- * run taxonomy observation + gardening so behaviours are visible without
- * waiting for background workers.
+ * The derived activity then imports a precomputed trace-search,
+ * conversation-intelligence, and taxonomy snapshot so behaviours are visible
+ * without waiting for background workers or rerunning embedding jobs.
  *
  * Postgres → ClickHouse is the dependency order. ClickHouse doesn't
  * strictly read from Postgres at write-time, but the row identity is shared
@@ -18,10 +18,9 @@ import { gardenTaxonomyWorkflow } from "./taxonomy-gardening-workflow.ts"
  * first means the audit trail (and the org's project list) surfaces a
  * non-empty project before the longer telemetry insert kicks off.
  *
- * Activity timeouts: 30 minutes. ClickHouse insertion and derived AI work
- * (Voyage embeddings + taxonomy naming) are the long poles. The cap is
- * generous so a slow provider or shared-infra spike doesn't trip the retry
- * policy.
+ * Activity timeouts: 30 minutes. ClickHouse insertion and the compressed
+ * derived snapshot import are the long poles. The cap is generous so a slow
+ * datastore or shared-infra spike doesn't trip the retry policy.
  *
  * Retry policy: spreads `defaultActivityRetryPolicy` and marks
  * `SeedError` non-retryable. The Postgres seed runner wraps every
@@ -41,22 +40,34 @@ import { gardenTaxonomyWorkflow } from "./taxonomy-gardening-workflow.ts"
  * use-case created it) but its content is partial. Operators clean up
  * via the existing `softDeleteProject` admin server function.
  */
-const { seedDemoProjectPostgresActivity, seedDemoProjectClickHouseActivity, seedDemoProjectTraceSearchActivity } =
+const { seedDemoProjectPostgresActivity, seedDemoProjectClickHouseActivity, seedDemoProjectDerivedSnapshotActivity } =
   proxyActivities<typeof activities>({
     startToCloseTimeout: "30 minutes",
     retry: { ...defaultActivityRetryPolicy, nonRetryableErrorTypes: ["SeedError"] },
   })
 
+/**
+ * The trace-search activity embeds every seeded trace via Voyage and is the
+ * long pole. It heartbeats per trace, so a worker that dies mid-run (in dev
+ * `tsx watch` restarts the worker on every file save) is detected within
+ * `heartbeatTimeout` and the activity is retried in seconds — instead of
+ * sitting orphaned in `Started` until the 30-minute `startToCloseTimeout`
+ * elapses, which is what made the seed appear to "hang". Retries are cheap:
+ * the activity skips already-written documents/embeddings via dedupe-by-hash.
+ *
+ * Kept in its own proxy because the Postgres/ClickHouse activities don't
+ * heartbeat — a shared `heartbeatTimeout` would fail them the moment they ran
+ * longer than the timeout without emitting one.
+ */
+const { seedDemoProjectTraceSearchActivity } = proxyActivities<typeof activities>({
+  startToCloseTimeout: "30 minutes",
+  heartbeatTimeout: "2 minutes",
+  retry: { ...defaultActivityRetryPolicy, nonRetryableErrorTypes: ["SeedError"] },
+})
+
 export interface SeedDemoProjectWorkflowInput {
   readonly organizationId: string
   readonly projectId: string
-  /**
-   * Org members that the seeded annotation-queue items should round-robin
-   * across as `assignedTo`. Picked in the request handler so workflow
-   * replays see a stable list; `Math.random` inside workflow code is a
-   * Temporal footgun.
-   */
-  readonly queueAssigneeUserIds: readonly string[]
   /**
    * The target org's existing default api key. Threaded through so seeded
    * ClickHouse spans reference a key that actually exists on the org —
@@ -80,15 +91,19 @@ export const seedDemoProjectWorkflow = async (input: SeedDemoProjectWorkflowInpu
   // Version gate so workflows already running with the previous two-activity
   // history can finish replaying without scheduling the derived-data steps.
   if (patched("seed-demo-project-derived-search-taxonomy-v1")) {
-    await seedDemoProjectTraceSearchActivity(input)
-    // Gardening runs through the same Temporal workflow as production; the
-    // legacy in-activity orchestrator is gone.
-    await executeChild(gardenTaxonomyWorkflow, {
-      args: [
-        { organizationId: input.organizationId, projectId: input.projectId, dimension: "topic", trigger: "manual" },
-      ],
-      workflowId: `org:${input.organizationId}:taxonomy:garden:${input.projectId}:seed`,
-    })
+    if (patched("seed-demo-project-derived-snapshot-v1")) {
+      await seedDemoProjectDerivedSnapshotActivity(input)
+    } else {
+      await seedDemoProjectTraceSearchActivity(input)
+      // Gardening runs through the same Temporal workflow as production; the
+      // legacy in-activity orchestrator is gone.
+      await executeChild(gardenTaxonomyWorkflow, {
+        args: [
+          { organizationId: input.organizationId, projectId: input.projectId, dimension: "topic", trigger: "manual" },
+        ],
+        workflowId: `org:${input.organizationId}:taxonomy:garden:${input.projectId}:seed`,
+      })
+    }
   }
 
   return { action: "seeded" as const, projectId: input.projectId }

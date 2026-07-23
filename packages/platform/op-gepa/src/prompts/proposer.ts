@@ -38,7 +38,8 @@ Rules for the script:
 - The script field must contain the entire evaluation script, with no markdown fences
 - Preserve the current MVP script wrapper exactly: one llm() call that returns { passed: boolean, feedback: string }, followed by the existing Passed/Failed return logic
 - Only change the prompt text inside the llm() template literal
-- The only allowed interpolation placeholder inside the prompt text is \${conversation} — it will be replaced at runtime with the formatted conversation
+- The prompt must instruct the judge to set passed to true when the target behavior is present and false when it is absent
+- The only allowed interpolation placeholder inside the prompt text is \${session.conversation} — it will be replaced at runtime with the formatted conversation
 - Do not use backticks inside the prompt text
 - Keep the prompt text focused on detecting the target issue in the conversation
 - Learn from failures and false positives in the trajectories — especially use the human annotation context to understand why false positives are actually correct behavior
@@ -50,14 +51,14 @@ export const gepaProposalOutputSchema = z.object({
 })
 
 export const buildGepaProposalPrompt = (input: {
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly currentScript: string
   readonly trajectories: readonly OptimizationTrajectory[]
 }): string =>
   [
-    `Issue name: ${input.issueName}`,
-    `Issue description: ${input.issueDescription}`,
+    `Signal name: ${input.signalName}`,
+    `Signal description: ${input.signalDescription}`,
     "",
     "Current evaluation script:",
     input.currentScript,

@@ -1,5 +1,8 @@
+import { ApiKeyRepository } from "@domain/api-keys"
+import { createFakeApiKeyRepository } from "@domain/api-keys/testing"
 import { BillingOverrideRepository, StripeSubscriptionLookup } from "@domain/billing"
 import { createFakeBillingOverrideRepository, createFakeStripeSubscriptionLookup } from "@domain/billing/testing"
+import { OutboxEventWriter } from "@domain/events"
 import { createOrganization, MembershipRepository, OrganizationRepository } from "@domain/organizations"
 import { createFakeMembershipRepository, createFakeOrganizationRepository } from "@domain/organizations/testing"
 import { generateId, OrganizationId, SettingsReader, SqlClient, UserId } from "@domain/shared"
@@ -10,8 +13,9 @@ import { createSandbox } from "../entities/sandbox.ts"
 import { SandboxAccessDeniedError, SandboxActiveCapReachedError } from "../errors.ts"
 import { SandboxRepository } from "../ports/sandbox-repository.ts"
 import { createFakeSandboxRepository } from "../testing/fake-sandbox-repository.ts"
-import { archiveSandboxUseCase } from "./archive-sandbox.ts"
 import { createSandboxUseCase } from "./create-sandbox.ts"
+import { findOrCreateActiveSandboxUseCase } from "./find-or-create-active-sandbox.ts"
+import { findOrCreateSandboxUseCase } from "./find-or-create-sandbox.ts"
 import { reactivateSandboxUseCase } from "./reactivate-sandbox.ts"
 
 const PARENT_ORG_ID = OrganizationId(generateId())
@@ -73,6 +77,8 @@ const buildLayer = (input?: {
     Layer.succeed(MembershipRepository, membership.repository),
     Layer.succeed(BillingOverrideRepository, override.repository),
     Layer.succeed(StripeSubscriptionLookup, subscription.service),
+    Layer.succeed(ApiKeyRepository, createFakeApiKeyRepository().repository),
+    Layer.succeed(OutboxEventWriter, { write: () => Effect.void }),
     Layer.succeed(SqlClient, createFakeSqlClient({ organizationId: PARENT_ORG_ID })),
     Layer.succeed(SettingsReader, {
       getOrganizationSettings: () => Effect.succeed(null),
@@ -123,15 +129,10 @@ describe("sandbox lifecycle (unit)", () => {
     expect(failure(exit)).toBeInstanceOf(SandboxActiveCapReachedError)
   })
 
-  it("archiving frees a slot, then reactivation fits within the cap", async () => {
+  it("reactivates an archived sandbox within the cap", async () => {
     const existing = OrganizationId(generateId())
-    const { layer } = buildLayer({ seedSandbox: { organizationId: existing, status: "active" } })
-
-    await Effect.runPromise(
-      archiveSandboxUseCase({ sandboxOrganizationId: existing, actorUserId: ADMIN_USER_ID }).pipe(
-        Effect.provide(layer),
-      ),
-    )
+    // The single slot is free (the only sandbox is archived), so it fits.
+    const { layer } = buildLayer({ seedSandbox: { organizationId: existing, status: "archived" } })
 
     const reactivated = await Effect.runPromise(
       reactivateSandboxUseCase({ sandboxOrganizationId: existing, actorUserId: ADMIN_USER_ID }).pipe(
@@ -139,5 +140,182 @@ describe("sandbox lifecycle (unit)", () => {
       ),
     )
     expect(reactivated.status).toBe("active")
+  })
+})
+
+describe("findOrCreateSandbox (unit)", () => {
+  it("returns the existing sandbox without creating another", async () => {
+    const existing = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: existing, status: "active" } })
+
+    const result = await Effect.runPromise(
+      findOrCreateSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: existing, createdNow: false })
+    expect(sandbox.sandboxes.size).toBe(1)
+  })
+
+  it("prefers the active sandbox over a newer archived sibling", async () => {
+    const activeId = OrganizationId(generateId())
+    const archivedId = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: activeId, status: "active" } })
+    sandbox.sandboxes.set(
+      archivedId,
+      createSandbox({
+        organizationId: archivedId,
+        createdByUserId: ADMIN_USER_ID,
+        status: "archived",
+        createdAt: new Date(Date.now() + 60_000),
+      }),
+    )
+    sandbox.parentByOrganizationId.set(archivedId, PARENT_ORG_ID)
+
+    const result = await Effect.runPromise(
+      findOrCreateSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: activeId, createdNow: false })
+    expect(sandbox.sandboxes.size).toBe(2)
+  })
+
+  it("resolves an archived sandbox instead of creating a second one", async () => {
+    const existing = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: existing, status: "archived" } })
+
+    const result = await Effect.runPromise(
+      findOrCreateSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: existing, createdNow: false })
+    expect(sandbox.sandboxes.size).toBe(1)
+  })
+
+  it("creates the sandbox on first use", async () => {
+    const { layer, sandbox } = buildLayer()
+
+    const result = await Effect.runPromise(
+      findOrCreateSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result.createdNow).toBe(true)
+    expect(sandbox.sandboxes.has(result.sandboxOrganizationId)).toBe(true)
+  })
+
+  it("refuses a non-member of the parent org before reading anything", async () => {
+    const { layer } = buildLayer({ isMember: false })
+
+    const exit = await Effect.runPromiseExit(
+      findOrCreateSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(failure(exit)).toBeInstanceOf(SandboxAccessDeniedError)
+  })
+})
+
+describe("findOrCreateActiveSandbox (entry) (unit)", () => {
+  it("wakes an archived sandbox on entry", async () => {
+    const existing = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: existing, status: "archived" } })
+
+    const result = await Effect.runPromise(
+      findOrCreateActiveSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: existing, createdNow: false })
+    expect(sandbox.sandboxes.get(existing)?.status).toBe("active")
+    expect(sandbox.sandboxes.size).toBe(1)
+  })
+
+  it("leaves an already-active sandbox active (idempotent wake)", async () => {
+    const existing = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: existing, status: "active" } })
+
+    const result = await Effect.runPromise(
+      findOrCreateActiveSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: existing, createdNow: false })
+    expect(sandbox.sandboxes.get(existing)?.status).toBe("active")
+  })
+
+  it("creates an active sandbox on first entry without a second wake step", async () => {
+    const { layer, sandbox } = buildLayer()
+
+    const result = await Effect.runPromise(
+      findOrCreateActiveSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result.createdNow).toBe(true)
+    expect(sandbox.sandboxes.get(result.sandboxOrganizationId)?.status).toBe("active")
+    expect(sandbox.sandboxes.size).toBe(1)
+  })
+
+  it("refuses a non-member of the parent org", async () => {
+    const { layer } = buildLayer({ isMember: false })
+
+    const exit = await Effect.runPromiseExit(
+      findOrCreateActiveSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(failure(exit)).toBeInstanceOf(SandboxAccessDeniedError)
+  })
+
+  it("prefers an active sibling over an archived one, leaving the archived asleep", async () => {
+    const activeId = OrganizationId(generateId())
+    const archivedId = OrganizationId(generateId())
+    const { layer, sandbox } = buildLayer({ seedSandbox: { organizationId: activeId, status: "active" } })
+    sandbox.sandboxes.set(
+      archivedId,
+      createSandbox({ organizationId: archivedId, createdByUserId: ADMIN_USER_ID, status: "archived" }),
+    )
+    sandbox.parentByOrganizationId.set(archivedId, PARENT_ORG_ID)
+
+    const result = await Effect.runPromise(
+      findOrCreateActiveSandboxUseCase({
+        parentOrganizationId: PARENT_ORG_ID,
+        actorUserId: ADMIN_USER_ID,
+        name: "Sandbox",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(result).toEqual({ sandboxOrganizationId: activeId, createdNow: false })
+    expect(sandbox.sandboxes.get(archivedId)?.status).toBe("archived")
   })
 })

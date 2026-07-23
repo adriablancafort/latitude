@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
 import { members, organizations, users } from "../schema/better-auth.ts"
 import { projects } from "../schema/projects.ts"
+import { sandboxes } from "../schema/sandboxes.ts"
 import { setupTestPostgres } from "../test/in-memory-postgres.ts"
 import { withPostgres } from "../with-postgres.ts"
 import { AdminOrganizationRepositoryLive } from "./admin-organization-repository.ts"
@@ -20,6 +21,8 @@ const OWNER = makeId("user-or-owner")
 const ADMIN = makeId("user-or-admin")
 const PROJ_ALIVE = makeId("proj-or-alive")
 const PROJ_DELETED = makeId("proj-or-deleted")
+const SANDBOX_ACTIVE_ORG = makeId("org-or-sbx-active")
+const SANDBOX_ARCHIVED_ORG = makeId("org-or-sbx-archived")
 
 describe("AdminOrganizationRepositoryLive.findById", () => {
   beforeAll(async () => {
@@ -55,6 +58,23 @@ describe("AdminOrganizationRepositoryLive.findById", () => {
         createdAt: baseTime,
         updatedAt: baseTime,
       },
+      // Two sandbox orgs (children of ORG) — a sandbox is an org with a parent.
+      {
+        id: SANDBOX_ACTIVE_ORG,
+        name: "Acme Sandbox Active",
+        slug: "acme-sandbox-active",
+        parentOrgId: ORG,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
+      {
+        id: SANDBOX_ARCHIVED_ORG,
+        name: "Acme Sandbox Archived",
+        slug: "acme-sandbox-archived",
+        parentOrgId: ORG,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      },
     ])
 
     await pg.db.insert(members).values([
@@ -74,6 +94,27 @@ describe("AdminOrganizationRepositoryLive.findById", () => {
         updatedAt: baseTime,
       },
     ])
+
+    await pg.db.insert(sandboxes).values([
+      {
+        id: makeId("sbx-active"),
+        organizationId: SANDBOX_ACTIVE_ORG,
+        status: "active",
+        lastActivityAt: baseTime,
+        createdByUserId: OWNER,
+        createdAt: new Date("2025-06-02T12:00:00.000Z"),
+        updatedAt: baseTime,
+      },
+      {
+        id: makeId("sbx-archived"),
+        organizationId: SANDBOX_ARCHIVED_ORG,
+        status: "archived",
+        lastActivityAt: baseTime,
+        createdByUserId: OWNER,
+        createdAt: new Date("2025-06-01T12:00:00.000Z"),
+        updatedAt: baseTime,
+      },
+    ])
   })
 
   it("returns the organisation with members and active projects", async () => {
@@ -87,6 +128,8 @@ describe("AdminOrganizationRepositoryLive.findById", () => {
     expect(result.id).toBe(ORG)
     expect(result.name).toBe("Acme")
     expect(result.stripeCustomerId).toBe("cus_test_123")
+    // No settings seeded → defaults to false.
+    expect(result.wantsShowcase).toBe(false)
 
     expect(result.members).toHaveLength(2)
     const ownerMember = result.members.find((m) => m.user.id === OWNER)
@@ -111,12 +154,98 @@ describe("AdminOrganizationRepositoryLive.findById", () => {
     expect(result.projects.map((p) => p.id)).toEqual([PROJ_ALIVE])
   })
 
+  it("returns every sandbox (active and archived) ordered by creation, newest first", async () => {
+    const result = await runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        return yield* repo.findById(OrganizationId(ORG))
+      }),
+    )
+
+    expect(result.sandboxes.map((s) => s.organizationId)).toEqual([SANDBOX_ACTIVE_ORG, SANDBOX_ARCHIVED_ORG])
+    const [active, archived] = result.sandboxes
+    expect(active?.status).toBe("active")
+    expect(active?.name).toBe("Acme Sandbox Active")
+    expect(active?.owner?.email).toBe("owner@example.com")
+    expect(archived?.status).toBe("archived")
+  })
+
+  it("does not surface sandboxes as projects or as the org itself", async () => {
+    // A sandbox org should never come back when looking up that sandbox's
+    // *parent*: it's only ever exposed through the `sandboxes` collection.
+    const result = await runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        return yield* repo.findById(OrganizationId(ORG))
+      }),
+    )
+    expect(result.projects.map((p) => p.id)).not.toContain(SANDBOX_ACTIVE_ORG)
+  })
+
   it("fails with NotFoundError for a non-existent organisation id", async () => {
     await expect(
       runWithLive(
         Effect.gen(function* () {
           const repo = yield* AdminOrganizationRepository
           return yield* repo.findById(OrganizationId(makeId("org-missing")))
+        }),
+      ),
+    ).rejects.toMatchObject({ _tag: "NotFoundError", entity: "Organization" })
+  })
+
+  it("omits sandbox orgs from findManySummariesByIds (usage listing)", async () => {
+    // Even if ClickHouse ranks a sandbox org by trace count, hydrating it
+    // here must drop it so the usage listing only shows real customer orgs.
+    const summaries = await runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        return yield* repo.findManySummariesByIds([
+          OrganizationId(ORG),
+          OrganizationId(SANDBOX_ACTIVE_ORG),
+          OrganizationId(SANDBOX_ARCHIVED_ORG),
+        ])
+      }),
+    )
+
+    expect(summaries.has(OrganizationId(ORG))).toBe(true)
+    expect(summaries.has(OrganizationId(SANDBOX_ACTIVE_ORG))).toBe(false)
+    expect(summaries.has(OrganizationId(SANDBOX_ARCHIVED_ORG))).toBe(false)
+  })
+})
+
+describe("AdminOrganizationRepositoryLive.setWantsShowcase", () => {
+  const readFlag = (orgId: string) =>
+    runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        return yield* repo.findById(OrganizationId(orgId))
+      }),
+    ).then((details) => details.wantsShowcase)
+
+  it("toggles the flag and merges into existing settings", async () => {
+    await runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        yield* repo.setWantsShowcase(OrganizationId(ORG), true)
+      }),
+    )
+    expect(await readFlag(ORG)).toBe(true)
+
+    await runWithLive(
+      Effect.gen(function* () {
+        const repo = yield* AdminOrganizationRepository
+        yield* repo.setWantsShowcase(OrganizationId(ORG), false)
+      }),
+    )
+    expect(await readFlag(ORG)).toBe(false)
+  })
+
+  it("fails with NotFoundError for a non-existent organisation id", async () => {
+    await expect(
+      runWithLive(
+        Effect.gen(function* () {
+          const repo = yield* AdminOrganizationRepository
+          yield* repo.setWantsShowcase(OrganizationId(makeId("org-missing")), true)
         }),
       ),
     ).rejects.toMatchObject({ _tag: "NotFoundError", entity: "Organization" })

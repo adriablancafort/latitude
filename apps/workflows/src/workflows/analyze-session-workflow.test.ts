@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { mockActivities, signalState } = vi.hoisted(() => {
+const { mockActivities, signalState, patchedState } = vi.hoisted(() => {
   const mockActivities = {
     loadAnalyzeSessionActivity: vi.fn(),
     hashAnalyzeSessionActivity: vi.fn(),
@@ -13,11 +13,16 @@ const { mockActivities, signalState } = vi.hoisted(() => {
   const signalState: { handler: ((input: { readonly debounceMs?: number }) => void) | undefined } = {
     handler: undefined,
   }
-  return { mockActivities, signalState }
+  const patchedState: { default: boolean; readonly byId: Record<string, boolean> } = {
+    default: true,
+    byId: {},
+  }
+  return { mockActivities, signalState, patchedState }
 })
 
 vi.mock("@temporalio/workflow", () => ({
   defineSignal: vi.fn((name: string) => ({ name })),
+  patched: (id: string) => patchedState.byId[id] ?? patchedState.default,
   proxyActivities: () => mockActivities,
   setHandler: vi.fn((_signal, handler) => {
     signalState.handler = handler
@@ -54,6 +59,12 @@ describe("analyzeSessionWorkflow", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     signalState.handler = undefined
+    patchedState.default = true
+    for (const id of Object.keys(patchedState.byId)) {
+      delete patchedState.byId[id]
+    }
+    mockActivities.segmentAnalyzeSessionActivity.mockName("segment").mockResolvedValue({ replayed: true })
+    mockActivities.detectAnalyzeSessionLabelsActivity.mockName("label").mockResolvedValue({ replayed: true })
     mockActivities.loadAnalyzeSessionActivity.mockName("load").mockResolvedValue({ found: true, rawMessages: [] })
     mockActivities.hashAnalyzeSessionActivity.mockName("hash").mockResolvedValue({
       analysisHash: "h".repeat(64),
@@ -68,8 +79,6 @@ describe("analyzeSessionWorkflow", () => {
       .mockName("eligibility")
       .mockResolvedValue({ eligible: true, reason: "eligible" })
     mockActivities.embedAnalyzeSessionTurnsActivity.mockName("embed").mockResolvedValue({ turns: [] })
-    mockActivities.segmentAnalyzeSessionActivity.mockName("segment").mockResolvedValue({ segments: [] })
-    mockActivities.detectAnalyzeSessionLabelsActivity.mockName("label").mockResolvedValue({ sampled: true })
     mockActivities.persistAnalyzeSessionActivity
       .mockName("persist")
       .mockResolvedValue({ action: "recorded", status: "analyzed", momentCount: 0 })
@@ -81,7 +90,23 @@ describe("analyzeSessionWorkflow", () => {
     expect(setHandler).toHaveBeenCalledWith({ name: "traceCompleted" }, expect.any(Function))
   })
 
-  it("runs named idempotent analysis activities in order", async () => {
+  it("runs one persist activity per pass for new executions", async () => {
+    await expect(analyzeSessionWorkflow(input)).resolves.toEqual({
+      action: "recorded",
+      status: "analyzed",
+      momentCount: 0,
+    })
+
+    expect(activityOrder()).toEqual(["persist"])
+    expect(mockActivities.loadAnalyzeSessionActivity).not.toHaveBeenCalled()
+    expect(mockActivities.hashAnalyzeSessionActivity).not.toHaveBeenCalled()
+    expect(mockActivities.checkAnalyzeSessionEligibilityActivity).not.toHaveBeenCalled()
+    expect(mockActivities.embedAnalyzeSessionTurnsActivity).not.toHaveBeenCalled()
+  })
+
+  it("replays the legacy segment + label warm-up sequence for pre-patch executions", async () => {
+    patchedState.default = false
+
     await expect(analyzeSessionWorkflow(input)).resolves.toEqual({
       action: "recorded",
       status: "analyzed",
@@ -91,7 +116,8 @@ describe("analyzeSessionWorkflow", () => {
     expect(activityOrder()).toEqual(["load", "hash", "eligibility", "embed", "segment", "label", "persist"])
   })
 
-  it("short-circuits hash-current sessions before expensive activities", async () => {
+  it("short-circuits hash-current sessions before expensive activities during legacy replay", async () => {
+    patchedState.byId["analyze-session-persist-only-v1"] = false
     mockActivities.checkAnalyzeSessionEligibilityActivity.mockResolvedValueOnce({
       eligible: false,
       reason: "hash_current",
@@ -104,7 +130,8 @@ describe("analyzeSessionWorkflow", () => {
     expect(mockActivities.persistAnalyzeSessionActivity).not.toHaveBeenCalled()
   })
 
-  it("persists skipped ineligible sessions without expensive activities", async () => {
+  it("persists skipped ineligible sessions without expensive activities during legacy replay", async () => {
+    patchedState.byId["analyze-session-persist-only-v1"] = false
     mockActivities.checkAnalyzeSessionEligibilityActivity.mockResolvedValueOnce({
       eligible: false,
       reason: "too_short",
@@ -120,7 +147,17 @@ describe("analyzeSessionWorkflow", () => {
     expect(mockActivities.embedAnalyzeSessionTurnsActivity).not.toHaveBeenCalled()
   })
 
-  it("preserves debounce before activity execution", async () => {
+  it("skips the internal debounce for post-patch executions (session-end now owns it)", async () => {
+    await analyzeSessionWorkflow({ ...input, debounceMs: 123 })
+
+    expect(sleep).not.toHaveBeenCalled()
+    expect(mockActivities.persistAnalyzeSessionActivity).toHaveBeenCalledOnce()
+    expect(mockActivities.loadAnalyzeSessionActivity).not.toHaveBeenCalled()
+  })
+
+  it("replays the internal debounce for pre-patch executions", async () => {
+    patchedState.default = false
+
     await analyzeSessionWorkflow({ ...input, debounceMs: 123 })
 
     expect(sleep).toHaveBeenCalledWith(123)
@@ -139,17 +176,27 @@ describe("analyzeSessionWorkflow", () => {
       momentCount: 0,
     })
 
-    expect(mockActivities.loadAnalyzeSessionActivity).toHaveBeenCalledTimes(2)
-    expect(mockActivities.hashAnalyzeSessionActivity).toHaveBeenCalledTimes(2)
     expect(mockActivities.persistAnalyzeSessionActivity).toHaveBeenCalledTimes(2)
+    expect(mockActivities.loadAnalyzeSessionActivity).not.toHaveBeenCalled()
+    expect(mockActivities.hashAnalyzeSessionActivity).not.toHaveBeenCalled()
   })
 
-  it("propagates failed activity errors", async () => {
-    mockActivities.detectAnalyzeSessionLabelsActivity.mockRejectedValueOnce(new Error("label detection failed"))
+  it("falls through to persist when the embedding warm-up fails during legacy replay", async () => {
+    patchedState.byId["analyze-session-persist-only-v1"] = false
+    mockActivities.embedAnalyzeSessionTurnsActivity.mockRejectedValueOnce(new Error("embedding warm-up failed"))
 
-    await expect(analyzeSessionWorkflow(input)).rejects.toThrow("label detection failed")
+    await expect(analyzeSessionWorkflow(input)).resolves.toEqual({
+      action: "recorded",
+      status: "analyzed",
+      momentCount: 0,
+    })
 
-    expect(activityOrder()).toEqual(["load", "hash", "eligibility", "embed", "segment", "label"])
-    expect(mockActivities.persistAnalyzeSessionActivity).not.toHaveBeenCalled()
+    expect(activityOrder()).toEqual(["load", "hash", "eligibility", "embed", "persist"])
+  })
+
+  it("propagates persist activity errors", async () => {
+    mockActivities.persistAnalyzeSessionActivity.mockRejectedValueOnce(new Error("persist failed"))
+
+    await expect(analyzeSessionWorkflow(input)).rejects.toThrow("persist failed")
   })
 })

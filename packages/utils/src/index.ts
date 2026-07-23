@@ -7,18 +7,23 @@ export {
   hexDecode,
   hexEncode,
 } from "./base64.ts"
-export { CryptoError, decrypt, encodeUtf8, encrypt, hash, toBuffer } from "./crypto.ts"
+export { CryptoError, decrypt, encodeUtf8, encrypt, hash, randomToken, toBuffer } from "./crypto.ts"
 export { extractLeadingEmoji } from "./extractLeadingEmoji.ts"
 export {
+  cacheHitRate,
   formatBytes,
+  formatCHDate,
+  formatChartWindowCaption,
   formatCount,
   formatDuration,
+  formatPercentage,
   formatPrice,
   isBlankCHString,
   normalizeCHString,
   parseCHDate,
   safeParseJson,
   safeStringifyJson,
+  stableStringify,
 } from "./format.ts"
 export * from "./http-errors.ts"
 export {
@@ -31,4 +36,5 @@ export {
 export { mapByEntityId } from "./map-by-entity-id.ts"
 export { LatitudeObservabilityTestError } from "./observability-test.ts"
 export { relativeTime } from "./relativeTime.ts"
+export { hammingDistance64, simhash64 } from "./simhash.ts"
 export { toTitle } from "./to-title.ts"

@@ -36,6 +36,39 @@ const _registry = {
     }
   }>(),
 
+  "organization-claim-email": payloads<{
+    send: {
+      readonly email: string
+      readonly claimUrl: string
+      readonly organizationName: string
+      readonly expiresAt: string
+    }
+  }>(),
+
+  "organization-cleanup": payloads<{
+    /** Fired by a daily cron — hard-deletes temporary orgs past their claim deadline. */
+    reapExpired: Record<string, never>
+  }>(),
+
+  showcase: payloads<{
+    /**
+     * Fired by a daily off-peak cron — builds a fresh `next` showcase project,
+     * gates it, and auto-swaps the pointer (S4). No payload: the handler reads
+     * the pointer to resolve the showcase org and re-anchors to "now".
+     */
+    regenerate: Record<string, never>
+    /**
+     * Retire + self-heal (S5). Reclaims a wedged `building` pointer and retires
+     * every showcase-org project that is neither `current` nor `next` via the
+     * standard PG soft-delete + `ProjectDeleted` path (ClickHouse telemetry ages
+     * out via the retention TTL, as for any deleted project). Fired both by a
+     * daily cron and by the regeneration workflow right after a swap (to promptly
+     * retire the just-swapped-out `current`). No payload: the handler reads the
+     * pointer.
+     */
+    cleanup: Record<string, never>
+  }>(),
+
   "user-deletion": payloads<{
     delete: {
       readonly organizationId: string
@@ -72,7 +105,7 @@ const _registry = {
       readonly datasetId?: string
       // Traces-specific fields - uses FilterSet shape
       readonly filters?: Readonly<Record<string, readonly { readonly op: string; readonly value: unknown }[]>>
-      // Issues-specific fields
+      // Signals-specific fields
       readonly lifecycleGroup?: "active" | "archived"
       readonly searchQuery?: string
       readonly timeRange?: {
@@ -80,7 +113,7 @@ const _registry = {
         readonly toIso?: string
       }
       readonly sort?: {
-        readonly field: "lastSeen" | "occurrences" | "state"
+        readonly field: "lastSeen" | "occurrences" | "affectedSessions" | "state"
         readonly direction: "asc" | "desc"
       }
     }
@@ -111,6 +144,65 @@ const _registry = {
       readonly projectId: string
       readonly wrappedReportId: string
       readonly link: string
+    }
+    /**
+     * Producer step for issue assignments. Fired by the domain-events
+     * router on `SignalAssigneeChanged` (cleared assignments and
+     * self-assignments are filtered before publish). The consumer
+     * re-checks those rules, re-fetches the issue for the project anchor,
+     * and emits exactly one `create-notification` task targeting the new
+     * assignee. Never fans out to Slack — `personal` is not slack-routable.
+     */
+    "request-signal-assigned-notifications": {
+      readonly organizationId: string
+      readonly signalId: string
+      readonly assigneeId: string
+      readonly actorUserId: string
+      /** ISO timestamp frozen by the triage transaction; idempotency anchor. */
+      readonly assignedAt: string
+    }
+    /**
+     * Producer step for signal discovery. Fired by the domain-events router
+     * on `SignalCreated`; the consumer resolves org-member recipients and
+     * emits one `create-notification` task per recipient.
+     */
+    "request-signal-discovered-notifications": {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly signalId: string
+      readonly discoveredAt: string
+    }
+    /**
+     * Producer step for signal regression. Fired by the domain-events router
+     * on `SignalRegressed` (a new occurrence reopened a resolved signal); the
+     * consumer skips muted signals, resolves recipients (assignee-first), and
+     * emits one `create-notification` task per recipient.
+     */
+    "request-signal-regressed-notifications": {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly signalId: string
+      readonly regressedAt: string
+      readonly triggerScoreId: string
+    }
+    /**
+     * Producer step for destination quarantine. Fired directly by the
+     * destinations worker when a `(destination, source)` sync flip
+     * quarantines the destination (5 consecutive terminal failures). The
+     * consumer honors the project-level gate, resolves org-member recipients,
+     * and emits N `create-notification` tasks. `quarantinedAt` is the
+     * per-occurrence idempotency anchor (a recovery + re-quarantine notifies
+     * again); `destinationName`/`destinationKind` are snapshotted because the
+     * bell has no live destination resolver.
+     */
+    "request-destination-quarantined-notifications": {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly destinationId: string
+      readonly destinationName: string
+      readonly destinationKind: string
+      readonly quarantinedAt: string
+      readonly failureMessage: string | null
     }
     /**
      * Creator step. One message per recipient. The consumer writes the
@@ -189,24 +281,37 @@ const _registry = {
     }
   }>(),
 
+  "agent-dispatch": payloads<{
+    request: {
+      readonly organizationId: string
+      readonly projectId?: string
+      readonly signalId?: string
+      readonly alertIncidentId?: string
+      readonly source: "signal" | "incident"
+      /** Signal-source trigger; omitted means `signal.discovered`. */
+      readonly trigger?: "signal.discovered" | "signal.regressed"
+    }
+    send: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly configId: string
+      readonly integrationId: string
+      readonly kind: string
+      readonly idempotencyKey: string
+      readonly trigger: string
+      readonly sourceType: "signal" | "monitor"
+      readonly sourceId: string
+      readonly prompt: string
+      readonly context: Record<string, unknown>
+      readonly target: Record<string, unknown>
+    }
+  }>(),
+
   "alert-incidents": payloads<{
-    "issue-created": {
+    "signal-escalated": {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
-      readonly createdAt: string
-    }
-    "issue-regressed": {
-      readonly organizationId: string
-      readonly projectId: string
-      readonly issueId: string
-      readonly regressedAt: string
-      readonly triggerScoreId: string
-    }
-    "issue-escalated": {
-      readonly organizationId: string
-      readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
       readonly escalatedAt: string
       readonly entrySignals: {
         readonly expected1h: number
@@ -220,10 +325,10 @@ const _registry = {
         readonly entryCount24h: number
       } | null
     }
-    "issue-escalation-ended": {
+    "signal-escalation-ended": {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
       readonly endedAt: string
       readonly reason: "threshold" | "absolute-rate-drop" | "timeout" | "resolved" | "ignored"
     }
@@ -234,21 +339,21 @@ const _registry = {
       readonly organizationId: string
       readonly projectId: string
       readonly scoreId: string
-      readonly issueId: string | null
+      readonly signalId: string | null
     }
     refresh: {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
     }
     checkEscalation: {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
     }
     /**
-     * Fired by the hourly cron — finds every open `issue.escalating` incident
-     * and fans out one `checkEscalation` per issue. Recovers stuck-open
+     * Fired by the hourly cron — finds every open signal incident
+     * and fans out one `checkEscalation` per signal. Recovers stuck-open
      * incidents whose 1h debounce already fired once and decided "still
      * escalating" while the burst was still inside the 6h window.
      */
@@ -257,7 +362,7 @@ const _registry = {
       readonly organizationId: string
       readonly projectId: string
       readonly scoreId: string
-      readonly issueId: string | null
+      readonly signalId: string | null
       readonly draftedAt: string | null
       readonly feedback: string
       readonly source: string
@@ -267,20 +372,20 @@ const _registry = {
 
   monitors: payloads<{
     /**
-     * Run the saved-search firing pipeline for one project. Published throttled
+     * Run the monitor firing pipeline for one project. Published throttled
      * (per project) on trace-end and fanned out by the 5-minute sweep. The
-     * handler lists active saved-search alerts and runs each one's state machine.
+     * handler lists active monitors and runs each one's state machine.
      */
     checkSavedSearchMonitors: {
       readonly organizationId: string
       readonly projectId: string
     }
-    /** Fired by the 5-minute cron — fans out one `checkSavedSearchMonitors` per project with active alerts. */
+    /** Fired by the 5-minute cron — fans out one `checkSavedSearchMonitors` per project with active monitors. */
     sweepSavedSearchMonitors: Record<string, never>
     /**
      * Source-deletion cascade. Fired by the domain-events router on
-     * `SavedSearchDeleted`. Soft-deletes alerts watching the source and prunes
-     * now-empty monitors.
+     * `SavedSearchDeleted`. Soft-deletes monitors watching the source and closes
+     * open monitor incidents.
      */
     onSourceDeleted: {
       readonly organizationId: string
@@ -294,24 +399,19 @@ const _registry = {
     automaticRefreshAlignment: {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
       readonly evaluationId: string
     }
     automaticOptimization: {
       readonly organizationId: string
       readonly projectId: string
-      readonly issueId: string
+      readonly signalId: string
       readonly evaluationId: string
     }
   }>(),
 
   "annotation-scores": payloads<{
     publishHumanAnnotation: {
-      readonly organizationId: string
-      readonly projectId: string
-      readonly scoreId: string
-    }
-    markReviewStarted: {
       readonly organizationId: string
       readonly projectId: string
       readonly scoreId: string
@@ -331,6 +431,11 @@ const _registry = {
       readonly projectId: string
       readonly evaluationId: string
       readonly traceId: string
+      /**
+       * Readiness-gate re-publish counter for embedding-capability evaluations. Absent on the initial
+       * publish; incremented each time the run defers because ingest-time embeddings aren't indexed yet.
+       */
+      readonly embeddingWaitAttempt?: number
     }
   }>(),
 
@@ -343,30 +448,83 @@ const _registry = {
     }
   }>(),
 
-  // Runs the deterministic portion of every registered flagger strategy against
-  // a trace. Matched strategies write a SYSTEM-authored score directly; strategies
-  // that return `no-match` are sampled and, if selected, routed to the LLM
-  // workflow; `ambiguous` strategies are rate-limited per {org, slug} and also
-  // routed to the LLM workflow. Per-strategy failures are isolated.
-  "deterministic-flaggers": payloads<{
+  // Session-level dispatch: each settled trace-end enqueues this with a session-keyed dedupeKey and a
+  // debounce, so repeated trace-ends collapse to one firing once the session goes quiet. Carries the
+  // latest trace of the session (debounce replaces the pending payload) for the trace-scoped work it
+  // fans out (signals:match, session analysis).
+  "session-end": payloads<{
+    run: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly sessionId: string
+      readonly latestTraceId: string
+      readonly latestTraceStartTime: string
+      readonly isSandbox?: boolean
+    }
+  }>(),
+
+  // The unified evaluation matching pipeline: runs a project's active evaluations against an
+  // ingested trace (sampling/turn/filter selection) and fans out live-evaluations:execute jobs.
+  // Replaces trace-end's evaluation fan-out for all signals. Never enqueued for sandbox traces.
+  signals: payloads<{
+    match: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly traceId: string
+      readonly isSandbox?: boolean
+      /** "embeddings-ready" re-triggers are filtered to semantic evals; absent/"ingest" is the trace-end pass. */
+      readonly reason?: "ingest" | "embeddings-ready"
+    }
+  }>(),
+
+  // On-demand builder preview: compiles a draft evaluation and runs it against the latest matching
+  // sessions WITHOUT persisting a score, writing the result to Redis for the web client to poll.
+  // `evaluation`/`filters` are JSON-shaped here and re-validated by previewEvaluationUseCase's schema.
+  "signals-preview": payloads<{
+    run: {
+      readonly previewId: string
+      readonly organizationId: string
+      readonly projectId: string
+      readonly evaluation: { readonly settings: unknown } | { readonly script: string }
+      readonly filters?: unknown
+    }
+  }>(),
+
+  // Describe-first signal creation: AI drafts the complete signal (name, description, filters,
+  // sampling, evaluation) from a freeform prompt, previews it against recent sessions, and creates
+  // it. Runs in a worker (AI + sandbox + ClickHouse + Postgres); progress and the final result are
+  // written to Redis for the web client to poll. `filters` is JSON-shaped and re-validated downstream.
+  "signals-generate-signal": payloads<{
+    run: {
+      readonly generationId: string
+      readonly organizationId: string
+      readonly projectId: string
+      readonly prompt: string
+      readonly filters?: unknown
+    }
+  }>(),
+
+  // Materializes a settled trace's memory-operation spans into the memory ledger
+  // (memory_events / memory_blobs / memory_current). Fanned out from trace-end as
+  // an isolated failure domain.
+  "memory-projection": payloads<{
     run: {
       readonly organizationId: string
       readonly projectId: string
       readonly traceId: string
+      readonly sessionId: string
     }
   }>(),
 
-  // Thin start-workflow job. Separates the Temporal `start()` call out of the
-  // deterministic-flaggers hot path so transient Temporal unavailability retries
-  // with bounded BullMQ backoff instead of re-running the whole deterministic fan-out.
-  "start-flagger-workflow": payloads<{
+  // Starts the session flagger screening workflow, published by the moments
+  // persist activity per recorded generation. The dedupe key MUST include the
+  // analysis hash — a bare per-session jobId shadows later generations.
+  "flagger-screening": payloads<{
     start: {
       readonly organizationId: string
       readonly projectId: string
-      readonly traceId: string
-      readonly flaggerId: string
-      readonly flaggerSlug: string
-      readonly reason: "sampled" | "ambiguous"
+      readonly sessionId: string
+      readonly analysisHash: string
     }
   }>(),
 
@@ -388,22 +546,6 @@ const _registry = {
     create: {
       readonly organizationId: string
       readonly name: string
-    }
-  }>(),
-
-  "annotation-queues": payloads<{
-    bulkImport: {
-      readonly organizationId: string
-      readonly projectId: string
-      readonly queueId: string
-      readonly selection:
-        | { readonly mode: "selected"; readonly traceIds: readonly string[] }
-        | { readonly mode: "all"; readonly filters?: Record<string, unknown> }
-        | {
-            readonly mode: "allExcept"
-            readonly traceIds: readonly string[]
-            readonly filters?: Record<string, unknown>
-          }
     }
   }>(),
 
@@ -453,13 +595,23 @@ const _registry = {
     gardenSweep: {
       readonly triggeredAt: string
     }
+    gardenCustomBehavior: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly customBehaviorId: string
+      readonly reason?: "manual" | "cron"
+    }
+    gardenCustomBehaviorSweep: {
+      /** Optional override for ad-hoc runs; the repeatable sweep anchors at execution time instead. */
+      readonly triggeredAt?: string
+    }
   }>(),
 
   billing: payloads<{
     recordBillableAction: {
       readonly organizationId: string
       readonly projectId: string
-      readonly action: "trace" | "flagger-scan" | "live-eval-scan" | "eval-generation"
+      readonly action: "trace" | "flagger-scan" | "deterministic-eval-scan" | "live-eval-scan" | "eval-generation"
       readonly idempotencyKey: string
       readonly context: {
         readonly planSlug: "free" | "pro" | "enterprise"
@@ -540,6 +692,87 @@ const _registry = {
       readonly projectId: string
       readonly windowStartIso: string
       readonly windowEndIso: string
+    }
+  }>(),
+
+  sandboxes: payloads<{
+    archiveIdle: Record<string, never>
+  }>(),
+
+  destinations: payloads<{
+    /**
+     * Fired every minute by a repeatable schedule. Selects active destinations
+     * due for a sync (idle backoff applied, sandbox orgs excluded) and fans out
+     * one `runSync` per due destination.
+     */
+    sweep: Record<string, never>
+    /**
+     * Fired nightly by a repeatable schedule. Deletes `destination_sync_runs`
+     * audit rows finished more than the retention window ago. Separate from the
+     * every-minute sweep because retention is coarse (30d).
+     */
+    pruneSyncRuns: Record<string, never>
+    /**
+     * One sync run for a single `(destination, source)` pair. The handler
+     * re-loads the destination and the source cursor, reads that source's
+     * window, maps and delivers it, then advances the per-source compound
+     * cursor. Published with `dedupeKey: destinations:runSync:${destinationId}:${source}`
+     * so at most one run per pair is queued; retryable delivery failures drive
+     * BullMQ backoff.
+     */
+    runSync: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly destinationId: string
+      readonly source: string
+    }
+    /**
+     * Cascade cleanup. Fired by the domain-events worker on `ProjectDeleted`.
+     * The consumer deletes the project's destinations and their sync runs so
+     * the sweep stops exporting the deleted project's residual ClickHouse data.
+     */
+    "delete-by-project": {
+      readonly organizationId: string
+      readonly projectId: string
+    }
+  }>(),
+
+  // Separate queue from `destinations` so backfill runs in a capped, low-concurrency
+  // lane (subscribed with its own `concurrency`) and can never starve live sync.
+  "destinations-backfill": payloads<{
+    /**
+     * Initiates a user-requested backfill for one `(destination, source)` pair.
+     * The handler resolves the org's retention window, clamps `since` to it,
+     * computes the historical / live segments, and enqueues the first
+     * `runBackfillWindow`. `since` is ISO; omit for "as far back as retained".
+     */
+    backfill: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly destinationId: string
+      readonly source: string
+      readonly since?: string
+      /** Upper bound (ISO); where existing coverage begins. Omit ⇒ the use case declines to backfill (never runs unbounded to `now`). */
+      readonly until?: string
+    }
+    /**
+     * One bounded backfill window. The handler delivers it through the same
+     * read→map→deliver path as `runSync`, writes a `backfill`-tagged sync run,
+     * and re-enqueues the next window until the range is exhausted — a paced,
+     * resumable, idempotent chain. All dates are ISO; `remainingSegments` is the
+     * queue of slices still to process after the current one.
+     */
+    runBackfillWindow: {
+      readonly organizationId: string
+      readonly projectId: string
+      readonly destinationId: string
+      readonly source: string
+      readonly cursorWatermark: string
+      readonly cursorId: string
+      readonly segmentEnd: string
+      readonly remainingSegments: readonly { readonly start: string; readonly end: string }[]
+      /** The chain's lower bound (ISO); coverage extends to it once the chain drains. */
+      readonly coverageFloor: string
     }
   }>(),
 }

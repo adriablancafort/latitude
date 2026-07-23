@@ -37,7 +37,7 @@ export const resolveDefaultProjectSlug = createServerFn({
   )
 
   const cookieMatch = cookieSlug ? projects.find((p) => p.slug === cookieSlug) : undefined
-  const target = cookieMatch ?? projects[0]
+  const target = cookieMatch ?? projects.find((project) => project.settings?.isSample !== true) ?? projects[0]
   return target?.slug ?? null
 })
 
@@ -65,12 +65,17 @@ export const toRecord = (project: Project) => ({
     notifications: project.settings?.notifications,
     escalation: project.settings?.escalation,
     onboardingType: project.settings?.onboardingType,
+    onboardingCompleted: project.settings?.onboardingCompleted,
+    isSample: project.settings?.isSample,
     sampling: project.settings?.sampling,
   },
   firstTraceAt: project.firstTraceAt ? project.firstTraceAt.toISOString() : null,
   deletedAt: project.deletedAt ? project.deletedAt.toISOString() : null,
   createdAt: project.createdAt.toISOString(),
   updatedAt: project.updatedAt.toISOString(),
+  // The shared read-only Showcase row (merged client-side into the projects
+  // collection) sets this true; every org-owned project is false.
+  isShowcase: false,
 })
 
 export type ProjectRecord = ReturnType<typeof toRecord>
@@ -149,6 +154,26 @@ export const updateProject = createServerFn({ method: "POST" })
         withTracing,
       ),
     )
+    return toRecord(project)
+  })
+
+export const completeProjectOnboarding = createServerFn({ method: "POST" })
+  .inputValidator(z.object({ projectId: z.string() }))
+  .handler(async ({ data }): Promise<ProjectRecord> => {
+    const { organizationId } = await requireSession()
+    const client = getPostgresClient()
+
+    const project = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* ProjectRepository
+        const current = yield* repo.findById(ProjectId(data.projectId))
+        return yield* updateProjectUseCase({
+          id: current.id,
+          settings: { ...(current.settings ?? {}), onboardingCompleted: true },
+        })
+      }).pipe(withPostgres(ProjectRepositoryLive, client, organizationId), withTracing),
+    )
+
     return toRecord(project)
   })
 

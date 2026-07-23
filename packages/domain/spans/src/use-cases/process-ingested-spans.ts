@@ -1,5 +1,4 @@
 import type { DomainEvent, EventsPublisher } from "@domain/events"
-import { publishSandboxTraceSignalsUseCase, type SandboxSignals } from "@domain/sandboxes"
 import {
   type ChSqlClient,
   getFromDisk,
@@ -16,51 +15,6 @@ import { decodeOtlpProtobuf } from "../otlp/proto.ts"
 import { transformOtlpToSpans } from "../otlp/transform.ts"
 import type { OtlpExportTraceServiceRequest } from "../otlp/types.ts"
 import { SpanRepository } from "../ports/span-repository.ts"
-
-const VERCEL_WRAPPER_OPERATION_IDS = new Set([
-  "ai.generateText",
-  "ai.streamText",
-  "ai.generateObject",
-  "ai.streamObject",
-])
-
-function isVercelWrapperSpan(span: SpanDetail): boolean {
-  const operationId = span.attrString["ai.operationId"]
-  if (operationId && VERCEL_WRAPPER_OPERATION_IDS.has(operationId)) {
-    return true
-  }
-
-  return VERCEL_WRAPPER_OPERATION_IDS.has(span.name)
-}
-
-function sanitizeVercelWrapperSpan(span: SpanDetail): SpanDetail {
-  const next: SpanDetail = {
-    ...span,
-    tokensInput: 0,
-    tokensOutput: 0,
-    tokensCacheRead: 0,
-    tokensCacheCreate: 0,
-    tokensReasoning: 0,
-  }
-
-  if (!span.costIsEstimated) return next
-
-  return {
-    ...next,
-    costInputMicrocents: 0,
-    costOutputMicrocents: 0,
-    costTotalMicrocents: 0,
-    costIsEstimated: false,
-  }
-}
-
-function sanitizePersistedSpans(spans: readonly SpanDetail[]): readonly SpanDetail[] {
-  if (!spans.some((span) => span.name.startsWith("ai.") || span.attrString["ai.operationId"] !== undefined)) {
-    return spans
-  }
-
-  return spans.map((span) => (isVercelWrapperSpan(span) ? sanitizeVercelWrapperSpan(span) : span))
-}
 
 export interface ProcessIngestedSpansInput {
   readonly organizationId: OrganizationId
@@ -143,7 +97,7 @@ function decodeAndTransform(
       return []
     }
 
-    const { spans } = transformOtlpToSpans(request, {
+    const { spans, rejectedSpans } = transformOtlpToSpans(request, {
       organizationId: input.organizationId,
       apiKeyId: input.apiKeyId,
       ingestedAt: input.ingestedAt,
@@ -151,7 +105,11 @@ function decodeAndTransform(
       projectIdBySlug: new Map(Object.entries(input.projectIdBySlug)),
     })
 
-    return sanitizePersistedSpans(spans)
+    if (rejectedSpans > 0) {
+      yield* Effect.annotateCurrentSpan("rejectedSpans", rejectedSpans)
+    }
+
+    return spans
   })
 }
 
@@ -166,7 +124,7 @@ export const processIngestedSpansUseCase =
   ): Effect.Effect<
     void,
     SpanDecodingError | StorageError | RepositoryError | TPublishError,
-    ChSqlClient | SpanRepository | StorageDisk | SandboxSignals
+    ChSqlClient | SpanRepository | StorageDisk
   > =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan("organizationId", input.organizationId)
@@ -187,17 +145,6 @@ export const processIngestedSpansUseCase =
 
       const repo = yield* SpanRepository
       yield* repo.insert(persistedSpans)
-
-      if (input.isSandbox) {
-        yield* publishSandboxTraceSignalsUseCase({
-          organizationId: input.organizationId,
-          kind: "upsert",
-          traces: persistedSpans.map((span) => ({
-            traceId: span.traceId,
-            sessionId: span.sessionId,
-          })),
-        })
-      }
 
       // Spans in a single OTLP batch may now belong to different projects (per-span scoping).
       // Group by projectId so each TracesIngested event addresses one project at a time —

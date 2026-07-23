@@ -1,50 +1,55 @@
 import { listSessionMomentIntelligenceUseCase } from "@domain/conversation-intelligence"
 import { exportSelectionSchema } from "@domain/exports"
 import {
-  filterSetSchema,
-  OrganizationId,
   PERCENTILE_TRACE_FILTER_FIELDS,
   type PercentileTraceFilterField,
   ProjectId,
+  SpanId,
   TraceId,
+  traceFilterSetSchema,
 } from "@domain/shared"
 import type {
   CohortSummary,
   Trace,
-  TraceDetail,
   TraceDistinctColumn,
   TraceDistribution,
+  TraceMetadataDetail,
   TraceMetrics,
   TraceSearchHighlightsResult,
   TraceTimeHistogramBucket,
 } from "@domain/spans"
 import {
+  getSpanConversationChunkUseCase,
   getTraceCohortSummaryUseCase,
+  getTraceConversationChunkUseCase,
   getTraceSearchHighlightsUseCase,
   mergeTraceHistogramTimeFilters,
   TraceRepository,
 } from "@domain/spans"
-import { withAi } from "@platform/ai"
-import { AIEmbedLive } from "@platform/ai-voyage"
+import { AIEmbedLive, withAi } from "@platform/ai"
 import { RedisCacheStoreLive } from "@platform/cache-redis"
 import {
   SessionAnalysisRepositoryLive,
   SessionMomentLabelRepositoryLive,
   SessionSemanticMomentRepositoryLive,
+  SpanRepositoryLive,
   TaxonomyObservationRepositoryLive,
   TraceRepositoryLive,
   TraceSearchRepositoryLive,
-  withClickHouse,
 } from "@platform/db-clickhouse"
 import { withTracing } from "@repo/observability"
+import { cacheHitRate } from "@repo/utils"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import type { GenAIMessage, GenAISystem } from "rosetta-ai"
 import { z } from "zod"
 import { enforceExportRequestRateLimit } from "../../domains/exports/export-rate-limit.ts"
 import { ensureSession } from "../../domains/sessions/session.functions.ts"
-import { getSessionOrganizationId, requireSession } from "../../server/auth.ts"
+import { getSessionOrganizationId } from "../../server/auth.ts"
 import { getClickhouseClient, getQueuePublisher, getRedisClient } from "../../server/clients.ts"
+import { spanIdSchema, traceIdSchema } from "../../server/id-validation.ts"
+import { resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedClickHouse } from "../../server/scoped-clickhouse.ts"
 
 export interface TraceRecord {
   readonly organizationId: string
@@ -62,6 +67,7 @@ export interface TraceRecord {
   readonly tokensCacheCreate: number
   readonly tokensReasoning: number
   readonly tokensTotal: number
+  readonly cacheHitRate: number | null
   readonly costInputMicrocents: number
   readonly costOutputMicrocents: number
   readonly costTotalMicrocents: number
@@ -77,7 +83,7 @@ export interface TraceRecord {
   readonly rootSpanName: string
 }
 
-export const toTraceRecord = (trace: Trace): TraceRecord => ({
+const toTraceRecord = (trace: Trace): TraceRecord => ({
   organizationId: trace.organizationId,
   projectId: trace.projectId,
   traceId: trace.traceId,
@@ -93,6 +99,11 @@ export const toTraceRecord = (trace: Trace): TraceRecord => ({
   tokensCacheCreate: trace.tokensCacheCreate,
   tokensReasoning: trace.tokensReasoning,
   tokensTotal: trace.tokensTotal,
+  cacheHitRate: cacheHitRate({
+    input: trace.tokensInput,
+    cacheRead: trace.tokensCacheRead,
+    cacheCreate: trace.tokensCacheCreate,
+  }),
   costInputMicrocents: trace.costInputMicrocents,
   costOutputMicrocents: trace.costOutputMicrocents,
   costTotalMicrocents: trace.costTotalMicrocents,
@@ -139,21 +150,28 @@ export interface TraceDetailRecord extends TraceRecord {
   readonly systemInstructions: GenAISystem
   readonly inputMessages: readonly GenAIMessage[]
   readonly outputMessages: readonly GenAIMessage[]
-  readonly allMessages: readonly GenAIMessage[]
 }
 
-const serializeTraceDetail = (trace: TraceDetail): TraceDetailRecord => ({
+const serializeTraceDetail = (trace: TraceMetadataDetail): TraceDetailRecord => ({
   ...toTraceRecord(trace),
   systemInstructions: trace.systemInstructions,
   inputMessages: trace.inputMessages,
   outputMessages: trace.outputMessages,
-  allMessages: trace.allMessages,
 })
+
+export interface TraceConversationChunkRecord {
+  readonly messages: readonly GenAIMessage[]
+  readonly offset: number
+  readonly limit: number
+  readonly totalMessages: number
+  readonly hasMore: boolean
+  readonly payloadBytes: number
+}
 
 const traceListCursorSchema = z.object({
   sortValue: z.string(),
   secondaryValue: z.string().optional(),
-  traceId: z.string(),
+  traceId: traceIdSchema,
 })
 
 interface TraceListResult {
@@ -174,13 +192,12 @@ export const listTracesByProject = createServerFn({ method: "GET" })
       cursor: traceListCursorSchema.optional(),
       sortBy: z.string().optional(),
       sortDirection: z.enum(["asc", "desc"]).optional(),
-      filters: filterSetSchema.optional(),
+      filters: traceFilterSetSchema.optional(),
       searchQuery: z.string().max(500).optional(),
     }),
   )
-  .handler(async ({ data }): Promise<TraceListResult> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<TraceListResult> => {
+    const orgId = await resolveOrgScope(context)
 
     const page = await Effect.runPromise(
       Effect.gen(function* () {
@@ -198,7 +215,7 @@ export const listTracesByProject = createServerFn({ method: "GET" })
           },
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
@@ -218,13 +235,12 @@ export const countTracesByProject = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      filters: filterSetSchema.optional(),
+      filters: traceFilterSetSchema.optional(),
       searchQuery: z.string().max(500).optional(),
     }),
   )
-  .handler(async ({ data }): Promise<number> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<number> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       Effect.gen(function* () {
@@ -236,10 +252,56 @@ export const countTracesByProject = createServerFn({ method: "GET" })
           ...(data.searchQuery ? { searchQuery: data.searchQuery } : {}),
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
+    )
+  })
+
+export const getProjectLastTraceAt = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      filters: traceFilterSetSchema.optional(),
+      searchQuery: z.string().max(500).optional(),
+    }),
+  )
+  .handler(async ({ data, context }): Promise<string | null> => {
+    const orgId = await resolveOrgScope(context)
+
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* TraceRepository
+        const lastAt = yield* repo.findLastTraceAt({
+          organizationId: orgId,
+          projectId: ProjectId(data.projectId),
+          ...(data.filters ? { filters: data.filters } : {}),
+          ...(data.searchQuery ? { searchQuery: data.searchQuery } : {}),
+        })
+        return lastAt ? lastAt.toISOString() : null
+      }).pipe(
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withAi(AIEmbedLive, getRedisClient()),
+        withTracing,
+      ),
+    )
+  })
+
+export const getProjectFirstTraceAt = createServerFn({ method: "GET" })
+  .inputValidator(z.object({ projectId: z.string() }))
+  .handler(async ({ data, context }): Promise<string | null> => {
+    const orgId = await resolveOrgScope(context)
+
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* TraceRepository
+        const firstAt = yield* repo.findFirstTraceAt({
+          organizationId: orgId,
+          projectId: ProjectId(data.projectId),
+        })
+        return firstAt ? firstAt.toISOString() : null
+      }).pipe(withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId), withTracing),
     )
   })
 
@@ -247,13 +309,12 @@ export const getTraceMetricsByProject = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      filters: filterSetSchema.optional(),
+      filters: traceFilterSetSchema.optional(),
       searchQuery: z.string().max(500).optional(),
     }),
   )
-  .handler(async ({ data }): Promise<TraceMetrics | null> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<TraceMetrics | null> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       Effect.gen(function* () {
@@ -265,7 +326,7 @@ export const getTraceMetricsByProject = createServerFn({ method: "GET" })
           ...(data.searchQuery ? { searchQuery: data.searchQuery } : {}),
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
@@ -274,16 +335,15 @@ export const getTraceMetricsByProject = createServerFn({ method: "GET" })
 
 export const getTraceCohortSummary = createServerFn({ method: "GET" })
   .inputValidator(z.object({ projectId: z.string() }))
-  .handler(async ({ data }): Promise<CohortSummary> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<CohortSummary> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       getTraceCohortSummaryUseCase({
         organizationId: orgId,
         projectId: ProjectId(data.projectId),
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         Effect.provide(RedisCacheStoreLive(getRedisClient())),
         withTracing,
       ),
@@ -292,7 +352,7 @@ export const getTraceCohortSummary = createServerFn({ method: "GET" })
 
 const traceHistogramInputSchema = z.object({
   projectId: z.string(),
-  filters: filterSetSchema.optional(),
+  filters: traceFilterSetSchema.optional(),
   rangeStartIso: z.string(),
   rangeEndIso: z.string(),
   bucketSeconds: z
@@ -305,15 +365,14 @@ const traceHistogramInputSchema = z.object({
 
 export const getTraceTimeHistogramByProject = createServerFn({ method: "GET" })
   .inputValidator(traceHistogramInputSchema)
-  .handler(async ({ data }): Promise<readonly TraceTimeHistogramBucket[]> => {
+  .handler(async ({ data, context }): Promise<readonly TraceTimeHistogramBucket[]> => {
     const startMs = Date.parse(data.rangeStartIso)
     const endMs = Date.parse(data.rangeEndIso)
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
       return []
     }
 
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+    const orgId = await resolveOrgScope(context)
 
     const mergedFilters = mergeTraceHistogramTimeFilters(data.filters, data.rangeStartIso, data.rangeEndIso)
 
@@ -328,7 +387,7 @@ export const getTraceTimeHistogramByProject = createServerFn({ method: "GET" })
           ...(data.searchQuery ? { searchQuery: data.searchQuery } : {}),
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
@@ -339,13 +398,12 @@ export const getTraceSearchHighlights = createServerFn({ method: "GET" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      traceId: z.string(),
+      traceId: traceIdSchema,
       searchQuery: z.string().max(500),
     }),
   )
-  .handler(async ({ data }): Promise<TraceSearchHighlightsResult> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<TraceSearchHighlightsResult> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       getTraceSearchHighlightsUseCase({
@@ -354,7 +412,7 @@ export const getTraceSearchHighlights = createServerFn({ method: "GET" })
         traceId: TraceId(data.traceId),
         searchQuery: data.searchQuery,
       }).pipe(
-        withClickHouse(Layer.merge(TraceRepositoryLive, TraceSearchRepositoryLive), getClickhouseClient(), orgId),
+        withScopedClickHouse(Layer.merge(TraceRepositoryLive, TraceSearchRepositoryLive), getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
         Effect.orElseSucceed((): TraceSearchHighlightsResult => ({ highlights: [], firstMatchIndex: -1 })),
@@ -363,13 +421,18 @@ export const getTraceSearchHighlights = createServerFn({ method: "GET" })
   })
 
 export const getSessionMomentIntelligence = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ projectId: z.string(), sessionId: z.string(), analysisHash: z.string().optional() }))
-  .handler(async ({ data }): Promise<readonly SessionMomentIntelligenceRecord[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      sessionId: z.string(),
+      analysisHash: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data, context }): Promise<readonly SessionMomentIntelligenceRecord[]> => {
+    const orgId = await resolveOrgScope(context)
     return Effect.runPromise(
       listSessionMomentIntelligenceUseCase({
-        organizationId,
+        organizationId: orgId,
         projectId: data.projectId,
         sessionId: data.sessionId,
         ...(data.analysisHash ? { analysisHash: data.analysisHash } : {}),
@@ -402,7 +465,7 @@ export const getSessionMomentIntelligence = createServerFn({ method: "GET" })
             })),
           })),
         ),
-        withClickHouse(
+        withScopedClickHouse(
           Layer.mergeAll(
             SessionSemanticMomentRepositoryLive,
             SessionMomentLabelRepositoryLive,
@@ -418,38 +481,90 @@ export const getSessionMomentIntelligence = createServerFn({ method: "GET" })
   })
 
 export const getTraceDetail = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ projectId: z.string(), traceId: z.string() }))
-  .handler(async ({ data }) => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .inputValidator(z.object({ projectId: z.string(), traceId: traceIdSchema }))
+  .handler(async ({ data, context }) => {
+    const orgId = await resolveOrgScope(context)
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const repo = yield* TraceRepository
-        const detail = yield* repo
-          .findByTraceId({
+        const trace = yield* repo
+          .findMetadataByTraceId({
             organizationId: orgId,
             projectId: ProjectId(data.projectId),
             traceId: TraceId(data.traceId),
           })
           .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(null)))
-        return detail ? serializeTraceDetail(detail) : null
+        return trace ? serializeTraceDetail(trace) : null
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
     )
 
-    // rosetta-ai GenAI types use [x: string]: unknown index signatures, but
-    // TanStack Start's Serialize<T> transforms those to [x: string]: {}.
-    // Since unknown is not assignable to {}, the handler rejects the return type.
-    // The runtime values are correct — this is a type-only bridge across the
-    // serialization boundary. The consumer (useTraceDetail) casts back.
     return result as never
   })
 
-const DISTINCT_COLUMNS = ["tags", "models", "providers", "serviceNames"] as const
+export const getTraceConversationChunk = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      traceId: traceIdSchema,
+      offset: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().max(100).optional(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const orgId = await resolveOrgScope(context)
+    const offset = data.offset ?? 0
+    const limit = data.limit ?? 25
+
+    const result = await Effect.runPromise(
+      getTraceConversationChunkUseCase({
+        organizationId: orgId,
+        projectId: ProjectId(data.projectId),
+        traceId: TraceId(data.traceId),
+        offset,
+        limit,
+      }).pipe(withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId), withTracing),
+    )
+
+    return result as never
+  })
+
+// The conversation of a single span (subagent boundary), paginated. Twin of
+// getTraceConversationChunk over SpanRepository.findSpanConversationChunk.
+export const getSpanConversationChunk = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      traceId: traceIdSchema,
+      spanId: spanIdSchema,
+      offset: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().max(100).optional(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const orgId = await resolveOrgScope(context)
+    const offset = data.offset ?? 0
+    const limit = data.limit ?? 25
+
+    const result = await Effect.runPromise(
+      getSpanConversationChunkUseCase({
+        organizationId: orgId,
+        projectId: ProjectId(data.projectId),
+        traceId: TraceId(data.traceId),
+        spanId: SpanId(data.spanId),
+        offset,
+        limit,
+      }).pipe(withScopedClickHouse(SpanRepositoryLive, getClickhouseClient(), orgId), withTracing),
+    )
+
+    return result as never
+  })
+
+const DISTINCT_COLUMNS = ["userId", "tags", "models", "providers", "serviceNames", "tools", "definedTools"] as const
 
 interface EnqueuedExportResult {
   readonly type: "enqueued"
@@ -459,7 +574,7 @@ export const enqueueTracesExport = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       projectId: z.string(),
-      filters: filterSetSchema.optional(),
+      filters: traceFilterSetSchema.optional(),
       selection: exportSelectionSchema.optional(),
       searchQuery: z.string().max(500).optional(),
     }),
@@ -504,9 +619,8 @@ export const getTraceDistribution = createServerFn({ method: "GET" })
       field: z.enum(PERCENTILE_TRACE_FILTER_FIELDS),
     }),
   )
-  .handler(async ({ data }): Promise<TraceDistribution> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<TraceDistribution> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       Effect.gen(function* () {
@@ -517,7 +631,7 @@ export const getTraceDistribution = createServerFn({ method: "GET" })
           field: data.field as PercentileTraceFilterField,
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),
@@ -533,9 +647,8 @@ export const getTraceDistinctValues = createServerFn({ method: "GET" })
       search: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<readonly string[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<readonly string[]> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       Effect.gen(function* () {
@@ -548,7 +661,7 @@ export const getTraceDistinctValues = createServerFn({ method: "GET" })
           ...(data.search ? { search: data.search } : {}),
         })
       }).pipe(
-        withClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
+        withScopedClickHouse(TraceRepositoryLive, getClickhouseClient(), orgId),
         withAi(AIEmbedLive, getRedisClient()),
         withTracing,
       ),

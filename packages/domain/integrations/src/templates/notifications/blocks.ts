@@ -1,5 +1,6 @@
-import { formatHumanReadableAlert } from "@domain/monitors"
-import type { AlertIncidentCondition, AlertIncidentKind } from "@domain/shared"
+import { formatHumanReadableRule } from "@domain/monitors"
+import { type AlertIncidentCondition, type IncidentNotificationKey, SEVERITY_COLOR } from "@domain/shared"
+import type { SignalPriority } from "@domain/signals"
 import type { ActionsBlock, HeaderBlock, KnownBlock, SectionBlock } from "@slack/web-api"
 
 export const header = (text: string): HeaderBlock => ({
@@ -29,6 +30,34 @@ export const contextLine = (text: string): KnownBlock => ({
   elements: [{ type: "mrkdwn", text }],
 })
 
+/** Emoji per manual issue priority for the context-line suffix. */
+const PRIORITY_EMOJI: Record<SignalPriority, string> = {
+  urgent: "\u{1F534}", // red circle
+  high: "\u{1F7E0}", // orange circle
+  medium: "\u{1F7E1}", // yellow circle
+  low: "\u{1F7E2}", // green circle
+}
+
+/**
+ * " · 🟠 High · Assigned to Anna" suffix for the incident context line.
+ * Empty string when the payload carries no triage snapshot (legacy rows,
+ * monitor sources) so the line renders exactly as before.
+ */
+export const triageContextSuffix = (input: {
+  readonly priority: SignalPriority | null | undefined
+  readonly assigneeName: string | null | undefined
+}): string => {
+  const parts: string[] = []
+  if (input.priority) {
+    const label = input.priority.charAt(0).toUpperCase() + input.priority.slice(1)
+    parts.push(`${PRIORITY_EMOJI[input.priority]} ${label}`)
+  }
+  if (input.assigneeName) {
+    parts.push(`Assigned to ${input.assigneeName}`)
+  }
+  return parts.length > 0 ? ` \u{B7} ${parts.join(" \u{B7} ")}` : ""
+}
+
 export const projectOrOrgContext = (
   organization: { readonly name: string },
   project: { readonly name: string } | null,
@@ -50,7 +79,7 @@ export const monitorAttributionBlocks = (input: {
   readonly projectSlug: string | undefined
   readonly monitorName: string | undefined
   readonly monitorSlug: string | undefined
-  readonly incidentKind: AlertIncidentKind
+  readonly incidentKind: IncidentNotificationKey
   readonly condition: AlertIncidentCondition | null | undefined
 }): KnownBlock[] => {
   if (!input.monitorName) return []
@@ -58,7 +87,10 @@ export const monitorAttributionBlocks = (input: {
   const name = url ? `<${url}|${input.monitorName}>` : `*${input.monitorName}*`
   const blocks: KnownBlock[] = [contextLine(`Created by monitor ${name}`)]
   if (input.condition) {
-    blocks.push(contextLine(formatHumanReadableAlert({ kind: input.incidentKind, condition: input.condition })))
+    const trigger = input.incidentKind.replace("monitor.", "")
+    if (trigger === "match" || trigger === "threshold" || trigger === "escalating") {
+      blocks.push(contextLine(formatHumanReadableRule({ trigger, condition: input.condition })))
+    }
   }
   return blocks
 }
@@ -86,16 +118,13 @@ export const trendChartBlock = (notificationId: string | null, webAppUrl: string
 /**
  * Color constants for attachment bars.
  *
- * Severity colors map to a four-tier priority scale (low → critical) so
- * the bar communicates urgency — no emoji prefix needed. `resolved` is
- * always green (incident is over regardless of severity). `wrapped` is
- * Claude Code orange.
+ * Severity tiers come from the shared {@link SEVERITY_COLOR} palette so the
+ * bar matches the web charts and email badges. `resolved` is always green
+ * (incident is over regardless of severity). `wrapped` is Claude Code orange.
  */
 export const COLORS = {
   // Severity tiers — used by incident renderers
-  low: "#F2C94C", // yellow
-  medium: "#F2994A", // orange
-  high: "#E8534B", // red
+  ...SEVERITY_COLOR,
   critical: "#C0392B", // dark red (reserved for future severity tier)
   // Lifecycle overrides
   resolved: "#27AE60", // green — incident recovered regardless of severity

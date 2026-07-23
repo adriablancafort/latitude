@@ -9,7 +9,7 @@ import {
   type SqlClientShape,
   UserId,
 } from "@domain/shared"
-import { and, eq, sql } from "drizzle-orm"
+import { and, desc, eq, lt, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { organizations } from "../schema/better-auth.ts"
@@ -96,6 +96,39 @@ export const SandboxRepositoryLive = Layer.effect(
                 .where(and(eq(organizations.parentOrgId, parentOrgId), eq(sandboxes.status, "active"))),
             )
             .pipe(Effect.map((rows) => rows[0]?.count ?? 0))
+        }),
+
+      archiveIdle: (cutoff: Date) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          return yield* sqlClient
+            .query((db) =>
+              db
+                .update(sandboxes)
+                .set({ status: "archived", updatedAt: new Date() })
+                .where(and(eq(sandboxes.status, "active"), lt(sandboxes.lastActivityAt, cutoff)))
+                .returning({ organizationId: sandboxes.organizationId }),
+            )
+            .pipe(Effect.map((rows) => rows.length))
+        }),
+
+      listByParentOrgId: (parentOrgId: OrganizationIdType) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          return yield* sqlClient
+            .query((db) =>
+              db
+                .select({ organizationId: sandboxes.organizationId, status: sandboxes.status })
+                .from(sandboxes)
+                .innerJoin(organizations, eq(organizations.id, sandboxes.organizationId))
+                .where(eq(organizations.parentOrgId, parentOrgId))
+                .orderBy(desc(sandboxes.createdAt)),
+            )
+            .pipe(
+              Effect.map((rows) =>
+                rows.map((row) => ({ organizationId: OrganizationId(row.organizationId), status: row.status })),
+              ),
+            )
         }),
 
       lockParentForCapCheck: (parentOrgId: OrganizationIdType) =>

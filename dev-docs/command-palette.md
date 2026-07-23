@@ -133,22 +133,24 @@ in the Projects group, which renders before the Actions group, so it already out
 
 ### In-project entity search
 
-- **Issues** (`commands/use-issue-search-commands.ts`): combines an instant client-side
-  title-substring match over a cached pool of recent issues (`useIssues({ limit: 50 })`, no
-  `searchQuery`) with the debounced semantic search (`useIssues({ searchQuery })`). Substring
-  hits rank first, then semantic hits not already shown. Selecting opens the issue drawer via
-  the `issueId` search param. The semantic half needs the embedding backend; the substring
-  half works offline, which is why "json" reliably finds "JSON output truncated…".
+- **Issues** (`commands/use-issue-search-commands.ts`): combines an instant org-wide lexical
+  search with the debounced semantic search (`useIssuesOrgSearch`). Only active issues are
+  returned; resolved/ignored issues are excluded so archived results do not clutter the
+  recommended section. Lexical hits rank first, then semantic hits not already shown. Selecting
+  opens the issue drawer via the `issueId` search param. The semantic half needs the embedding
+  backend.
 - **Datasets / Saved searches** (`commands/use-project-search-commands.ts`): full project
   lists (`useDatasetsList` / `useSavedSearchesList`, each fetched only while searching via an
   `enabled` option), filtered client-side by `commandMatches`. Selecting navigates to the
   dataset, or applies the saved search on the Search page (`?savedSearch=<slug>`).
-- **Monitors** (`commands/use-monitor-search-commands.ts`): the project's monitors
-  (`useMonitors`, fetched only while searching), filtered client-side. **Gated behind the
-  `monitors` feature flag** — when the flag is off, monitors are neither fetched nor listed,
-  mirroring the flag-gated Monitors page/sidebar entry. Selecting opens the monitor drawer
-  (`?monitorSlug=<slug>`); muted/system monitors are labelled in their subtitle. Monitor
-  *mutations* (mute/unmute, create) are backend-pending, so no monitor actions are wired yet.
+- **Monitors** (`commands/use-monitor-search-commands.ts`): org-wide monitor search
+  (`useMonitorsSearch`, fetched only while searching), filtered by the query server-side with the
+  current project preferred in ordering. Selecting opens the monitor detail route; muted/system
+  monitors are labelled in their subtitle.
+- **Experiments** (`commands/use-experiment-search-commands.ts`): org-wide experiment name search
+  (`useExperimentsSearch`, fetched only while searching), ranked server-side with the current
+  project preferred. Selecting opens the experiment detail route; the subtitle shows the variant
+  count.
 - **Traces fallback** (same hook): always-present "Search traces for "<query>"" → opens the
   Search page with `?q=<query>`.
 
@@ -166,6 +168,8 @@ in the Projects group, which renders before the Actions group, so it already out
 | Global actions | `apps/web/src/components/command-palette/commands/use-global-commands.tsx` |
 | Issue search | `apps/web/src/components/command-palette/commands/use-issue-search-commands.ts` |
 | Dataset / saved-search / traces fallback | `apps/web/src/components/command-palette/commands/use-project-search-commands.ts` |
+| Monitor search | `apps/web/src/components/command-palette/commands/use-monitor-search-commands.ts` |
+| Experiment search | `apps/web/src/components/command-palette/commands/use-experiment-search-commands.ts` |
 | Shared project sections (source of truth) | `apps/web/src/domains/projects/project-sections.ts` |
 | Mount point + header button | `apps/web/src/routes/_authenticated.tsx` |
 
@@ -182,8 +186,7 @@ Project sections and settings pages are defined once in
 **settings sub-nav**, and the **palette navigation** all consume it via
 `useVisibleProjectSections` / `useVisibleProjectSettingsGroups`.
 
-To add a section/settings page: add an entry with `{ key, label, icon, path(slug), flag? }`
-(use `flag` for feature-gating, e.g. `"monitors"` / `"slack"`). It then appears in the
+To add a section/settings page: add an entry with `{ key, label, icon, path(slug) }`. It then appears in the
 sidebar, the settings sub-nav, **and** the palette automatically — no palette-specific change.
 Do **not** hardcode a new nav command in the palette; that would duplicate the source of truth.
 
@@ -203,7 +206,7 @@ a memoized `PaletteCommand[]` and call `useRegisterCommands(...)` from
 `"Trace"`, `"Search"`, `"Traces"`, …). Capture the entity id / page state and reuse the view's
 existing handlers (open the same confirmation modal where one exists; flip the same state the
 page's own buttons flip). Registration retracts automatically when the view/page unmounts.
-References: `issue-lifecycle-actions.tsx`, `trace-detail-drawer.tsx`, and the `search/index.tsx`
+References: `signal-lifecycle-actions.tsx`, `trace-detail-drawer.tsx`, and the `search/index.tsx`
 / project `index.tsx` page registrations.
 
 ### 4. New searchable entity type → new provider hook + wire it in

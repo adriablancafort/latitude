@@ -1,7 +1,12 @@
+import type { SavedSearchNotFoundError, SavedSearchRepository } from "@domain/saved-searches"
 import {
+  type AlertSeverity,
   generateId,
   generateSlug,
+  type MonitorConfig,
   MonitorId,
+  type MonitorTargetType,
+  type MonitorTrigger,
   type OrganizationId,
   type ProjectId,
   type RepositoryError,
@@ -9,41 +14,107 @@ import {
   ValidationError,
 } from "@domain/shared"
 import { Effect } from "effect"
-import type { Monitor } from "../entities/monitor.ts"
-import type { AlertConditionMismatchError } from "../errors.ts"
+import type { Monitor, MonitorTarget } from "../entities/monitor.ts"
+import { monitorStreamForTargetType, monitorTargetSchema } from "../entities/monitor.ts"
 import { MonitorRepository } from "../ports/monitor-repository.ts"
-import { buildMonitorAlert, type MonitorAlertInput } from "./create-monitor-alert.ts"
+import { assertMonitorableSavedSearch } from "./assert-monitorable-saved-search.ts"
 
 const NAME_MAX_LENGTH = 128
+
+interface CreateMonitorRuleInput {
+  readonly trigger: MonitorTrigger
+  readonly config: MonitorConfig
+  readonly severity: AlertSeverity
+}
+
+interface CreateMonitorTargetInput {
+  readonly type: MonitorTargetType
+  readonly id: string | null
+  readonly filterSet?: MonitorTarget["filterSet"]
+  readonly query?: string | null | undefined
+}
 
 export interface CreateMonitorInput {
   readonly organizationId: OrganizationId
   readonly projectId: ProjectId
   readonly name: string
   readonly description?: string
-  /** At least one; each must be a user-creatable kind (see `buildMonitorAlert`). */
-  readonly alerts: readonly MonitorAlertInput[]
+  readonly target: CreateMonitorTargetInput
+  readonly rule: CreateMonitorRuleInput
 }
 
-export type CreateMonitorError = RepositoryError | ValidationError | AlertConditionMismatchError
+export type CreateMonitorError = RepositoryError | ValidationError | SavedSearchNotFoundError
 
-/**
- * Creates a non-system monitor with its alerts, atomically. The monitor's
- * `slug` is derived from `name` (unique per project). Rejects an empty alert
- * list; every alert is validated via `buildMonitorAlert` (user-creatable kinds
- * only). `system` is fixed to `false` — the input has no `system` field, so a
- * system monitor can't be created here.
- */
+const validateRule = (rule: CreateMonitorRuleInput): Effect.Effect<void, ValidationError> => {
+  if (rule.trigger === "match" && rule.config.condition !== undefined) {
+    return Effect.fail(
+      new ValidationError({ field: "rule.condition", message: "Match monitors cannot define a condition" }),
+    )
+  }
+  if (rule.trigger !== "match" && rule.config.condition?.trigger !== rule.trigger) {
+    return Effect.fail(
+      new ValidationError({ field: "rule.condition", message: "Condition trigger must match monitor trigger" }),
+    )
+  }
+  if (rule.trigger === "escalating" && (rule.config.metric?.kind ?? "count") !== "count") {
+    return Effect.fail(
+      new ValidationError({ field: "rule.metric", message: "Escalating monitors only support count metrics" }),
+    )
+  }
+  if (rule.config.condition?.trigger === "escalating" && rule.config.condition.metric.kind !== "count") {
+    return Effect.fail(
+      new ValidationError({
+        field: "rule.condition.metric",
+        message: "Escalating monitors only support count metrics",
+      }),
+    )
+  }
+  if (
+    rule.config.condition?.trigger === "escalating" &&
+    rule.config.condition.threshold !== undefined &&
+    rule.config.condition.threshold.mode !== "expected"
+  ) {
+    return Effect.fail(
+      new ValidationError({
+        field: "rule.condition.threshold",
+        message: "Escalating monitors only support expected thresholds",
+      }),
+    )
+  }
+  return Effect.void
+}
+
 export const createMonitorUseCase = (
   input: CreateMonitorInput,
-): Effect.Effect<Monitor, CreateMonitorError, SqlClient | MonitorRepository> =>
+): Effect.Effect<Monitor, CreateMonitorError, SqlClient | MonitorRepository | SavedSearchRepository> =>
   Effect.gen(function* () {
     const trimmedName = input.name.trim()
     if (trimmedName.length < 1 || trimmedName.length > NAME_MAX_LENGTH) {
-      return yield* new ValidationError({ field: "name", message: `Name must be 1–${NAME_MAX_LENGTH} characters` })
+      return yield* new ValidationError({ field: "name", message: `Name must be 1-${NAME_MAX_LENGTH} characters` })
     }
-    if (input.alerts.length === 0) {
-      return yield* new ValidationError({ field: "alerts", message: "A monitor must have at least one alert" })
+
+    yield* validateRule(input.rule)
+    if (input.target.type === "savedSearch" && input.target.id !== null) {
+      yield* assertMonitorableSavedSearch(input.target.id)
+    }
+
+    const targetCandidate = {
+      type: input.target.type,
+      id: input.target.id,
+      ...(input.target.filterSet !== undefined ? { filterSet: input.target.filterSet } : {}),
+      kind: input.target.type,
+      stream: monitorStreamForTargetType(input.target.type),
+      query: input.target.query ?? null,
+      savedSearchId: input.target.type === "savedSearch" ? input.target.id : null,
+      metric: input.rule.config.metric ?? { kind: "count" },
+    }
+    const parsedTarget = monitorTargetSchema.safeParse(targetCandidate)
+    if (!parsedTarget.success) {
+      const issue = parsedTarget.error.issues[0]
+      return yield* new ValidationError({
+        field: issue?.path.length ? issue.path.map(String).join(".") : "target",
+        message: issue?.message ?? "Invalid monitor target",
+      })
     }
 
     const sqlClient = yield* SqlClient
@@ -52,11 +123,6 @@ export const createMonitorUseCase = (
         const repository = yield* MonitorRepository
         const now = new Date()
         const monitorId = MonitorId(generateId())
-
-        const alerts = yield* Effect.forEach(input.alerts, (alertInput) =>
-          buildMonitorAlert(alertInput, monitorId, now),
-        )
-
         const slug = yield* generateSlug({
           name: trimmedName,
           count: (candidate) =>
@@ -75,7 +141,17 @@ export const createMonitorUseCase = (
           name: trimmedName,
           description: input.description?.trim() ?? "",
           system: false,
-          alerts,
+          target: {
+            type: input.target.type,
+            id: input.target.id,
+            ...(input.target.filterSet !== undefined ? { filterSet: input.target.filterSet } : {}),
+            kind: input.target.type,
+            stream: monitorStreamForTargetType(input.target.type),
+            query: input.target.query ?? null,
+            savedSearchId: input.target.type === "savedSearch" ? input.target.id : null,
+            metric: input.rule.config.metric ?? { kind: "count" },
+          },
+          rule: input.rule,
           mutedAt: null,
           deletedAt: null,
           createdAt: now,

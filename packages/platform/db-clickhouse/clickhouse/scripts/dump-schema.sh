@@ -9,6 +9,9 @@
 # Sanitization:
 #   - Strips database-qualified names (e.g. latitude_development.spans → spans)
 #   - Removes TTL, storage_policy, and ttl_only_drop_parts clauses
+#   - Removes table clauses the chdb version used in tests can't parse:
+#     TYPE text indexes (need ClickHouse 26.2+), TYPE vector_similarity (HNSW)
+#     indexes, and CONSTRAINT ... CHECK clauses — then fixes any dangling comma
 #
 # Run after applying new ClickHouse migrations to keep the test schema in sync:
 #   pnpm --filter @platform/db-clickhouse ch:schema:dump
@@ -36,10 +39,10 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-CH_URL="${CLICKHOUSE_URL:-http://localhost:8123}"
-CH_USER="${CLICKHOUSE_USER:-latitude}"
-CH_PASS="${CLICKHOUSE_PASSWORD:-secret}"
-CH_DB="${CLICKHOUSE_DB:-latitude_development}"
+CH_URL="${LAT_CLICKHOUSE_URL:-http://localhost:8123}"
+CH_USER="${LAT_CLICKHOUSE_USER:-latitude}"
+CH_PASS="${LAT_CLICKHOUSE_PASSWORD:-secret}"
+CH_DB="${LAT_CLICKHOUSE_DB:-latitude_development}"
 OUTPUT="$ROOT_DIR/packages/platform/testkit/src/clickhouse/schema.sql"
 
 tables=$(curl -s "${CH_URL}/?user=${CH_USER}&password=${CH_PASS}&database=${CH_DB}" \
@@ -57,7 +60,8 @@ sanitize() {
     -e "s/, ttl_only_drop_parts = [0-9]*//g" \
     -e "s/, storage_policy = '[^']*'//g" \
     -e "s/SETTINGS ttl_only_drop_parts = [0-9]*, storage_policy = '[^']*', /SETTINGS /g" \
-    -e "s/SETTINGS ttl_only_drop_parts = [0-9]*, /SETTINGS /g"
+    -e "s/SETTINGS ttl_only_drop_parts = [0-9]*, /SETTINGS /g" \
+    | perl -0pe 's/^\s*INDEX \S+ \S+ TYPE (?:text|vector_similarity)[^\n]*\n//mg; s/^\s*CONSTRAINT \S+ CHECK [^\n]*\n//mg; s/,(\s*\n\s*\))/$1/g'
 }
 
 {

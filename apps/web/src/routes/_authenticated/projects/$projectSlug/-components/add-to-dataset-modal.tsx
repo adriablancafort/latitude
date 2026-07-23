@@ -1,41 +1,31 @@
 import { MAX_TRACES_PER_DATASET_IMPORT } from "@domain/datasets/constants"
-import type { FilterSet } from "@domain/shared"
-import { Alert, Button, CloseTrigger, Input, Modal, Select, type SelectOption, Text, useToast } from "@repo/ui"
+import { Alert, Button, CloseTrigger, Icon, Input, Modal, Select, type SelectOption, Text, useToast } from "@repo/ui"
 import { useNavigate } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
 import { useDatasetsList } from "../../../../../domains/datasets/datasets.collection.ts"
 import type { DatasetRecord } from "../../../../../domains/datasets/datasets.functions.ts"
-import {
-  addTracesToDatasetFunction,
-  createDatasetFromTracesFunction,
-} from "../../../../../domains/datasets/datasets.functions.ts"
 import { getQueryClient } from "../../../../../lib/data/query-client.tsx"
 import { toUserMessage } from "../../../../../lib/errors.ts"
-import type { BulkSelection } from "../../../../../lib/hooks/useSelectableRows.ts"
+import { useRouteProject } from "../-route-data.ts"
 
+/**
+ * Generic "add the current selection to a dataset" modal. It owns only the
+ * dataset picker / create-new UI and the success plumbing (toast, cache
+ * invalidation, navigation); the caller supplies how its selection turns into
+ * rows via {@link onAddToExisting} / {@link onCreateNew}, so new row sources
+ * (traces, issue traces, cluster sessions, …) need no changes here.
+ */
 interface AddToDatasetModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   projectId: string
-  /**
-   * When set, "all" / "allExcept" selections resolve only against traces linked
-   * to this issue (via score analytics). Omit on the project-wide traces page.
-   */
-  issueId?: string
-  /**
-   * Saved-search query that scopes "all" / "allExcept" selections. Ignored when
-   * `issueId` is set. Omit outside the search page.
-   */
-  searchQuery?: string
-  /**
-   * Active table filters that scope "all" / "allExcept" selections to the
-   * same set the user sees. Ignored when `issueId` is set. Omit when no
-   * filters are active.
-   */
-  filters?: FilterSet
-  selection: BulkSelection<string>
+  /** Noun shown in the modal copy (e.g. "trace", "session"). */
+  itemLabel: string
   selectedCount: number
+  description?: string
+  onAddToExisting: (datasetId: string) => Promise<{ version: number; rowCount: number }>
+  onCreateNew: (name: string) => Promise<{ datasetId: string; version: number; rowCount: number }>
   onSuccess: () => void
 }
 
@@ -43,11 +33,11 @@ export function AddToDatasetModal({
   open,
   onOpenChange,
   projectId,
-  issueId,
-  searchQuery,
-  filters,
-  selection,
+  itemLabel,
   selectedCount,
+  description,
+  onAddToExisting,
+  onCreateNew,
   onSuccess,
 }: AddToDatasetModalProps) {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null)
@@ -56,6 +46,7 @@ export function AddToDatasetModal({
   const [submitting, setSubmitting] = useState(false)
   const { toast } = useToast()
   const navigate = useNavigate()
+  const project = useRouteProject()
   const { data: datasets } = useDatasetsList(projectId)
 
   const datasetOptions = useMemo<SelectOption<string>[]>(
@@ -73,52 +64,48 @@ export function AddToDatasetModal({
     setSelectedDatasetId(null)
   }, [])
 
+  const itemLabelTitle = `${itemLabel.charAt(0).toUpperCase()}${itemLabel.slice(1)}s`
+
   const handleSubmit = useCallback(async () => {
     if (selectedCount === 0) return
     setSubmitting(true)
     try {
       if (creatingNew) {
         if (!newDatasetName.trim()) return
-        const result = await createDatasetFromTracesFunction({
-          data: {
-            projectId,
-            name: newDatasetName.trim(),
-            selection,
-            ...(issueId ? { issueId } : {}),
-            ...(searchQuery ? { searchQuery } : {}),
-            ...(filters ? { filters } : {}),
-          },
-        })
+        const result = await onCreateNew(newDatasetName.trim())
         toast({
           title: "Dataset created",
           description: `"${newDatasetName.trim()}" created with ${result.rowCount} row${result.rowCount === 1 ? "" : "s"}.`,
         })
-        getQueryClient().invalidateQueries({ queryKey: ["datasets", projectId] })
+        const queryClient = getQueryClient()
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["datasets", projectId] }),
+          queryClient.invalidateQueries({ queryKey: ["dataset", result.datasetId] }),
+          queryClient.invalidateQueries({ queryKey: ["datasetRows", result.datasetId] }),
+        ])
+        queryClient.setQueryData(["datasetRowCount", result.datasetId], {
+          rows: [],
+          total: result.rowCount,
+        })
         onSuccess()
         onOpenChange(false)
         navigate({
           to: "/projects/$projectSlug/datasets/$datasetId",
-          params: { projectId, datasetId: result.datasetId },
+          params: { projectSlug: project.slug, datasetId: result.datasetId },
         })
       } else {
         if (!selectedDatasetId) return
-        const result = await addTracesToDatasetFunction({
-          data: {
-            projectId,
-            datasetId: selectedDatasetId,
-            selection,
-            ...(issueId ? { issueId } : {}),
-            ...(searchQuery ? { searchQuery } : {}),
-            ...(filters ? { filters } : {}),
-          },
-        })
+        const result = await onAddToExisting(selectedDatasetId)
         toast({
-          title: "Traces added to dataset",
+          title: `${itemLabelTitle} added to dataset`,
           description: `${result.rowCount} row${result.rowCount === 1 ? "" : "s"} added (version ${result.version}).`,
         })
-        getQueryClient().invalidateQueries({ queryKey: ["datasets", projectId] })
-        getQueryClient().invalidateQueries({ queryKey: ["datasetRows", selectedDatasetId] })
-        getQueryClient().invalidateQueries({ queryKey: ["datasetRowCount", selectedDatasetId] })
+        const queryClient = getQueryClient()
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["datasets", projectId] }),
+          queryClient.invalidateQueries({ queryKey: ["datasetRows", selectedDatasetId] }),
+          queryClient.invalidateQueries({ queryKey: ["datasetRowCount", selectedDatasetId] }),
+        ])
         onSuccess()
         onOpenChange(false)
       }
@@ -136,15 +123,15 @@ export function AddToDatasetModal({
     selectedDatasetId,
     newDatasetName,
     projectId,
-    issueId,
-    searchQuery,
-    filters,
-    selection,
+    itemLabelTitle,
+    onAddToExisting,
+    onCreateNew,
     selectedCount,
     toast,
     navigate,
     onSuccess,
     onOpenChange,
+    project.slug,
   ])
 
   const exceedsLimit = selectedCount > MAX_TRACES_PER_DATASET_IMPORT
@@ -158,14 +145,14 @@ export function AddToDatasetModal({
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Add traces to dataset"
-      description={`${selectedCount} trace${selectedCount === 1 ? "" : "s"} selected`}
+      title={`Add ${itemLabel}s to dataset`}
+      description={description ?? `${selectedCount} ${itemLabel}${selectedCount === 1 ? "" : "s"} selected`}
       dismissible
       footer={
         <div className="flex flex-row items-center gap-2">
           <CloseTrigger />
           <Button onClick={handleSubmit} disabled={!canSubmit} isLoading={submitting}>
-            {!submitting && <Plus className="h-4 w-4" />}
+            {!submitting && <Icon icon={Plus} size="sm" />}
             {creatingNew ? "Create & add" : "Add to dataset"}
           </Button>
         </div>
@@ -176,7 +163,7 @@ export function AddToDatasetModal({
           <Alert
             variant="destructive"
             title="Selection too large"
-            description={`You selected ${selectedCount} traces, but the maximum allowed is ${MAX_TRACES_PER_DATASET_IMPORT.toLocaleString()}. Please narrow your selection.`}
+            description={`You selected ${selectedCount} ${itemLabel}s, but the maximum allowed is ${MAX_TRACES_PER_DATASET_IMPORT.toLocaleString()}. Please narrow your selection.`}
           />
         )}
         {creatingNew ? (
@@ -206,7 +193,7 @@ export function AddToDatasetModal({
             side="bottom"
             footerAction={{
               label: "Create new dataset",
-              icon: <Plus className="h-4 w-4" />,
+              icon: <Icon icon={Plus} size="sm" />,
               onClick: handleCreateNew,
             }}
           />

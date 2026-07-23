@@ -1,35 +1,35 @@
 import {
   SEED_ACCESS_EVALUATION_HASH,
   SEED_ACCESS_EVALUATION_ID,
-  SEED_ACCESS_ISSUE_ID,
-  SEED_ACCESS_ISSUE_UUID,
-  SEED_BILLING_ISSUE_ID,
-  SEED_BILLING_ISSUE_UUID,
+  SEED_ACCESS_SIGNAL_ID,
+  SEED_ACCESS_SIGNAL_UUID,
+  SEED_BILLING_SIGNAL_ID,
+  SEED_BILLING_SIGNAL_UUID,
   SEED_COMBINATION_EVALUATION_HASH,
   SEED_COMBINATION_EVALUATION_ID,
-  SEED_COMBINATION_ISSUE_ID,
-  SEED_COMBINATION_ISSUE_UUID,
+  SEED_COMBINATION_SIGNAL_ID,
+  SEED_COMBINATION_SIGNAL_UUID,
   SEED_EVALUATION_ID,
-  SEED_EXTRA_ISSUE_IDS,
-  SEED_EXTRA_ISSUE_UUIDS,
-  SEED_FLAGGER_ISSUE_ID,
-  SEED_FLAGGER_ISSUE_UUID,
-  SEED_GENERATE_ISSUE_ID,
-  SEED_GENERATE_ISSUE_UUID,
-  SEED_INSTALLATION_ISSUE_ID,
-  SEED_INSTALLATION_ISSUE_UUID,
-  SEED_ISSUE_ID,
-  SEED_ISSUE_UUID,
+  SEED_EXTRA_SIGNAL_IDS,
+  SEED_EXTRA_SIGNAL_UUIDS,
+  SEED_FLAGGER_SIGNAL_ID,
+  SEED_FLAGGER_SIGNAL_UUID,
+  SEED_GENERATE_SIGNAL_ID,
+  SEED_GENERATE_SIGNAL_UUID,
+  SEED_INSTALLATION_SIGNAL_ID,
+  SEED_INSTALLATION_SIGNAL_UUID,
   SEED_RETURNS_EVALUATION_HASH,
   SEED_RETURNS_EVALUATION_ID,
-  SEED_RETURNS_ISSUE_ID,
-  SEED_RETURNS_ISSUE_UUID,
+  SEED_RETURNS_SIGNAL_ID,
+  SEED_RETURNS_SIGNAL_UUID,
+  SEED_SIGNAL_ID,
+  SEED_SIGNAL_UUID,
   SEED_TIMELINE_WINDOW_DAYS,
   SEED_WARRANTY_ARCHIVED_EVALUATION_HASH,
   SEED_WARRANTY_EVALUATION_HASH,
 } from "../seeds.ts"
 
-export type SeedIssueFixture = {
+export type SeedSignalFixture = {
   readonly id: string
   readonly uuid: string
   readonly name: string
@@ -47,12 +47,14 @@ export type SeedIssueFixture = {
   readonly escalatedDaysAgo: number | null
   readonly resolvedDaysAgo: number | null
   readonly ignoredDaysAgo: number | null
+  readonly regressedDaysAgo: number | null
+  readonly mutedDaysAgo: number | null
 }
 
-const baseIssueFixtures: SeedIssueFixture[] = [
+const baseSignalFixtures: SeedSignalFixture[] = [
   {
-    id: SEED_ISSUE_ID,
-    uuid: SEED_ISSUE_UUID,
+    id: SEED_SIGNAL_ID,
+    uuid: SEED_SIGNAL_UUID,
     name: "Retail agent mishandles return eligibility",
     description:
       "The retail support agent processes, promises, or refuses returns without correctly grounding the decision " +
@@ -65,10 +67,12 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 0,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
   },
   {
-    id: SEED_COMBINATION_ISSUE_ID,
-    uuid: SEED_COMBINATION_ISSUE_UUID,
+    id: SEED_COMBINATION_SIGNAL_ID,
+    uuid: SEED_COMBINATION_SIGNAL_UUID,
     name: "Retail agent skips account authentication",
     description:
       "The retail support agent performs account-specific actions or reveals order details before properly " +
@@ -81,10 +85,12 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 0,
     resolvedDaysAgo: 8,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
   },
   {
-    id: SEED_GENERATE_ISSUE_ID,
-    uuid: SEED_GENERATE_ISSUE_UUID,
+    id: SEED_GENERATE_SIGNAL_ID,
+    uuid: SEED_GENERATE_SIGNAL_UUID,
     name: "Telecom agent leaves connectivity troubleshooting incomplete",
     description:
       "The telecom support agent stops before the customer's mobile connectivity issue is actually resolved, " +
@@ -97,10 +103,13 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 0,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    // Resolved and reopened within its first week: demos "new" + "regressed" together.
+    regressedDaysAgo: 2,
+    mutedDaysAgo: null,
   },
   {
-    id: SEED_RETURNS_ISSUE_ID,
-    uuid: SEED_RETURNS_ISSUE_UUID,
+    id: SEED_RETURNS_SIGNAL_ID,
+    uuid: SEED_RETURNS_SIGNAL_UUID,
     name: "Retail agent mishandles cancelled order recovery",
     description:
       "The retail support agent promises to reverse, reinstate, or expedite a cancelled order even though policy " +
@@ -113,10 +122,13 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 45,
     resolvedDaysAgo: 9,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    // Muted after resolving: demos the notification toggle on an archived signal.
+    mutedDaysAgo: 3,
   },
   {
-    id: SEED_BILLING_ISSUE_ID,
-    uuid: SEED_BILLING_ISSUE_UUID,
+    id: SEED_BILLING_SIGNAL_ID,
+    uuid: SEED_BILLING_SIGNAL_UUID,
     name: "Telecom agent applies unsupported account credits",
     description:
       "The telecom support agent offers goodwill credits, plan changes, or billing adjustments before the customer " +
@@ -129,10 +141,12 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 18,
     resolvedDaysAgo: null,
     ignoredDaysAgo: 9,
+    regressedDaysAgo: null,
+    mutedDaysAgo: 9,
   },
   {
-    id: SEED_ACCESS_ISSUE_ID,
-    uuid: SEED_ACCESS_ISSUE_UUID,
+    id: SEED_ACCESS_SIGNAL_ID,
+    uuid: SEED_ACCESS_SIGNAL_UUID,
     name: "Support agent transfers instead of resolving in-scope work",
     description:
       "The support agent escalates to a human or ends the interaction even though the request is covered by available " +
@@ -145,10 +159,12 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 0,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
   },
   {
-    id: SEED_INSTALLATION_ISSUE_ID,
-    uuid: SEED_INSTALLATION_ISSUE_UUID,
+    id: SEED_INSTALLATION_SIGNAL_ID,
+    uuid: SEED_INSTALLATION_SIGNAL_UUID,
     name: "Banking agent recommends products without grounding in policy",
     description:
       "The banking support agent recommends a financial product without checking the relevant customer constraints, " +
@@ -159,12 +175,15 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     clusteredDaysAgo: 2,
     updatedDaysAgo: 2,
     escalatedDaysAgo: null,
-    resolvedDaysAgo: 7,
+    resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    // Was resolved a week ago; a fresh occurrence reopened it as regressed.
+    regressedDaysAgo: 3,
+    mutedDaysAgo: null,
   },
   {
-    id: SEED_FLAGGER_ISSUE_ID,
-    uuid: SEED_FLAGGER_ISSUE_UUID,
+    id: SEED_FLAGGER_SIGNAL_ID,
+    uuid: SEED_FLAGGER_SIGNAL_UUID,
     name: "Assistant returns empty responses on tool failures",
     description:
       "After an internal tool call fails, the assistant frequently returns an empty or placeholder response instead " +
@@ -177,10 +196,13 @@ const baseIssueFixtures: SeedIssueFixture[] = [
     escalatedDaysAgo: 0,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    // Regression on an auto-monitored signal: no evaluation needed to reopen it.
+    regressedDaysAgo: 4,
+    mutedDaysAgo: null,
   },
 ]
 
-const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
+const curatedExtraSignalBlueprints: Omit<SeedSignalFixture, "id" | "uuid">[] = [
   {
     name: "Agent invents enterprise SLAs for standard support plans",
     description:
@@ -191,6 +213,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 70,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -203,6 +227,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: 45,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -215,6 +241,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 54,
     resolvedDaysAgo: null,
     ignoredDaysAgo: 22,
+    regressedDaysAgo: null,
+    mutedDaysAgo: 22,
     source: "annotation",
   },
   {
@@ -227,6 +255,9 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 49,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    // Muted while still active: incidents keep opening, notifications stay silent.
+    mutedDaysAgo: 12,
     source: "annotation",
   },
   {
@@ -239,6 +270,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 41,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -251,6 +284,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: 30,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -263,6 +298,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 32,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -275,6 +312,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: null,
     ignoredDaysAgo: 11,
+    regressedDaysAgo: null,
+    mutedDaysAgo: 11,
     source: "annotation",
   },
   {
@@ -287,6 +326,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 29,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -299,6 +340,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 24,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -311,6 +354,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: 14,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -323,6 +368,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 15,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -335,6 +382,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 18,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -347,6 +396,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 12,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -359,6 +410,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: null,
     ignoredDaysAgo: 7,
+    regressedDaysAgo: null,
+    mutedDaysAgo: 7,
     source: "annotation",
   },
   {
@@ -371,6 +424,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 8,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -383,6 +438,8 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: null,
     resolvedDaysAgo: 6,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
   {
@@ -395,11 +452,13 @@ const curatedExtraIssueBlueprints: Omit<SeedIssueFixture, "id" | "uuid">[] = [
     escalatedDaysAgo: 5,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
     source: "annotation",
   },
 ] as const
 
-const generatedSupportIssueFamilies = [
+const generatedSupportSignalFamilies = [
   {
     name: "Retail return eligibility",
     pattern:
@@ -444,7 +503,7 @@ const generatedSupportIssueFamilies = [
   },
 ] as const
 
-const generatedSupportIssueVariants = [
+const generatedSupportSignalVariants = [
   "skips required verification",
   "overstates policy exceptions",
   "stops before the success criterion",
@@ -457,21 +516,21 @@ const generatedSupportIssueVariants = [
   "ignores required follow-up action",
 ] as const
 
-const TARGET_SEEDED_ISSUE_COUNT = 128
-const GENERATED_EXTRA_ISSUE_COUNT =
-  TARGET_SEEDED_ISSUE_COUNT - baseIssueFixtures.length - curatedExtraIssueBlueprints.length
+const TARGET_SEEDED_SIGNAL_COUNT = 128
+const GENERATED_EXTRA_SIGNAL_COUNT =
+  TARGET_SEEDED_SIGNAL_COUNT - baseSignalFixtures.length - curatedExtraSignalBlueprints.length
 
-if (GENERATED_EXTRA_ISSUE_COUNT <= 0) {
+if (GENERATED_EXTRA_SIGNAL_COUNT <= 0) {
   throw new Error("Seed issue target count must exceed the curated base issue set.")
 }
 
-function buildGeneratedExtraIssueBlueprint(index: number): Omit<SeedIssueFixture, "id" | "uuid"> {
-  const family = generatedSupportIssueFamilies[index % generatedSupportIssueFamilies.length]
+function buildGeneratedExtraSignalBlueprint(index: number): Omit<SeedSignalFixture, "id" | "uuid"> {
+  const family = generatedSupportSignalFamilies[index % generatedSupportSignalFamilies.length]
   const variant =
-    generatedSupportIssueVariants[
-      Math.floor(index / generatedSupportIssueFamilies.length) % generatedSupportIssueVariants.length
+    generatedSupportSignalVariants[
+      Math.floor(index / generatedSupportSignalFamilies.length) % generatedSupportSignalVariants.length
     ]
-  const cohort = Math.floor(index / (generatedSupportIssueFamilies.length * generatedSupportIssueVariants.length)) + 1
+  const cohort = Math.floor(index / (generatedSupportSignalFamilies.length * generatedSupportSignalVariants.length)) + 1
   const createdDaysAgo = 88 - (index % 84)
   const clusteredDaysAgo = Math.max(0, createdDaysAgo - (2 + (index % 18)))
   const updatedDaysAgo = Math.max(0, clusteredDaysAgo - (index % 6))
@@ -489,51 +548,54 @@ function buildGeneratedExtraIssueBlueprint(index: number): Omit<SeedIssueFixture
     escalatedDaysAgo,
     resolvedDaysAgo: null,
     ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
   }
 }
 
-const generatedExtraIssueBlueprints = Array.from({ length: GENERATED_EXTRA_ISSUE_COUNT }, (_, index) =>
-  buildGeneratedExtraIssueBlueprint(index),
+const generatedExtraSignalBlueprints = Array.from({ length: GENERATED_EXTRA_SIGNAL_COUNT }, (_, index) =>
+  buildGeneratedExtraSignalBlueprint(index),
 )
 
-const extraIssueFixtures: SeedIssueFixture[] = [...curatedExtraIssueBlueprints, ...generatedExtraIssueBlueprints].map(
-  (issue, index) => ({
-    id:
-      SEED_EXTRA_ISSUE_IDS[index] ??
-      (() => {
-        throw new Error(`Missing extra seed issue ID for index ${index}`)
-      })(),
-    uuid:
-      SEED_EXTRA_ISSUE_UUIDS[index] ??
-      (() => {
-        throw new Error(`Missing extra seed issue UUID for index ${index}`)
-      })(),
-    ...issue,
-  }),
-)
+const extraSignalFixtures: SeedSignalFixture[] = [
+  ...curatedExtraSignalBlueprints,
+  ...generatedExtraSignalBlueprints,
+].map((issue, index) => ({
+  id:
+    SEED_EXTRA_SIGNAL_IDS[index] ??
+    (() => {
+      throw new Error(`Missing extra seed issue ID for index ${index}`)
+    })(),
+  uuid:
+    SEED_EXTRA_SIGNAL_UUIDS[index] ??
+    (() => {
+      throw new Error(`Missing extra seed issue UUID for index ${index}`)
+    })(),
+  ...issue,
+}))
 
-export const SEED_ISSUE_FIXTURES: readonly SeedIssueFixture[] = [...baseIssueFixtures, ...extraIssueFixtures]
+export const SEED_SIGNAL_FIXTURES: readonly SeedSignalFixture[] = [...baseSignalFixtures, ...extraSignalFixtures]
 
-export const SEED_ISSUE_FIXTURES_BY_ID = new Map(SEED_ISSUE_FIXTURES.map((issue) => [issue.id, issue] as const))
+export const SEED_SIGNAL_FIXTURES_BY_ID = new Map(SEED_SIGNAL_FIXTURES.map((issue) => [issue.id, issue] as const))
 
-export const SEED_ISSUE_COUNT = SEED_ISSUE_FIXTURES.length
+export const SEED_SIGNAL_COUNT = SEED_SIGNAL_FIXTURES.length
 
-if (SEED_ISSUE_COUNT < 100) {
+if (SEED_SIGNAL_COUNT < 100) {
   throw new Error("Seed issue fixtures must stay large enough to exercise issues infinite scroll.")
 }
 
-export const ISSUE_1_TRACE_DAYS_AGO = [82, 78, 74, 69, 63, 56, 50, 43, 37, 29, 21, 15, 10, 6, 1, 0] as const
+export const SIGNAL_1_TRACE_DAYS_AGO = [82, 78, 74, 69, 63, 56, 50, 43, 37, 29, 21, 15, 10, 6, 1, 0] as const
 
-export const ISSUE_2_TRACE_DAYS_AGO = [
+export const SIGNAL_2_TRACE_DAYS_AGO = [
   71, 68, 65, 61, 57, 54, 50, 47, 43, 39, 35, 31, 27, 24, 22, 21, 19, 18, 6, 2, 0, 0,
 ] as const
 
-export const ISSUE_3_TRACE_DAYS_AGO = [4, 4, 3, 2, 0, 3, 2, 1, 1, 0] as const
+export const SIGNAL_3_TRACE_DAYS_AGO = [4, 4, 3, 2, 0, 3, 2, 1, 1, 0] as const
 
 export const ALL_ANNOTATION_TRACE_DAYS_AGO = [
-  ...ISSUE_1_TRACE_DAYS_AGO,
-  ...ISSUE_2_TRACE_DAYS_AGO,
-  ...ISSUE_3_TRACE_DAYS_AGO,
+  ...SIGNAL_1_TRACE_DAYS_AGO,
+  ...SIGNAL_2_TRACE_DAYS_AGO,
+  ...SIGNAL_3_TRACE_DAYS_AGO,
 ] as const
 
 if (ALL_ANNOTATION_TRACE_DAYS_AGO.length !== 48) {
@@ -541,7 +603,7 @@ if (ALL_ANNOTATION_TRACE_DAYS_AGO.length !== 48) {
 }
 
 if (
-  SEED_ISSUE_FIXTURES.some(
+  SEED_SIGNAL_FIXTURES.some(
     (issue) =>
       issue.createdDaysAgo > SEED_TIMELINE_WINDOW_DAYS ||
       issue.clusteredDaysAgo > SEED_TIMELINE_WINDOW_DAYS ||
@@ -549,6 +611,18 @@ if (
   )
 ) {
   throw new Error("Seed issue fixtures must stay within the rolling issue timeline window.")
+}
+
+for (const issue of SEED_SIGNAL_FIXTURES) {
+  if (issue.ignoredDaysAgo !== null && issue.mutedDaysAgo !== issue.ignoredDaysAgo) {
+    throw new Error(`Seed issue "${issue.name}" is ignored, so it must carry the same-day auto-mute stamp.`)
+  }
+  if (issue.regressedDaysAgo !== null && issue.resolvedDaysAgo !== null) {
+    throw new Error(`Seed issue "${issue.name}" cannot be resolved and regressed at once; regression reopens.`)
+  }
+  if (issue.resolvedDaysAgo !== null && issue.ignoredDaysAgo !== null) {
+    throw new Error(`Seed issue "${issue.name}" cannot be resolved and ignored at once.`)
+  }
 }
 
 export const SEED_EVALUATION_HASHES = {
@@ -559,8 +633,8 @@ export const SEED_EVALUATION_HASHES = {
   access: SEED_ACCESS_EVALUATION_HASH,
 } as const
 
-export type SeedIssueOccurrenceFixture = {
-  readonly issueId: string
+export type SeedSignalOccurrenceFixture = {
+  readonly signalId: string
   readonly source: "evaluation" | "custom"
   readonly sourceId: string
   readonly idPrefix: string
@@ -579,7 +653,7 @@ export type SeedIssueOccurrenceFixture = {
   readonly cost: number
 }
 
-type SeedIssueOccurrenceBurstInput = Omit<SeedIssueOccurrenceFixture, "hour" | "minute" | "feedback" | "metadata"> & {
+type SeedSignalOccurrenceBurstInput = Omit<SeedSignalOccurrenceFixture, "hour" | "minute" | "feedback" | "metadata"> & {
   readonly count: number
   readonly startHour: number
   readonly startMinute?: number
@@ -596,7 +670,7 @@ function buildOccurrenceBurstRows({
   feedbackBase,
   metadata,
   ...base
-}: SeedIssueOccurrenceBurstInput): readonly SeedIssueOccurrenceFixture[] {
+}: SeedSignalOccurrenceBurstInput): readonly SeedSignalOccurrenceFixture[] {
   return Array.from({ length: count }, (_, occurrenceIndex) => {
     const totalMinutes = startHour * 60 + startMinute + occurrenceIndex * minuteStep
 
@@ -614,9 +688,9 @@ function buildOccurrenceBurstRows({
   })
 }
 
-const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
+const curatedSignalOccurrenceRows: readonly SeedSignalOccurrenceFixture[] = [
   {
-    issueId: SEED_ISSUE_ID,
+    signalId: SEED_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_EVALUATION_ID,
     idPrefix: "wm",
@@ -640,7 +714,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 236_000,
   },
   {
-    issueId: SEED_ISSUE_ID,
+    signalId: SEED_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_EVALUATION_ID,
     idPrefix: "wm",
@@ -664,7 +738,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 244_000,
   },
   {
-    issueId: SEED_ISSUE_ID,
+    signalId: SEED_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_EVALUATION_ID,
     idPrefix: "wm",
@@ -688,7 +762,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 241_000,
   },
   {
-    issueId: SEED_ISSUE_ID,
+    signalId: SEED_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_EVALUATION_ID,
     idPrefix: "wm",
@@ -712,7 +786,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 268_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -736,7 +810,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 226_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -760,7 +834,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 232_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -784,7 +858,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 249_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -808,7 +882,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 221_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -832,7 +906,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 235_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -855,7 +929,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 242_000,
   },
   {
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cm",
@@ -879,7 +953,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 253_000,
   },
   {
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_RETURNS_EVALUATION_ID,
     idPrefix: "re",
@@ -903,7 +977,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 209_000,
   },
   {
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_RETURNS_EVALUATION_ID,
     idPrefix: "re",
@@ -927,7 +1001,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 216_000,
   },
   {
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_RETURNS_EVALUATION_ID,
     idPrefix: "re",
@@ -951,7 +1025,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 212_000,
   },
   {
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_RETURNS_EVALUATION_ID,
     idPrefix: "re",
@@ -975,7 +1049,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 206_000,
   },
   {
-    issueId: SEED_BILLING_ISSUE_ID,
+    signalId: SEED_BILLING_SIGNAL_ID,
     source: "custom",
     sourceId: "billing-audit",
     idPrefix: "bc",
@@ -999,7 +1073,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_BILLING_ISSUE_ID,
+    signalId: SEED_BILLING_SIGNAL_ID,
     source: "custom",
     sourceId: "billing-audit",
     idPrefix: "bc",
@@ -1023,7 +1097,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_BILLING_ISSUE_ID,
+    signalId: SEED_BILLING_SIGNAL_ID,
     source: "custom",
     sourceId: "billing-audit",
     idPrefix: "bc",
@@ -1047,7 +1121,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_BILLING_ISSUE_ID,
+    signalId: SEED_BILLING_SIGNAL_ID,
     source: "custom",
     sourceId: "billing-audit",
     idPrefix: "bc",
@@ -1071,7 +1145,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ac",
@@ -1095,7 +1169,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 271_000,
   },
   {
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ac",
@@ -1119,7 +1193,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 248_000,
   },
   {
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ac",
@@ -1143,7 +1217,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 264_000,
   },
   {
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ac",
@@ -1167,7 +1241,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 239_000,
   },
   {
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ac",
@@ -1191,7 +1265,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 276_000,
   },
   {
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ic",
@@ -1215,7 +1289,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ic",
@@ -1238,7 +1312,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ic",
@@ -1262,7 +1336,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ic",
@@ -1286,7 +1360,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_FLAGGER_ISSUE_ID,
+    signalId: SEED_FLAGGER_SIGNAL_ID,
     source: "custom",
     sourceId: "system-signals",
     idPrefix: "fl",
@@ -1309,7 +1383,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_FLAGGER_ISSUE_ID,
+    signalId: SEED_FLAGGER_SIGNAL_ID,
     source: "custom",
     sourceId: "system-signals",
     idPrefix: "fl",
@@ -1332,7 +1406,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_FLAGGER_ISSUE_ID,
+    signalId: SEED_FLAGGER_SIGNAL_ID,
     source: "custom",
     sourceId: "system-signals",
     idPrefix: "fl",
@@ -1356,7 +1430,7 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   },
   {
-    issueId: SEED_FLAGGER_ISSUE_ID,
+    signalId: SEED_FLAGGER_SIGNAL_ID,
     source: "custom",
     sourceId: "system-signals",
     idPrefix: "fl",
@@ -1380,9 +1454,9 @@ const curatedIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = [
   },
 ]
 
-const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
+const curatedSignalOccurrenceBurstRows: readonly SeedSignalOccurrenceFixture[] = [
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1409,7 +1483,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 269_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1436,7 +1510,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 257_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1463,7 +1537,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 246_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1490,7 +1564,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 268_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1517,7 +1591,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 274_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "ax",
@@ -1544,7 +1618,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 281_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1571,7 +1645,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 226_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1598,7 +1672,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 234_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1625,7 +1699,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 243_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1652,7 +1726,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 223_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1679,7 +1753,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 249_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1706,7 +1780,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 255_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1733,7 +1807,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 239_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "cx",
@@ -1760,7 +1834,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 264_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1788,7 +1862,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1816,7 +1890,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1844,7 +1918,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1872,7 +1946,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1900,7 +1974,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_RETURNS_ISSUE_ID,
+    signalId: SEED_RETURNS_SIGNAL_ID,
     source: "custom",
     sourceId: "returns-audit",
     idPrefix: "rx",
@@ -1928,7 +2002,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -1956,7 +2030,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -1984,7 +2058,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -2012,7 +2086,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -2040,7 +2114,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -2068,7 +2142,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "field-audit",
     idPrefix: "ix",
@@ -2097,7 +2171,7 @@ const curatedIssueOccurrenceBurstRows: readonly SeedIssueOccurrenceFixture[] = [
   }),
 ]
 
-function buildExtraOccurrenceDays(issue: SeedIssueFixture, index: number): readonly number[] {
+function buildExtraOccurrenceDays(issue: SeedSignalFixture, index: number): readonly number[] {
   const count = index % 3 === 0 ? 2 : 4
   const terminalDaysAgo =
     issue.ignoredDaysAgo !== null
@@ -2127,66 +2201,68 @@ function lowercaseFirst(text: string): string {
   return `${text[0]?.toLowerCase() ?? ""}${text.slice(1)}`
 }
 
-function buildExtraIssueOccurrenceFeedback(input: {
-  readonly issue: SeedIssueFixture
+function buildExtraSignalOccurrenceFeedback(input: {
+  readonly issue: SeedSignalFixture
   readonly sourceId: string
   readonly severity: string
   readonly occurrenceIndex: number
 }): string {
   const sourceLabel = input.sourceId === "seed-issue-scout" ? "Seed issue scout" : "Backlog audit"
   const scenario = lowercaseFirst(firstSentence(input.issue.description))
-  const issueLabel = input.issue.name.toLowerCase()
+  const signalLabel = input.issue.name.toLowerCase()
   const evidenceLabel =
     input.occurrenceIndex === 0 ? "found another seeded conversation" : "confirmed another seeded conversation"
 
-  return `${sourceLabel} ${evidenceLabel} where ${scenario}. The case remained a ${input.severity}-severity example of ${issueLabel}.`
+  return `${sourceLabel} ${evidenceLabel} where ${scenario}. The case remained a ${input.severity}-severity example of ${signalLabel}.`
 }
 
-const extraIssueOccurrenceRows: readonly SeedIssueOccurrenceFixture[] = extraIssueFixtures.flatMap((issue, index) => {
-  const sourceId = index % 2 === 0 ? "seed-issue-scout" : "backlog-audit"
-  const idPrefix = `x${index.toString(36)}`
-  const severity = index % 4 === 0 ? "high" : index % 4 === 1 ? "medium" : "low"
-  const occurrenceDays = buildExtraOccurrenceDays(issue, index)
+const extraSignalOccurrenceRows: readonly SeedSignalOccurrenceFixture[] = extraSignalFixtures.flatMap(
+  (issue, index) => {
+    const sourceId = index % 2 === 0 ? "seed-issue-scout" : "backlog-audit"
+    const idPrefix = `x${index.toString(36)}`
+    const severity = index % 4 === 0 ? "high" : index % 4 === 1 ? "medium" : "low"
+    const occurrenceDays = buildExtraOccurrenceDays(issue, index)
 
-  return occurrenceDays.map((daysAgo, occurrenceIndex) => ({
-    issueId: issue.id,
-    source: "custom" as const,
-    sourceId,
-    idPrefix,
-    evaluationHash: null,
-    daysAgo,
-    hour: 8 + ((index + occurrenceIndex) % 7),
-    minute: (index * 7 + occurrenceIndex * 13) % 60,
-    value: 0.05 + ((index + occurrenceIndex) % 5) * 0.02,
-    passed: false,
-    errored: false,
-    error: null,
-    feedback: buildExtraIssueOccurrenceFeedback({
-      issue,
+    return occurrenceDays.map((daysAgo, occurrenceIndex) => ({
+      signalId: issue.id,
+      source: "custom" as const,
       sourceId,
-      severity,
-      occurrenceIndex,
-    }),
-    metadata: {
-      importName: sourceId,
-      reviewer: index % 2 === 0 ? "seed-quality" : "ops-triage",
-      batch: `extra-issues-${Math.floor(index / 4) + 1}`,
-      severity,
-      expectedVisibility: occurrenceDays.length >= 3 ? "visible" : "denoised",
-    },
-    duration: 0,
-    tokens: 0,
-    cost: 0,
-  }))
-})
+      idPrefix,
+      evaluationHash: null,
+      daysAgo,
+      hour: 8 + ((index + occurrenceIndex) % 7),
+      minute: (index * 7 + occurrenceIndex * 13) % 60,
+      value: 0.05 + ((index + occurrenceIndex) % 5) * 0.02,
+      passed: false,
+      errored: false,
+      error: null,
+      feedback: buildExtraSignalOccurrenceFeedback({
+        issue,
+        sourceId,
+        severity,
+        occurrenceIndex,
+      }),
+      metadata: {
+        importName: sourceId,
+        reviewer: index % 2 === 0 ? "seed-quality" : "ops-triage",
+        batch: `extra-issues-${Math.floor(index / 4) + 1}`,
+        severity,
+        expectedVisibility: occurrenceDays.length >= 3 ? "visible" : "denoised",
+      },
+      duration: 0,
+      tokens: 0,
+      cost: 0,
+    }))
+  },
+)
 
 // Today-bursts make a curated set of issues genuinely escalating per the
 // production threshold (recent >= max(20, baseline*1.33+1)). Without these
 // the seed data has very few naturally-escalating issues, and the alert
 // pipeline's data-driven labels would leave the demo nearly empty.
-const curatedIssueTodayBurstRows: readonly SeedIssueOccurrenceFixture[] = [
+const curatedSignalTodayBurstRows: readonly SeedSignalOccurrenceFixture[] = [
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ISSUE_ID,
+    signalId: SEED_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_EVALUATION_ID,
     idPrefix: "wt",
@@ -2213,7 +2289,7 @@ const curatedIssueTodayBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 236_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_COMBINATION_ISSUE_ID,
+    signalId: SEED_COMBINATION_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_COMBINATION_EVALUATION_ID,
     idPrefix: "ct",
@@ -2239,7 +2315,7 @@ const curatedIssueTodayBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 247_000,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_BILLING_ISSUE_ID,
+    signalId: SEED_BILLING_SIGNAL_ID,
     source: "custom",
     sourceId: "billing-monitor",
     idPrefix: "bt",
@@ -2265,7 +2341,7 @@ const curatedIssueTodayBurstRows: readonly SeedIssueOccurrenceFixture[] = [
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_ACCESS_ISSUE_ID,
+    signalId: SEED_ACCESS_SIGNAL_ID,
     source: "evaluation",
     sourceId: SEED_ACCESS_EVALUATION_ID,
     idPrefix: "at",
@@ -2297,9 +2373,9 @@ const curatedIssueTodayBurstRows: readonly SeedIssueOccurrenceFixture[] = [
 // hits, but well below the escalation threshold so they don't double-fire.
 // The issues seeder forces `resolvedAt = null` for these, and the
 // alert-incidents seeder inserts an `issue.regressed` row pointing at them.
-const curatedIssueRecentRegressionRows: readonly SeedIssueOccurrenceFixture[] = [
+const curatedSignalRecentRegressionRows: readonly SeedSignalOccurrenceFixture[] = [
   ...buildOccurrenceBurstRows({
-    issueId: SEED_GENERATE_ISSUE_ID,
+    signalId: SEED_GENERATE_SIGNAL_ID,
     source: "custom",
     sourceId: "logistics-monitor",
     idPrefix: "lr",
@@ -2325,7 +2401,7 @@ const curatedIssueRecentRegressionRows: readonly SeedIssueOccurrenceFixture[] = 
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_INSTALLATION_ISSUE_ID,
+    signalId: SEED_INSTALLATION_SIGNAL_ID,
     source: "custom",
     sourceId: "installation-monitor",
     idPrefix: "ir",
@@ -2351,7 +2427,7 @@ const curatedIssueRecentRegressionRows: readonly SeedIssueOccurrenceFixture[] = 
     cost: 0,
   }),
   ...buildOccurrenceBurstRows({
-    issueId: SEED_FLAGGER_ISSUE_ID,
+    signalId: SEED_FLAGGER_SIGNAL_ID,
     source: "custom",
     sourceId: "flagger-monitor",
     idPrefix: "fr",
@@ -2377,21 +2453,10 @@ const curatedIssueRecentRegressionRows: readonly SeedIssueOccurrenceFixture[] = 
   }),
 ]
 
-export const SEED_ADDITIONAL_ISSUE_OCCURRENCES: readonly SeedIssueOccurrenceFixture[] = [
-  ...curatedIssueOccurrenceRows,
-  ...curatedIssueOccurrenceBurstRows,
-  ...curatedIssueTodayBurstRows,
-  ...curatedIssueRecentRegressionRows,
-  ...extraIssueOccurrenceRows,
-] as const
-
-/**
- * Issue ids that the alert-incidents seeder treats as "currently regressed":
- * the issues seeder forces `resolvedAt = null` for these, and an
- * `issue.regressed` row is inserted so the read path derives Regressed.
- */
-export const SEED_REGRESSED_ISSUE_IDS: readonly string[] = [
-  SEED_GENERATE_ISSUE_ID,
-  SEED_INSTALLATION_ISSUE_ID,
-  SEED_FLAGGER_ISSUE_ID,
+export const SEED_ADDITIONAL_SIGNAL_OCCURRENCES: readonly SeedSignalOccurrenceFixture[] = [
+  ...curatedSignalOccurrenceRows,
+  ...curatedSignalOccurrenceBurstRows,
+  ...curatedSignalTodayBurstRows,
+  ...curatedSignalRecentRegressionRows,
+  ...extraSignalOccurrenceRows,
 ] as const

@@ -25,6 +25,7 @@ import type { ParsedContent } from "./index.ts"
 import { toToolDefinition } from "./utils.ts"
 
 interface ToolCallData {
+  id?: string
   name: string
   arguments: string
 }
@@ -41,6 +42,7 @@ interface ReassembledMessage {
   role: string
   content: MessageContent
   tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[]
+  tool_call_id?: string
 }
 
 const INPUT_PREFIX = "llm.input_messages."
@@ -78,7 +80,8 @@ function collectToolCallField(
   const msgToolCalls = getOrCreate(toolCalls, msgIndex, () => new Map())
   const tc = getOrCreate(msgToolCalls, parsed.index, () => ({ name: "", arguments: "" }))
 
-  if (parsed.field === "tool_call.function.name") tc.name = value
+  if (parsed.field === "tool_call.id") tc.id = value
+  else if (parsed.field === "tool_call.function.name") tc.name = value
   else if (parsed.field === "tool_call.function.arguments") tc.arguments = value
 }
 
@@ -117,6 +120,25 @@ function buildMessageContent(
   return plainContent ?? ""
 }
 
+/** Resolves the id a tool result pairs with (explicit tool_call_id → name match → oldest pending), consuming it. */
+function resolvePendingToolCallId(
+  explicitId: string | undefined,
+  toolName: string | undefined,
+  pendingToolCalls: { id: string; name: string }[],
+): string | undefined {
+  if (explicitId) {
+    const consumed = pendingToolCalls.findIndex((p) => p.id === explicitId)
+    if (consumed >= 0) pendingToolCalls.splice(consumed, 1)
+    return explicitId
+  }
+  let idx = toolName ? pendingToolCalls.findIndex((p) => p.name === toolName) : -1
+  if (idx === -1 && pendingToolCalls.length > 0) idx = 0
+  if (idx < 0) return undefined
+  const match = pendingToolCalls[idx]
+  pendingToolCalls.splice(idx, 1)
+  return match?.id
+}
+
 /** Builds an ordered array of ReassembledMessages from the three collected maps (fields, tool calls, content parts). */
 function assembleMessages(
   fields: Map<number, Map<string, string>>,
@@ -127,6 +149,11 @@ function assembleMessages(
   if (maxIndex === -1) return []
 
   const messages: ReassembledMessage[] = []
+  // Tool calls awaiting a result, in document order. OpenInference (e.g. google-adk) omits the
+  // id linking an assistant tool_call to its tool result, so we pair them here and mint a shared
+  // id — otherwise the conversation view has no key to join the call to its response.
+  const pendingToolCalls: { id: string; name: string }[] = []
+
   for (let i = 0; i <= maxIndex; i++) {
     const msgFields = fields.get(i)
     const role = msgFields?.get("role") ?? "user"
@@ -136,14 +163,33 @@ function assembleMessages(
     const msgToolCalls = toolCalls.get(i)
     if (msgToolCalls && msgToolCalls.size > 0) {
       const sorted = [...msgToolCalls.entries()].sort(([a], [b]) => a - b)
-      msg.tool_calls = sorted.map(([j, tc]) => ({
-        id: `call_${i}_${j}`,
-        type: "function" as const,
-        function: { name: tc.name, arguments: tc.arguments },
-      }))
+      msg.tool_calls = sorted.map(([j, tc]) => {
+        const id = tc.id || `call_${i}_${j}`
+        pendingToolCalls.push({ id, name: tc.name })
+        return { id, type: "function" as const, function: { name: tc.name, arguments: tc.arguments } }
+      })
     }
 
-    messages.push(msg)
+    const explicitId = msgFields?.get("tool_call_id")
+    const hasToolCalls = !!msgToolCalls && msgToolCalls.size > 0
+    // Gemini delivers function responses on a role:"user" turn tagged only with tool_call_id.
+    // Extract those into their own role:"tool" message (mirrors hoistToolResults — don't relabel
+    // the turn). Single-content only: a multi-part turn could mix in real text we can't split.
+    const extractAsToolResult =
+      role !== "tool" && explicitId !== undefined && !hasToolCalls && typeof content === "string"
+
+    if (role === "tool") {
+      const id = resolvePendingToolCallId(explicitId, msgFields?.get("name"), pendingToolCalls)
+      if (id) msg.tool_call_id = id
+      messages.push(msg)
+    } else if (extractAsToolResult) {
+      const toolMsg: ReassembledMessage = { role: "tool", content }
+      const id = resolvePendingToolCallId(explicitId, msgFields?.get("name"), pendingToolCalls)
+      if (id) toolMsg.tool_call_id = id
+      messages.push(toolMsg)
+    } else {
+      messages.push(msg)
+    }
   }
 
   return messages

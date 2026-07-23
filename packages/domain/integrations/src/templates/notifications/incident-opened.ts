@@ -8,22 +8,27 @@ import {
   sectionMarkdown,
   severityColor,
   trendChartBlock,
+  triageContextSuffix,
 } from "./blocks.ts"
-import { resolveSourceName } from "./source-name.ts"
+import { resolveAssigneeName, resolveSource } from "./source-name.ts"
 import type { SlackNotificationRenderer } from "./types.ts"
 
 export const incidentOpenedRenderer: SlackNotificationRenderer<"incident.opened"> = (payload, ctx) =>
   Effect.gen(function* () {
     const projectName = ctx.project?.name ?? ctx.organization.name
-    const isSavedSearch = payload.sourceType === "savedSearch"
-    const issueUrl = ctx.project
-      ? `${ctx.webAppUrl}/projects/${ctx.project.slug}/issues?issueId=${payload.sourceId}`
-      : ctx.webAppUrl
+    const isMonitorIncident = payload.sourceType === "monitor"
     const monitorUrl =
       monitorDeepLink({ webAppUrl: ctx.webAppUrl, projectSlug: ctx.project?.slug, monitorSlug: payload.monitorSlug }) ??
       ctx.webAppUrl
 
-    const sourceName = yield* resolveSourceName(payload)
+    const source = yield* resolveSource(payload)
+    const sourceName = source?.name ?? null
+    const signalUrl = ctx.project
+      ? source
+        ? `${ctx.webAppUrl}/projects/${ctx.project.slug}/signals/${encodeURIComponent(source.slug)}`
+        : `${ctx.webAppUrl}/projects/${ctx.project.slug}/signals`
+      : ctx.webAppUrl
+    const assigneeName = yield* resolveAssigneeName(payload.assigneeId)
 
     const attribution = monitorAttributionBlocks({
       webAppUrl: ctx.webAppUrl,
@@ -34,16 +39,16 @@ export const incidentOpenedRenderer: SlackNotificationRenderer<"incident.opened"
       condition: payload.condition,
     })
     const context = contextLine(
-      `${payload.severity} · ${payload.sourceType} · ${projectOrOrgContext(ctx.organization, ctx.project)}`,
+      `${payload.severity} · ${payload.sourceType} · ${projectOrOrgContext(ctx.organization, ctx.project)}${triageContextSuffix({ priority: payload.priority, assigneeName })}`,
     )
 
-    if (isSavedSearch) {
-      const searchRef = sourceName ?? "a saved search"
+    if (isMonitorIncident) {
+      const searchRef = sourceName ?? "a monitored target"
       return {
         text: `Escalating: ${searchRef} in ${projectName}`,
         color: severityColor(payload.severity),
         blocks: [
-          sectionMarkdown(`A saved search started escalating: *${searchRef}*.`),
+          sectionMarkdown(`A monitor started escalating: *${searchRef}*.`),
           ...attribution,
           context,
           actionsLink("View monitor", monitorUrl),
@@ -59,17 +64,17 @@ export const incidentOpenedRenderer: SlackNotificationRenderer<"incident.opened"
     const chart = trendChartBlock(ctx.notificationId, ctx.webAppUrl)
 
     return {
-      text: `Issue escalating in ${projectName}${sourceName ? `: ${sourceName}` : ""}`,
+      text: `Signal escalating in ${projectName}${sourceName ? `: ${sourceName}` : ""}`,
       color: severityColor(payload.severity),
       blocks: [
-        ...(sourceName ? [sectionMarkdown(`*<${issueUrl}|${sourceName}>*`)] : []),
+        ...(sourceName ? [sectionMarkdown(`*<${signalUrl}|${sourceName}>*`)] : []),
         ...(breachLine ? [sectionMarkdown(breachLine)] : []),
         ...(payload.sampleExcerpt?.text ? [sectionMarkdown(`\`\`\`\n${payload.sampleExcerpt.text}\n\`\`\``)] : []),
         ...(chart ? [chart] : []),
         ...(tags.length > 0 ? [sectionMarkdown(tags.map((t) => `\`${t}\``).join("  "))] : []),
         ...attribution,
         context,
-        actionsLink("View issue", issueUrl),
+        actionsLink("View signal", signalUrl),
       ],
     }
   })

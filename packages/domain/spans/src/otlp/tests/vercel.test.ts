@@ -582,10 +582,10 @@ describe("TravelPlanner trace — Vercel AI SDK", () => {
       expect(findSpan("llm1Outer").model).toBe("")
     })
 
-    it("resolves operation to 'chat' for generateText and streamText spans alike", () => {
-      expect(findSpan("llm1Outer").operation).toBe("chat")
+    it("resolves nested generateText/streamText wrappers to 'agent_step' and inner leaves to 'chat'", () => {
+      expect(findSpan("llm1Outer").operation).toBe("agent_step")
+      expect(findSpan("llm2Outer").operation).toBe("agent_step")
       expect(findSpan("llm1Inner").operation).toBe("chat")
-      expect(findSpan("llm2Outer").operation).toBe("chat")
       expect(findSpan("llm2Inner").operation).toBe("chat")
     })
 
@@ -1007,6 +1007,50 @@ describe("Vercel AI SDK streamObject / generateObject output", () => {
   })
 })
 
+describe("Vercel AI SDK wrapper operation by tree position", () => {
+  function buildWrapper(spanId: string, parentSpanId?: string): OtlpSpan {
+    return {
+      traceId: TRACE_ID,
+      spanId,
+      ...(parentSpanId ? { parentSpanId } : {}),
+      name: "ai.generateText",
+      kind: 1,
+      startTimeUnixNano: "1710590600000000000",
+      endTimeUnixNano: "1710590601000000000",
+      attributes: [str("ai.operationId", "ai.generateText")],
+      status: { code: 1 },
+    }
+  }
+
+  function transformWrappers(...wrappers: OtlpSpan[]) {
+    return transformOtlpToSpans(
+      {
+        resourceSpans: [
+          {
+            resource: { attributes: [str("service.name", SERVICE_NAME)] },
+            scopeSpans: [{ scope: { name: SCOPE_NAME, version: SCOPE_VERSION }, spans: wrappers }],
+          },
+        ],
+      },
+      CONTEXT,
+    ).spans
+  }
+
+  it("resolves a trace-root ai.generateText wrapper to 'invoke_agent'", () => {
+    const spans = transformWrappers(buildWrapper("c0c0c0c0c0c00001", undefined))
+    expect(spans[0]?.operation).toBe("invoke_agent")
+  })
+
+  it("resolves a nested ai.generateText wrapper to 'agent_step'", () => {
+    const spans = transformWrappers(
+      buildWrapper("c0c0c0c0c0c00001", undefined),
+      buildWrapper("c0c0c0c0c0c00002", "c0c0c0c0c0c00001"),
+    )
+    const nested = spans.find((s) => s.spanId === "c0c0c0c0c0c00002")
+    expect(nested?.operation).toBe("agent_step")
+  })
+})
+
 describe("Vercel AI SDK top-level prompt fallback", () => {
   it("treats ai.prompt.prompt as a user input message when ai.prompt.messages is absent", () => {
     const { spans } = transformOtlpToSpans(
@@ -1056,5 +1100,184 @@ describe("Vercel AI SDK top-level prompt fallback", () => {
     expect(span?.inputMessages[0]?.parts).toEqual([
       { type: "text", content: "SYSTEM PROMPT EXCERPT:\nYou are an expert writer." },
     ])
+  })
+})
+
+// Vercel AI SDK v7's `LegacyOpenTelemetry` emits the same `ai.*` spans as v6, but the
+// embedded ModelMessages use the v7 shapes: tool results carry a tagged `output`
+// (instead of v6 `result`), and files use `FilePart`. rosetta-ai 2.2.0 (Provider.VercelAI)
+// translates these — this guards the legacy path against v7 message changes.
+describe("Vercel AI SDK v7 — LegacyOpenTelemetry ai.* spans (v7 ModelMessage shapes)", () => {
+  function buildV7LegacyTrace(): OtlpExportTraceServiceRequest {
+    return {
+      resourceSpans: [
+        {
+          resource: { attributes: [str("service.name", SERVICE_NAME)] },
+          scopeSpans: [
+            {
+              scope: { name: SCOPE_NAME, version: "7.0.0-beta.181" },
+              spans: [
+                {
+                  traceId: TRACE_ID,
+                  spanId: "f7f7f7f7f7f70001",
+                  name: "ai.streamText.doStream",
+                  kind: 1,
+                  startTimeUnixNano: "1781784100000000000",
+                  endTimeUnixNano: "1781784101000000000",
+                  attributes: [
+                    str("ai.operationId", "ai.streamText.doStream"),
+                    str("ai.model.provider", "openai.chat"),
+                    str("ai.model.id", MODEL),
+                    int("ai.usage.inputTokens", 120),
+                    int("ai.usage.outputTokens", 18),
+                    str(
+                      "ai.prompt.messages",
+                      JSON.stringify([
+                        {
+                          role: "user",
+                          content: [
+                            { type: "text", text: "What's the weather?" },
+                            // v7 FilePart with tagged FileData (replaces v6 ImagePart).
+                            { type: "file", mediaType: "image/png", data: { type: "url", url: IMAGE_URL } },
+                          ],
+                        },
+                        {
+                          role: "assistant",
+                          content: [
+                            {
+                              type: "tool-call",
+                              toolCallId: "call_w_1",
+                              toolName: "get_weather",
+                              input: { city: "BCN" },
+                            },
+                          ],
+                        },
+                        {
+                          role: "tool",
+                          content: [
+                            {
+                              type: "tool-result",
+                              toolCallId: "call_w_1",
+                              toolName: "get_weather",
+                              // v7: tagged `output` replaces v6 `result`.
+                              output: { type: "json", value: { temp: 22, condition: "sunny" } },
+                            },
+                          ],
+                        },
+                      ]),
+                    ),
+                  ],
+                  status: { code: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+  }
+
+  it("translates v7 ModelMessages (output-based tool-result, FilePart) via rosetta-ai", () => {
+    const { spans } = transformOtlpToSpans(buildV7LegacyTrace(), CONTEXT)
+    const span = spans[0]
+    expect(span).toBeDefined()
+    expect(span?.provider).toBe("openai")
+    expect(span?.tokensInput).toBe(120)
+
+    const roles = span?.inputMessages.map((m) => m.role) ?? []
+    expect(roles).toContain("user")
+    expect(roles).toContain("tool")
+
+    // v7 tool-result `output` surfaces as a GenAI tool_call_response part.
+    const toolMsg = span?.inputMessages.find((m) => m.role === "tool")
+    const toolParts = (toolMsg as { parts: { type: string }[] }).parts
+    expect(toolParts.some((p) => p.type === "tool_call_response")).toBe(true)
+
+    // v7 FilePart (image url) surfaces as a uri/blob part, not a dropped/unknown part.
+    const userMsg = span?.inputMessages.find((m) => m.role === "user")
+    const userParts = (userMsg as { parts: { type: string }[] }).parts
+    expect(userParts.some((p) => p.type === "text")).toBe(true)
+    expect(userParts.some((p) => p.type === "uri" || p.type === "blob" || p.type === "file")).toBe(true)
+  })
+})
+
+// Recent Vercel AI SDK v6 builds emit a GenAI compat layer *alongside* the native ai.*
+// attributes: the turn's input arrives as gen_ai.input.messages but the model's reply stays
+// only in ai.response.text — there is NO gen_ai.output.messages. The gen_ai parser wins
+// dispatch on the input key, so before the fix input rendered while output went blank
+// (tokens/cost/model still resolved). This locks the end-to-end recovery of output from the
+// Vercel attributes.
+describe("Vercel AI SDK v6 hybrid — gen_ai.input.messages + ai.response.text (no gen_ai.output.messages)", () => {
+  const SYSTEM = "You are a helpful assistant. Be concise."
+  const USER = "Summarize the key points."
+  const ANSWER = "Here is a concise summary of the key points."
+
+  function buildHybridTrace(): OtlpExportTraceServiceRequest {
+    return {
+      resourceSpans: [
+        {
+          resource: { attributes: [str("service.name", SERVICE_NAME)] },
+          scopeSpans: [
+            {
+              scope: { name: "ai", version: "6.0.0" },
+              spans: [
+                {
+                  traceId: TRACE_ID,
+                  spanId: "ab11ab11ab11ab11",
+                  name: "generate_content claude-sonnet-4-6",
+                  kind: 1,
+                  startTimeUnixNano: "1710590600000000000",
+                  endTimeUnixNano: "1710590601000000000",
+                  attributes: [
+                    str("ai.operationId", "ai.generateText.doGenerate"),
+                    str("ai.model.provider", "anthropic.messages"),
+                    str("ai.model.id", "claude-sonnet-4-6"),
+                    int("ai.usage.promptTokens", 3026),
+                    int("ai.usage.completionTokens", 139),
+                    // Native Vercel input, also present as the GenAI compat attribute.
+                    str("ai.prompt.messages", JSON.stringify([{ role: "user", content: USER }])),
+                    str("gen_ai.system_instructions", JSON.stringify([{ type: "text", content: SYSTEM }])),
+                    str(
+                      "gen_ai.input.messages",
+                      JSON.stringify([{ role: "user", parts: [{ type: "text", content: USER }] }]),
+                    ),
+                    // Output lives ONLY here — no gen_ai.output.messages is emitted.
+                    str("ai.response.text", ANSWER),
+                    str("ai.response.finishReason", "stop"),
+                    str("ai.response.id", "msg_hybrid_001"),
+                  ],
+                  status: { code: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+  }
+
+  it("recovers assistant output from ai.response.text while keeping gen_ai input + usage", () => {
+    const { spans } = transformOtlpToSpans(buildHybridTrace(), CONTEXT)
+    const span = spans[0]
+    expect(span).toBeDefined()
+
+    // Envelope resolves regardless (this is why the trace looked populated but empty).
+    expect(span?.model).toBe("claude-sonnet-4-6")
+    expect(span?.provider).toBe("anthropic")
+    expect(span?.tokensInput).toBe(3026)
+    expect(span?.tokensOutput).toBe(139)
+
+    // Input parsed from gen_ai.input.messages.
+    const userMsg = span?.inputMessages.find((m) => m.role === "user")
+    expect(userMsg).toBeDefined()
+    expect((userMsg as { parts: { type: string; content?: string }[] }).parts[0]?.content).toBe(USER)
+    expect(span?.systemInstructions.some((p) => (p.content as string).includes("helpful assistant"))).toBe(true)
+
+    // Output recovered from ai.response.text (the fix).
+    expect(span?.outputMessages).toHaveLength(1)
+    const assistant = span?.outputMessages[0]
+    expect(assistant?.role).toBe("assistant")
+    const parts = (assistant as { parts: { type: string; content?: string }[] }).parts
+    expect((parts.find((p) => p.type === "text") as { content: string }).content).toBe(ANSWER)
   })
 })

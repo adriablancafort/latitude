@@ -1,29 +1,18 @@
 import { AI } from "@domain/ai"
 import { createFakeQueuePublisher } from "@domain/queue/testing"
-import {
-  DistributedLockRepository,
-  OrganizationId,
-  ProjectId,
-  SessionId,
-  TaxonomyClusterId,
-  TaxonomyRunId,
-} from "@domain/shared"
+import { DistributedLockRepository, OrganizationId, ProjectId, SessionId, TaxonomyRunId } from "@domain/shared"
 import { createFakeDistributedLockRepository } from "@domain/shared/testing"
 import {
-  createTaxonomyCentroid,
-  deprecateInactiveClustersUseCase,
+  CUSTOM_BEHAVIOR_GARDENING_MIN_INTERVAL_MS,
   emitLineageUseCase,
-  mergeNearDuplicateClustersUseCase,
   nameClusterUseCase,
-  reassignNoiseToCurrentClustersUseCase,
-  recurseTreeClustersUseCase,
-  sweepNoiseAndBirthClustersUseCase,
-  type TaxonomyCluster,
+  planHierarchicalTaxonomyUseCase,
+  TAXONOMY_GARDENING_MIN_OBSERVATIONS,
+  TAXONOMY_GARDENING_SWEEP_SPREAD_MS,
   TaxonomyClusterRepository,
   TaxonomyLineageRepository,
   type TaxonomyMomentObservation,
   TaxonomyObservationRepository,
-  updateTaxonomyCentroid,
 } from "@domain/taxonomy"
 import { type ClickHouseClient, TaxonomyObservationRepositoryLive, withClickHouse } from "@platform/db-clickhouse"
 import { TaxonomyClusterRepositoryLive, TaxonomyLineageRepositoryLive, withPostgres } from "@platform/db-postgres"
@@ -90,11 +79,20 @@ const TEST_EMBEDDING = testEmbedding
 vi.mock("@platform/ai", async () => {
   const { Effect: Eff, Layer: EffLayer } = (await vi.importActual("effect")) as typeof import("effect")
   return {
+    AIEmbedLive: {},
+    AIGenerateLive: {},
+    AIRerankLive: {},
     withAi: () => Eff.provide(EffLayer.succeed(AI, mockAi)),
   }
 })
 
-import { runGardenProjectJob, runGardenSweepJob } from "./taxonomy.ts"
+import { WorkflowAlreadyStartedError } from "@domain/queue"
+import {
+  runGardenCustomBehaviorJob,
+  runGardenCustomBehaviorSweepJob,
+  runGardenProjectJob,
+  runGardenSweepJob,
+} from "./taxonomy.ts"
 
 const pg = setupTestPostgres()
 const ch = setupTestClickHouse()
@@ -103,8 +101,37 @@ const ORGANIZATION_ID = OrganizationId("o".repeat(24))
 const PROJECT_ID = ProjectId("p".repeat(24))
 const PROJECT_ID_2 = ProjectId("q".repeat(24))
 const PROJECT_ID_E2E = ProjectId("r".repeat(24))
-const CLUSTER_ID = TaxonomyClusterId("c".repeat(24))
+const CUSTOM_BEHAVIOR_ID = "b".repeat(24)
 const START_TIME = new Date("2026-05-24T12:00:00.000Z")
+
+const recordingWorkflowStarter = () => {
+  const started: Array<{ readonly workflow: string; readonly input: unknown; readonly workflowId: string }> = []
+  const starter = {
+    start: (workflow: string, input: unknown, options: { readonly workflowId: string }) => {
+      started.push({ workflow, input, workflowId: options.workflowId })
+      return Effect.void
+    },
+    signalWithStart: () => Effect.void,
+  }
+  return { started, starter }
+}
+
+const runtimeDeps = (workflowStarter?: unknown) =>
+  ({
+    clickhouseClient: null as never,
+    postgresClient: null as never,
+    redisClient: null as never,
+    ...(workflowStarter === undefined ? {} : { workflowStarter: workflowStarter as never }),
+  }) as never
+
+const activeProjectRow = (projectId = PROJECT_ID) => ({ organization_id: ORGANIZATION_ID, project_id: projectId })
+
+const enoughObservationCounts = () =>
+  Effect.succeed({
+    total: TAXONOMY_GARDENING_MIN_OBSERVATIONS,
+    assigned: 0,
+    noise: TAXONOMY_GARDENING_MIN_OBSERVATIONS,
+  })
 
 const createFakeRedisClient = () => {
   const values = new Map<string, string>()
@@ -122,20 +149,6 @@ const createFakeRedisClient = () => {
       return 1
     },
   }
-}
-
-const centroidFromTestEmbedding = (embedding = TEST_EMBEDDING) => {
-  const centroid = createTaxonomyCentroid()
-  const updated = updateTaxonomyCentroid({
-    centroid: { ...centroid, clusteredAt: START_TIME },
-    embedding,
-    weight: 1,
-    timestamp: START_TIME,
-    operation: "add",
-    previousClusteredAt: START_TIME,
-  })
-  const { clusteredAt: _clusteredAt, ...withoutAnchor } = updated
-  return withoutAnchor
 }
 
 const makeObservation = (
@@ -163,55 +176,45 @@ const makeObservation = (
   indexedAt: START_TIME,
 })
 
-const makeCluster = (): TaxonomyCluster => ({
-  id: CLUSTER_ID,
-  organizationId: ORGANIZATION_ID,
-  projectId: PROJECT_ID,
-  dimension: "topic",
-  parentClusterId: null,
-  depth: 0,
-  path: "",
-  splitLinkThreshold: null,
-  name: "Cancellation requests",
-  description: "Users ask to cancel subscriptions.",
-  centroid: centroidFromTestEmbedding(),
-  observationCount: 1,
-  state: "active",
-  mergedIntoClusterId: null,
-  firstObservedAt: START_TIME,
-  lastObservedAt: START_TIME,
-  clusteredAt: START_TIME,
-  createdAt: START_TIME,
-  updatedAt: START_TIME,
-})
-
 /**
- * Runs one garden pass by composing the same step use-cases the Temporal
- * workflow schedules, in the same order — the legacy in-process orchestrator
- * was removed with the category model.
+ * Runs one garden pass by composing the live workflow steps in order: the
+ * divisive build (which also runs the Hungarian continuity matcher against the
+ * previous pass), lineage emission, then deepest-first naming of births and any
+ * still-`Pending` continuations — exactly what the Temporal workflow schedules.
  */
 const gardenOnce = (runId: ReturnType<typeof TaxonomyRunId>) =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const base = { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID_E2E, runId }
-      const births = yield* sweepNoiseAndBirthClustersUseCase(base)
-      const merges = yield* mergeNearDuplicateClustersUseCase(base)
-      const deaths = yield* deprecateInactiveClustersUseCase(base)
-      yield* reassignNoiseToCurrentClustersUseCase(base)
-      const recursion = yield* recurseTreeClustersUseCase(base)
-      const lineage = [...births.lineage, ...merges.lineage, ...deaths.lineage, ...recursion.lineage]
-      yield* emitLineageUseCase({ transitions: lineage })
-      const bornClusterIds = new Set(
-        lineage.flatMap((row) =>
-          row.transitionType === "birth" || row.transitionType === "split" ? row.toClusterIds : [],
-        ),
-      )
-      for (const clusterId of bornClusterIds) {
-        yield* nameClusterUseCase({
+      const plan = yield* planHierarchicalTaxonomyUseCase({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID_E2E,
+        runId,
+        dimension: "topic",
+      })
+      const clusters = yield* TaxonomyClusterRepository
+      const observations = yield* TaxonomyObservationRepository
+      // Persist the plan the way the split-build activities do: save clusters,
+      // reassign members, deprecate the clusters no node continued.
+      for (const cluster of plan.clusters) yield* clusters.save(cluster)
+      if (plan.observationAssignments.length > 0) {
+        yield* observations.reassignManyById({
           organizationId: ORGANIZATION_ID,
           projectId: PROJECT_ID_E2E,
-          clusterId: TaxonomyClusterId(clusterId),
+          assignments: plan.observationAssignments,
         })
+      }
+      for (const clusterId of plan.deprecatedClusterIds)
+        yield* clusters.markDeprecated({ clusterId, timestamp: new Date() })
+      yield* emitLineageUseCase({ transitions: plan.lineage })
+      const active = yield* clusters.listActiveByProject({ projectId: PROJECT_ID_E2E, dimension: "topic" })
+      const bornIds = new Set(plan.lineage.flatMap((row) => (row.transitionType === "birth" ? row.toClusterIds : [])))
+      // Name births and continuations that drifted enough to be left "Pending",
+      // deepest-first so interior nodes see their children's final names.
+      const toName = [...active]
+        .filter((cluster) => bornIds.has(cluster.id) || cluster.name === "Pending")
+        .sort((a, b) => b.depth - a.depth)
+      for (const cluster of toName) {
+        yield* nameClusterUseCase({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID_E2E, clusterId: cluster.id })
       }
     }).pipe(
       withPostgres(
@@ -227,25 +230,16 @@ const gardenOnce = (runId: ReturnType<typeof TaxonomyRunId>) =>
 
 describe("taxonomy gardening worker", () => {
   it("sweeps projects with enough observations and publishes throttled gardenProject jobs", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* TaxonomyObservationRepository
-        for (let index = 100; index < 115; index++) {
-          yield* repo.upsert(makeObservation(index))
-        }
-      }).pipe(withClickHouse(TaxonomyObservationRepositoryLive, ch.client as ClickHouseClient, ORGANIZATION_ID)),
-    )
     const queue = createFakeQueuePublisher()
-    const adminPostgresClient = {
-      pool: {
-        query: async () => ({ rows: [{ organization_id: ORGANIZATION_ID, project_id: PROJECT_ID }] }),
-      },
-    }
 
     await Effect.runPromise(
       runGardenSweepJob(
         { triggeredAt: START_TIME.toISOString() },
-        { clickhouseClient: ch.client, adminPostgresClient: adminPostgresClient as never, publisher: queue.publisher },
+        {
+          listActiveProjects: () => Effect.succeed([activeProjectRow()]),
+          readObservationCounts: enoughObservationCounts,
+          publisher: queue.publisher,
+        },
       ),
     )
 
@@ -258,15 +252,55 @@ describe("taxonomy gardening worker", () => {
     expect(queue.published[0]?.options?.dedupeKey).toContain(`org:${ORGANIZATION_ID}:`)
   })
 
-  it("continues the garden sweep when one project publish fails", async () => {
+  it("spreads cron workflow starts across the sweep window", async () => {
+    const queue = createFakeQueuePublisher()
+    const started: Array<{
+      readonly workflow: string
+      readonly input: unknown
+      readonly workflowId: string
+      readonly startDelayMs?: number
+    }> = []
+    const workflowStarter = {
+      start: (
+        workflow: string,
+        input: unknown,
+        options: { readonly workflowId: string; readonly startDelayMs?: number },
+      ) => {
+        started.push({
+          workflow,
+          input,
+          workflowId: options.workflowId,
+          ...(options.startDelayMs === undefined ? {} : { startDelayMs: options.startDelayMs }),
+        })
+        return Effect.void
+      },
+      signalWithStart: () => Effect.void,
+    }
+
     await Effect.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* TaxonomyObservationRepository
-        for (let index = 200; index < 215; index++) {
-          yield* repo.upsert({ ...makeObservation(index), projectId: PROJECT_ID_2 })
-        }
-      }).pipe(withClickHouse(TaxonomyObservationRepositoryLive, ch.client as ClickHouseClient, ORGANIZATION_ID)),
+      runGardenSweepJob(
+        { triggeredAt: START_TIME.toISOString() },
+        {
+          listActiveProjects: () => Effect.succeed([activeProjectRow(PROJECT_ID_2)]),
+          readObservationCounts: enoughObservationCounts,
+          publisher: queue.publisher,
+          workflowStarter: workflowStarter as never,
+        },
+      ),
     )
+
+    expect(started).toHaveLength(1)
+    expect(started[0]).toMatchObject({
+      workflow: "gardenTaxonomyWorkflow",
+      input: { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID_2, dimension: "topic", trigger: "cron" },
+      workflowId: `org:${ORGANIZATION_ID}:taxonomy:gardenProject:${PROJECT_ID_2}`,
+    })
+    expect(started[0]?.startDelayMs).toEqual(expect.any(Number))
+    expect(started[0]?.startDelayMs).toBeGreaterThanOrEqual(0)
+    expect(started[0]?.startDelayMs).toBeLessThan(TAXONOMY_GARDENING_SWEEP_SPREAD_MS)
+  })
+
+  it("continues the garden sweep when one project publish fails", async () => {
     const queue = createFakeQueuePublisher()
     const publisher = {
       ...queue.publisher,
@@ -275,21 +309,15 @@ describe("taxonomy gardening worker", () => {
         return queue.publisher.publish(queueName, task, payload, options)
       },
     } as typeof queue.publisher
-    const adminPostgresClient = {
-      pool: {
-        query: async () => ({
-          rows: [
-            { organization_id: ORGANIZATION_ID, project_id: PROJECT_ID },
-            { organization_id: ORGANIZATION_ID, project_id: PROJECT_ID_2 },
-          ],
-        }),
-      },
-    }
 
     await Effect.runPromise(
       runGardenSweepJob(
         { triggeredAt: START_TIME.toISOString() },
-        { clickhouseClient: ch.client, adminPostgresClient: adminPostgresClient as never, publisher },
+        {
+          listActiveProjects: () => Effect.succeed([activeProjectRow(), activeProjectRow(PROJECT_ID_2)]),
+          readObservationCounts: enoughObservationCounts,
+          publisher,
+        },
       ),
     )
 
@@ -297,12 +325,14 @@ describe("taxonomy gardening worker", () => {
     expect(queue.published[0]).toMatchObject({ payload: { projectId: PROJECT_ID_2 } })
   })
 
-  it("runs end-to-end gardening with births, names, lineage, and follow-up merge", async () => {
+  it("runs end-to-end gardening with births, names, lineage, and a stable continuation across passes", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const repo = yield* TaxonomyObservationRepository
         const recent = new Date()
-        for (let index = 300; index < 304; index++) {
+        // The divisive build has a cold-start gate of TAXONOMY_GARDENING_MIN_OBSERVATIONS
+        // (15); seed comfortably above it so the single topic materializes as a root.
+        for (let index = 300; index < 320; index++) {
           yield* repo.upsert({
             ...makeObservation(index, PROJECT_ID_E2E),
             startTime: new Date(recent.getTime() + index * 1000),
@@ -337,39 +367,21 @@ describe("taxonomy gardening worker", () => {
     expect(firstPass.clusters[0]?.depth).toBe(0)
     expect(firstPass.lineage.map((row) => row.transitionType)).toContain("birth")
 
-    const mergeA = TaxonomyClusterId("m".repeat(24))
-    const mergeB = TaxonomyClusterId("n".repeat(24))
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const clusters = yield* TaxonomyClusterRepository
-        yield* clusters.save({
-          ...makeCluster(),
-          id: mergeA,
-          projectId: PROJECT_ID_E2E,
-          name: "Pending",
-          centroid: centroidFromTestEmbedding(),
-          observationCount: 2,
-        })
-        yield* clusters.save({
-          ...makeCluster(),
-          id: mergeB,
-          projectId: PROJECT_ID_E2E,
-          name: "Pending",
-          centroid: centroidFromTestEmbedding(),
-          observationCount: 1,
-        })
-      }).pipe(withPostgres(TaxonomyClusterRepositoryLive, pg.appPostgresClient, ORGANIZATION_ID)),
-    )
+    const firstClusterId = firstPass.clusters[0]?.id
+    expect(firstClusterId).toBeDefined()
 
+    // Second pass rebuilds the tree from scratch over the same observations.
+    // The Hungarian continuity matcher must recognise the single root as the
+    // same topic and reuse its id — `continuation`, not a fresh birth+death.
     await gardenOnce(TaxonomyRunId("2".repeat(24)))
 
     const secondPass = await Effect.runPromise(
       Effect.gen(function* () {
-        const lineage = yield* TaxonomyLineageRepository
         const clusters = yield* TaxonomyClusterRepository
+        const lineage = yield* TaxonomyLineageRepository
         return {
+          clusters: yield* clusters.listActiveByProject({ projectId: PROJECT_ID_E2E, dimension: "topic" }),
           lineage: yield* lineage.listRecent({ projectId: PROJECT_ID_E2E, dimension: "topic", limit: 10 }),
-          mergeB: yield* clusters.findById(mergeB),
         }
       }).pipe(
         withPostgres(
@@ -380,8 +392,9 @@ describe("taxonomy gardening worker", () => {
       ),
     )
 
-    expect(secondPass.lineage.map((row) => row.transitionType)).toContain("merge")
-    expect(secondPass.mergeB.state).toBe("merged")
+    expect(secondPass.clusters).toHaveLength(1)
+    expect(secondPass.clusters[0]?.id).toBe(firstClusterId)
+    expect(secondPass.lineage.map((row) => row.transitionType)).toContain("continuation")
   })
 
   it("starts the garden workflow with the job reason as trigger", async () => {
@@ -413,5 +426,200 @@ describe("taxonomy gardening worker", () => {
         workflowId: `org:${ORGANIZATION_ID}:taxonomy:garden:${PROJECT_ID}`,
       },
     ])
+  })
+
+  it("starts the scoped workflow deduped on the behavior, passing the job reason as trigger", async () => {
+    const { started, starter } = recordingWorkflowStarter()
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorJob(
+        {
+          organizationId: ORGANIZATION_ID,
+          projectId: PROJECT_ID,
+          customBehaviorId: CUSTOM_BEHAVIOR_ID,
+          reason: "cron",
+        },
+        runtimeDeps(starter),
+      ),
+    )
+
+    expect(started).toEqual([
+      {
+        workflow: "gardenTaxonomyWorkflow",
+        input: {
+          organizationId: ORGANIZATION_ID,
+          projectId: PROJECT_ID,
+          dimension: "topic",
+          customBehaviorId: CUSTOM_BEHAVIOR_ID,
+          trigger: "cron",
+        },
+        workflowId: `org:${ORGANIZATION_ID}:taxonomy:gardenCustomBehavior:${CUSTOM_BEHAVIOR_ID}`,
+      },
+    ])
+  })
+
+  it("defaults the trigger to manual when the job carries no reason", async () => {
+    const { started, starter } = recordingWorkflowStarter()
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorJob(
+        { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID, customBehaviorId: CUSTOM_BEHAVIOR_ID },
+        runtimeDeps(starter),
+      ),
+    )
+
+    expect((started[0]?.input as { trigger: string }).trigger).toBe("manual")
+  })
+
+  it("collapses WorkflowAlreadyStartedError into a no-op instead of rethrowing", async () => {
+    let calls = 0
+    const starter = {
+      start: () => {
+        calls += 1
+        return Effect.fail(
+          new WorkflowAlreadyStartedError({
+            workflowId: `org:${ORGANIZATION_ID}:taxonomy:gardenCustomBehavior:${CUSTOM_BEHAVIOR_ID}`,
+            workflow: "gardenTaxonomyWorkflow",
+          }),
+        )
+      },
+      signalWithStart: () => Effect.void,
+    }
+
+    await expect(
+      Effect.runPromise(
+        runGardenCustomBehaviorJob(
+          { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID, customBehaviorId: CUSTOM_BEHAVIOR_ID },
+          runtimeDeps(starter),
+        ),
+      ),
+    ).resolves.toBeUndefined()
+    expect(calls).toBe(1)
+  })
+
+  it("skips without throwing when no workflow starter is configured", async () => {
+    await expect(
+      Effect.runPromise(
+        runGardenCustomBehaviorJob(
+          { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID, customBehaviorId: CUSTOM_BEHAVIOR_ID },
+          runtimeDeps(),
+        ),
+      ),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe("custom behavior gardening sweep", () => {
+  const CUSTOM_BEHAVIOR_ID_2 = "c".repeat(24)
+  const behaviorRef = (customBehaviorId: string, projectId: ProjectId = PROJECT_ID) => ({
+    organization_id: ORGANIZATION_ID as string,
+    project_id: projectId as string,
+    custom_behavior_id: customBehaviorId,
+  })
+
+  it("enqueues a reason:cron gardenCustomBehavior job deduped per eligible behavior", async () => {
+    const queue = createFakeQueuePublisher()
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorSweepJob(
+        { triggeredAt: START_TIME.toISOString() },
+        {
+          listGardenableCustomBehaviors: () =>
+            Effect.succeed([behaviorRef(CUSTOM_BEHAVIOR_ID), behaviorRef(CUSTOM_BEHAVIOR_ID_2)]),
+          publisher: queue.publisher,
+        },
+      ),
+    )
+
+    expect(queue.published).toHaveLength(2)
+    expect(queue.published[0]).toMatchObject({
+      queue: "taxonomy",
+      task: "gardenCustomBehavior",
+      payload: {
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        customBehaviorId: CUSTOM_BEHAVIOR_ID,
+        reason: "cron",
+      },
+      options: {
+        dedupeKey: `org:${ORGANIZATION_ID}:taxonomy:gardenCustomBehavior:${CUSTOM_BEHAVIOR_ID}`,
+        // TTL-based dedupe (not a bare/retained jobId) so recurring sweeps keep re-enqueueing.
+        leadingThrottleMs: CUSTOM_BEHAVIOR_GARDENING_MIN_INTERVAL_MS,
+      },
+    })
+  })
+
+  it("anchors the throttle window at execution time when the payload carries no triggeredAt", async () => {
+    let seenGardenedBefore: Date | null = null
+    const queue = createFakeQueuePublisher()
+    const before = Date.now()
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorSweepJob(
+        {},
+        {
+          listGardenableCustomBehaviors: (gardenedBefore) => {
+            seenGardenedBefore = gardenedBefore
+            return Effect.succeed([])
+          },
+          publisher: queue.publisher,
+        },
+      ),
+    )
+
+    // No frozen payload timestamp: gardenedBefore tracks "now − cadence", so the
+    // window keeps advancing on every repeatable fire instead of stalling.
+    const expected = before - CUSTOM_BEHAVIOR_GARDENING_MIN_INTERVAL_MS
+    expect(seenGardenedBefore).not.toBeNull()
+    expect((seenGardenedBefore as unknown as Date).getTime()).toBeGreaterThanOrEqual(expected)
+    expect((seenGardenedBefore as unknown as Date).getTime()).toBeLessThanOrEqual(expected + 60_000)
+  })
+
+  it("throttles eligibility with a gardenedBefore anchored before the trigger time", async () => {
+    let seenGardenedBefore: Date | null = null
+    const queue = createFakeQueuePublisher()
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorSweepJob(
+        { triggeredAt: START_TIME.toISOString() },
+        {
+          listGardenableCustomBehaviors: (gardenedBefore) => {
+            seenGardenedBefore = gardenedBefore
+            return Effect.succeed([])
+          },
+          publisher: queue.publisher,
+        },
+      ),
+    )
+
+    expect(seenGardenedBefore).not.toBeNull()
+    expect((seenGardenedBefore as unknown as Date).getTime()).toBeLessThan(START_TIME.getTime())
+  })
+
+  it("continues the sweep when one behavior enqueue fails", async () => {
+    const queue = createFakeQueuePublisher()
+    const publisher = {
+      ...queue.publisher,
+      publish: (queueName, task, payload, options) => {
+        if ((payload as { customBehaviorId: string }).customBehaviorId === CUSTOM_BEHAVIOR_ID) {
+          return Effect.fail(new Error("boom") as never)
+        }
+        return queue.publisher.publish(queueName, task, payload, options)
+      },
+    } as typeof queue.publisher
+
+    await Effect.runPromise(
+      runGardenCustomBehaviorSweepJob(
+        { triggeredAt: START_TIME.toISOString() },
+        {
+          listGardenableCustomBehaviors: () =>
+            Effect.succeed([behaviorRef(CUSTOM_BEHAVIOR_ID), behaviorRef(CUSTOM_BEHAVIOR_ID_2)]),
+          publisher,
+        },
+      ),
+    )
+
+    expect(queue.published).toHaveLength(1)
+    expect(queue.published[0]).toMatchObject({ payload: { customBehaviorId: CUSTOM_BEHAVIOR_ID_2 } })
   })
 })

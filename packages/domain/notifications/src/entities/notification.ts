@@ -1,15 +1,16 @@
 import {
   alertIncidentConditionSchema,
-  alertIncidentKindSchema,
-  alertIncidentSourceTypeSchema,
   alertSeveritySchema,
   cuidSchema,
+  incidentNotificationKeySchema,
+  incidentSourceTypeSchema,
   type NotificationGroup,
   notificationIdSchema,
   organizationIdSchema,
   ProjectId,
   userIdSchema,
 } from "@domain/shared"
+import { signalPrioritySchema } from "@domain/signals"
 import { z } from "zod"
 
 /**
@@ -17,7 +18,7 @@ import { z } from "zod"
  * `threshold` is `null` for buckets with no historical data (the seasonal
  * grid had no samples for that day-of-week × hour-of-day cell); both the
  * bell sparkline and the email chart break the dashed line across these
- * gaps. Counts are integers from the issue's occurrence histogram.
+ * gaps. Counts are integers from the signal's occurrence histogram.
  */
 export const incidentTrendPointSchema = z.object({
   t: z.iso.datetime(),
@@ -41,7 +42,7 @@ export type IncidentTrendMarker = z.infer<typeof incidentTrendMarkerSchema>
 
 /**
  * Bucketed trend window snapshotted at incident-transition time, frozen so the immutable PNG
- * matches what the issue-detail drawer showed at that moment. Window is 14 days of UTC-aligned
+ * matches what the signal-detail drawer showed at that moment. Window is 14 days of UTC-aligned
  * 12h buckets (~28 points) anchored at `startedAt` (`incident.opened`) or `endedAt`
  * (`incident.closed`) — the same range + granularity the drawer renders. `bucketDurationMs` is
  * carried so consumers don't hardcode it (older payloads still carry their 10-min value).
@@ -63,21 +64,30 @@ export type IncidentTrend = z.infer<typeof incidentTrendSchema>
  */
 const incidentBasePayloadShape = {
   alertIncidentId: cuidSchema,
-  sourceType: alertIncidentSourceTypeSchema,
+  sourceType: incidentSourceTypeSchema,
   sourceId: cuidSchema,
-  incidentKind: alertIncidentKindSchema,
+  incidentKind: incidentNotificationKeySchema,
   severity: alertSeveritySchema,
-  // Monitor attribution, resolved by the producer when the incident has a `monitor_alert_id`.
+  // Monitor attribution, resolved by the producer for monitor-sourced incidents.
   // `name`/`slug` ride on the payload so templates render the linked "Created by monitor X" line with no round-trip.
   monitorId: cuidSchema.optional(),
   monitorName: z.string().optional(),
   monitorSlug: z.string().optional(),
   /** Firing alert's condition snapshot, for the humanised summary. */
   condition: alertIncidentConditionSchema.nullable().optional(),
+  /**
+   * Signal triage snapshot at producer time. Present only for signal-sourced
+   * incidents produced after these fields landed; absent for monitor
+   * sources and legacy stored rows (hence optional). `null` means
+   * "snapshotted, but unassigned / no priority". The assignee's display
+   * name is NOT snapshotted — renderers resolve it live from the id.
+   */
+  assigneeId: cuidSchema.nullable().optional(),
+  priority: signalPrioritySchema.nullable().optional(),
 }
 
 /**
- * Top-N tag chips snapshotted from the issue's recent traces. Sorted
+ * Top-N tag chips snapshotted from the signal's recent traces. Sorted
  * alphabetically and capped so the email body stays compact. The
  * producer slices to 5 entries; the schema enforces the cap.
  */
@@ -148,9 +158,8 @@ export const incidentRecoverySchema = z.object({
 export type IncidentRecovery = z.infer<typeof incidentRecoverySchema>
 
 /**
- * One-shot incident notifications. Today fires for `issue.new` and
- * `issue.regressed` (the alerts side stamps `endedAt = startedAt` for
- * these). No partner `incident.closed` notification ever lands.
+ * One-shot incident notifications. Point-in-time incidents stamp
+ * `endedAt = startedAt`; no partner `incident.closed` notification lands.
  */
 export const incidentEventPayloadSchema = z.object({
   ...incidentBasePayloadShape,
@@ -161,13 +170,13 @@ export type IncidentEventPayload = z.infer<typeof incidentEventPayloadSchema>
 
 /**
  * Sustained incident opening. Fires when an alert incident enters an open
- * window (`endedAt IS NULL`); today only `issue.escalating`. Carries the
+ * window (`endedAt IS NULL`). Carries the
  * snapshotted trend window leading up to the open so the bell sparkline
  * and the email chart render from one source.
  */
 export const incidentOpenedPayloadSchema = z.object({
   ...incidentBasePayloadShape,
-  // Issue trend snapshot — absent for non-issue sources (e.g. `savedSearch.escalating`).
+  // Signal trend snapshot — absent for monitor-sourced incidents.
   trend: incidentTrendSchema.optional(),
   tags: incidentTagsSchema.optional(),
   /**
@@ -195,7 +204,7 @@ export type IncidentOpenedPayload = z.infer<typeof incidentOpenedPayloadSchema>
  */
 export const incidentClosedPayloadSchema = z.object({
   ...incidentBasePayloadShape,
-  // Issue trend snapshot — absent for non-issue sources (e.g. `savedSearch.escalating`).
+  // Signal trend snapshot — absent for monitor-sourced incidents.
   trend: incidentTrendSchema.optional(),
   recovery: incidentRecoverySchema,
 })
@@ -216,6 +225,55 @@ export const customMessagePayloadSchema = z.object({
 export type CustomMessagePayload = z.infer<typeof customMessagePayloadSchema>
 
 /**
+ * Direct-assignment notification ("X assigned you to <issue>"). Single
+ * recipient — the new assignee. Display names are NOT snapshotted —
+ * renderers resolve actor + issue display data live from the ids.
+ * `assignedAt` rides on the payload because `buildIdempotencyKey` derives
+ * the per-assignment-event dedupe anchor from it: stable across outbox
+ * redelivery (the frozen payload replays the same key), unique across
+ * assignment events (each change writes a new timestamp), so A→B→A
+ * re-notifies A without ever duplicating a single assignment.
+ */
+export const signalAssignedPayloadSchema = z.object({
+  signalId: cuidSchema,
+  actorUserId: cuidSchema,
+  assignedAt: z.iso.datetime(),
+})
+export type SignalAssignedPayload = z.infer<typeof signalAssignedPayloadSchema>
+
+export const signalDiscoveredPayloadSchema = z.object({
+  signalId: cuidSchema,
+  discoveredAt: z.iso.datetime(),
+})
+export type SignalDiscoveredPayload = z.infer<typeof signalDiscoveredPayloadSchema>
+
+export const signalRegressedPayloadSchema = z.object({
+  signalId: cuidSchema,
+  regressedAt: z.iso.datetime(),
+  /** Occurrence that reopened the resolved signal; discriminates regression cycles. */
+  triggerScoreId: cuidSchema,
+})
+export type SignalRegressedPayload = z.infer<typeof signalRegressedPayloadSchema>
+
+/**
+ * A data destination flipped to `quarantined` (5 consecutive terminal sync
+ * failures) and stopped exporting. Fans out to org members so someone
+ * reconnects it. Unlike issue/project display data, a destination has no live
+ * downstream resolver in the bell, so the name + kind are snapshotted here;
+ * `quarantinedAt` is the per-occurrence idempotency anchor (a later
+ * re-quarantine after recovery re-notifies). `failureMessage` is the sanitized
+ * `last_failure_message` (status + taxonomy, never an upstream response body).
+ */
+export const destinationQuarantinedPayloadSchema = z.object({
+  destinationId: cuidSchema,
+  destinationName: z.string().min(1),
+  destinationKind: z.string().min(1),
+  quarantinedAt: z.iso.datetime(),
+  failureMessage: z.string().nullable(),
+})
+export type DestinationQuarantinedPayload = z.infer<typeof destinationQuarantinedPayloadSchema>
+
+/**
  * Single source of truth for notification kinds. Every kind declares its
  * group (drives the user-visible preferences toggle) and its payload schema
  * (used to validate jsonb at read time). Adding a new kind = adding one
@@ -224,10 +282,29 @@ export type CustomMessagePayload = z.infer<typeof customMessagePayloadSchema>
  */
 export const NOTIFICATION_KIND_META = {
   "incident.event": { group: "incidents", payload: incidentEventPayloadSchema },
-  "incident.opened": { group: "incidents", payload: incidentOpenedPayloadSchema },
-  "incident.closed": { group: "incidents", payload: incidentClosedPayloadSchema },
-  "wrapped.report": { group: "wrapped_reports", payload: wrappedReportPayloadSchema },
-  "custom.message": { group: "custom_messages", payload: customMessagePayloadSchema },
+  "incident.opened": {
+    group: "incidents",
+    payload: incidentOpenedPayloadSchema,
+  },
+  "incident.closed": {
+    group: "incidents",
+    payload: incidentClosedPayloadSchema,
+  },
+  "wrapped.report": {
+    group: "wrapped_reports",
+    payload: wrappedReportPayloadSchema,
+  },
+  "custom.message": {
+    group: "custom_messages",
+    payload: customMessagePayloadSchema,
+  },
+  "issue.assigned": { group: "personal", payload: signalAssignedPayloadSchema },
+  "signal.discovered": { group: "incidents", payload: signalDiscoveredPayloadSchema },
+  "signal.regressed": { group: "incidents", payload: signalRegressedPayloadSchema },
+  "destination.quarantined": {
+    group: "destinations",
+    payload: destinationQuarantinedPayloadSchema,
+  },
 } as const satisfies Record<string, { readonly group: NotificationGroup; readonly payload: z.ZodTypeAny }>
 
 export type NotificationKind = keyof typeof NOTIFICATION_KIND_META

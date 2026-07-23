@@ -11,13 +11,12 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@domain/feature-flags": "workspace:*",
-    "@domain/issues": "workspace:*",
+    "@domain/signals": "workspace:*",
     "@domain/monitors": "workspace:*",
     "@domain/notifications": "workspace:*",
-    "@domain/saved-searches": "workspace:*",
     "@domain/shared": "workspace:*",
     "@domain/spans": "workspace:*",
+    "@domain/users": "workspace:*",
     "@react-email/components": "1.0.12",
     "effect": "catalog:",
     "react": "catalog:",

@@ -2,12 +2,8 @@ export {
   ANALYSIS_STATUSES,
   CONVERSATION_INTELLIGENCE_ANALYSIS_DEBOUNCE_MS,
   CONVERSATION_INTELLIGENCE_DETECTOR_VERSION,
-  CONVERSATION_INTELLIGENCE_EMBEDDING_DIMENSIONS,
-  CONVERSATION_INTELLIGENCE_EMBEDDING_MODEL,
   CONVERSATION_INTELLIGENCE_LLM_MAX_DOCUMENT_CHARS,
   CONVERSATION_INTELLIGENCE_MIN_CONTENT_LENGTH,
-  CONVERSATION_INTELLIGENCE_MODEL,
-  CONVERSATION_INTELLIGENCE_MODEL_PROVIDER,
   CONVERSATION_INTELLIGENCE_RETENTION_DAYS,
   CONVERSATION_MOMENT_CONTINUITY_DEFAULT_THRESHOLD,
   CONVERSATION_MOMENT_CONTINUITY_MAX_THRESHOLD,
@@ -38,6 +34,7 @@ export {
   semanticMomentBoundaryReasonSchema,
   sessionSemanticMomentSchema,
 } from "./entities/session-semantic-moment.ts"
+export { MomentClassifierError } from "./errors.ts"
 export {
   documentFromMessages,
   type NormalizedMessage,
@@ -69,6 +66,7 @@ export {
   type AnalyzeSessionInput,
   type AnalyzeSessionResult,
   analyzeSessionUseCase,
+  resolveTurnEmbeddings,
 } from "./use-cases/analyze-session.ts"
 export {
   type ListSessionMomentIntelligenceInput,

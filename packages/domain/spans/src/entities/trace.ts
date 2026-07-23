@@ -42,12 +42,14 @@ export const traceSchema = z.object({
 
   sessionId: sessionIdSchema,
   userId: externalUserIdSchema,
+  userEmail: z.string(),
   simulationId: z.union([z.literal(""), simulationIdSchema]), // optional simulation CUID link, empty string when absent
   tags: z.array(z.string()).readonly(),
   metadata: z.record(z.string(), z.string()).readonly(),
   models: z.array(z.string()).readonly(),
   providers: z.array(z.string()).readonly(),
   serviceNames: z.array(z.string()).readonly(),
+  agentNames: z.array(z.string()).readonly(),
 
   rootSpanId: z.union([z.literal(""), spanIdSchema]), // root span id, empty string when no root span has been ingested
   rootSpanName: z.string(),
@@ -73,3 +75,24 @@ export const traceDetailSchema = traceSchema.extend({
 })
 
 export type TraceDetail = z.infer<typeof traceDetailSchema>
+
+/**
+ * Trace-panel point-lookup: Trace + first input, last output, system instructions.
+ * Omits `allMessages` / `last_input_messages` (huge) — the full convo streams via chunks.
+ */
+const traceMetadataDetailSchema = traceSchema.extend({
+  systemInstructions: genAISystemSchema,
+  inputMessages: z.array(genAIMessageSchema).readonly(),
+  outputMessages: z.array(genAIMessageSchema).readonly(),
+})
+
+export type TraceMetadataDetail = z.infer<typeof traceMetadataDetailSchema>
+
+export interface TraceConversationChunk {
+  readonly messages: readonly GenAIMessage[]
+  readonly offset: number
+  readonly limit: number
+  readonly totalMessages: number
+  readonly hasMore: boolean
+  readonly payloadBytes: number
+}

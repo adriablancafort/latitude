@@ -16,10 +16,8 @@ import {
   type PersistEvaluationAlignmentResult,
   persistAlignmentResultUseCase,
 } from "@domain/evaluations"
-import { OrganizationId, ProjectId } from "@domain/shared"
-import { withAi } from "@platform/ai"
-import { AIGenerateLive } from "@platform/ai-vercel"
-import { AIEmbedLive } from "@platform/ai-voyage"
+import { BadRequestError, OrganizationId, ProjectId } from "@domain/shared"
+import { AIEmbedLive, AIGenerateLive, withAi } from "@platform/ai"
 import { RedisBillingSpendReservationLive } from "@platform/cache-redis"
 import { TraceRepositoryLive, withClickHouse } from "@platform/db-clickhouse"
 import {
@@ -28,33 +26,41 @@ import {
   BillingUsagePeriodRepositoryLive,
   EvaluationAlignmentExamplesRepositoryLive,
   EvaluationRepositoryLive,
-  IssueRepositoryLive,
   OutboxEventWriterLive,
   SettingsReaderLive,
+  SignalRepositoryLive,
   StripeSubscriptionLookupLive,
   withPostgres,
 } from "@platform/db-postgres"
+import { QuickJsScriptRuntimeLive } from "@platform/sandbox-quickjs"
 import { createLogger, withTracing } from "@repo/observability"
 import { Data, Effect, Layer } from "effect"
 import { getClickhouseClient, getPostgresClient, getRedisClient } from "../clients.ts"
+import { describeActivityCause, logActivityFailure } from "./activity-error.ts"
 
 const logger = createLogger("workflows-evaluation-alignment")
 
 class EvaluationAlignmentActivityError extends Data.TaggedError("EvaluationAlignmentActivityError")<{
   readonly activity: string
   readonly cause: unknown
+  readonly message: string
 }> {
   readonly httpStatus = 500
 
   get httpMessage() {
-    return `Evaluation alignment activity "${this.activity}" failed`
+    return `Evaluation alignment activity "${this.activity}" failed: ${this.message}`
   }
 }
+
+const toAlignmentActivityError = (activity: string, cause: unknown): EvaluationAlignmentActivityError =>
+  cause instanceof EvaluationAlignmentActivityError
+    ? cause
+    : new EvaluationAlignmentActivityError({ activity, cause, message: describeActivityCause(cause) })
 
 const evaluationAlignmentRepositoriesLive = Layer.mergeAll(
   EvaluationRepositoryLive,
   EvaluationAlignmentExamplesRepositoryLive,
-  IssueRepositoryLive,
+  SignalRepositoryLive,
 )
 
 const evaluationGenerationBillingRepositoriesLive = Layer.mergeAll(
@@ -69,7 +75,7 @@ const evaluationGenerationBillingRepositoriesLive = Layer.mergeAll(
 export const loadEvaluationAlignmentState = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string
 }): Promise<LoadedEvaluationAlignmentState> =>
   Effect.runPromise(
@@ -86,7 +92,7 @@ export const loadEvaluationAlignmentState = (input: {
 export const loadEvaluationAlignmentStateOrInactive = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string
 }): Promise<LoadAlignmentStateOrInactiveResult> =>
   Effect.runPromise(
@@ -99,7 +105,7 @@ export const loadEvaluationAlignmentStateOrInactive = (input: {
 export const collectEvaluationAlignmentExamples = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly createdAfter?: string | null
   readonly requirePositiveExamples?: boolean
 }): Promise<CollectedEvaluationAlignmentExamples> =>
@@ -117,6 +123,9 @@ const buildEvaluationGenerationIdempotencyKey = (input: {
   readonly billingOperationId: string
 }) => buildBillingIdempotencyKey("eval-generation", [input.organizationId, input.billingOperationId])
 
+const EVALUATION_GENERATION_NO_CREDITS_MESSAGE =
+  "Not enough credits to generate this evaluation. Upgrade your plan or wait for your billing period to reset."
+
 const authorizeEvaluationGenerationBillingEffect = Effect.fn("workflows.authorizeEvaluationGenerationBilling")(
   function* (input: {
     readonly organizationId: string
@@ -132,7 +141,20 @@ const authorizeEvaluationGenerationBillingEffect = Effect.fn("workflows.authoriz
       idempotencyKey,
     })
 
-    return authorization.allowed
+    if (authorization.allowed) {
+      return
+    }
+
+    yield* Effect.sync(() =>
+      logger.info("Evaluation generation blocked — billing limit reached", {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        evaluationId: input.evaluationId,
+        billingOperationId: input.billingOperationId,
+      }),
+    )
+
+    return yield* new BadRequestError({ message: EVALUATION_GENERATION_NO_CREDITS_MESSAGE })
   },
 )
 
@@ -183,7 +205,7 @@ export const authorizeEvaluationGenerationBilling = (input: {
   readonly projectId: string
   readonly evaluationId: string | null
   readonly billingOperationId: string
-}): Promise<boolean> =>
+}): Promise<void> =>
   Effect.runPromise(
     authorizeEvaluationGenerationBillingEffect(input).pipe(
       withPostgres(
@@ -193,17 +215,10 @@ export const authorizeEvaluationGenerationBilling = (input: {
       ),
       Effect.provide(RedisBillingSpendReservationLive(getRedisClient())),
       withTracing,
-      Effect.tap((result) =>
-        result
-          ? Effect.void
-          : Effect.sync(() =>
-              logger.info("Evaluation generation blocked — billing limit reached", {
-                organizationId: input.organizationId,
-                projectId: input.projectId,
-                evaluationId: input.evaluationId,
-                billingOperationId: input.billingOperationId,
-              }),
-            ),
+      Effect.mapError((cause) =>
+        cause instanceof BadRequestError
+          ? cause
+          : toAlignmentActivityError("authorizeEvaluationGenerationBilling", cause),
       ),
     ),
   )
@@ -240,20 +255,17 @@ export const recordEvaluationGenerationUsage = (input: {
 
 export const generateBaselineEvaluationDraft = (input: {
   readonly jobId: string
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly positiveExamples: readonly HydratedEvaluationAlignmentExample[]
   readonly negativeExamples: readonly HydratedEvaluationAlignmentExample[]
 }): Promise<GeneratedEvaluationDraft> =>
   Effect.runPromise(
     generateBaselineDraftUseCase(input).pipe(
       withTracing,
-      Effect.mapError(
-        (cause) =>
-          new EvaluationAlignmentActivityError({
-            activity: "generateBaselineEvaluationDraft",
-            cause,
-          }),
+      Effect.tapError((cause) => logActivityFailure("generateBaselineEvaluationDraft", cause)),
+      Effect.mapError((cause) =>
+        cause instanceof BadRequestError ? cause : toAlignmentActivityError("generateBaselineEvaluationDraft", cause),
       ),
     ),
   )
@@ -261,38 +273,36 @@ export const generateBaselineEvaluationDraft = (input: {
 export const evaluateBaselineEvaluationDraft = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string | null
   readonly jobId: string
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly draft: GeneratedEvaluationDraft
   readonly positiveExamples: readonly HydratedEvaluationAlignmentExample[]
   readonly negativeExamples: readonly HydratedEvaluationAlignmentExample[]
 }): Promise<BaselineEvaluationResult> =>
   Effect.runPromise(
     evaluateBaselineDraftUseCase({
-      issueName: input.issueName,
-      issueDescription: input.issueDescription,
+      signalName: input.signalName,
+      signalDescription: input.signalDescription,
       script: input.draft.script,
       positiveExamples: input.positiveExamples,
       negativeExamples: input.negativeExamples,
       judgeTelemetry: {
         organizationId: input.organizationId,
         projectId: input.projectId,
-        issueId: input.issueId,
+        signalId: input.signalId,
         evaluationId: input.evaluationId,
         jobId: input.jobId,
       },
     }).pipe(
       withAi(AIGenerateLive, getRedisClient()),
+      Effect.provide(QuickJsScriptRuntimeLive),
       withTracing,
-      Effect.mapError(
-        (cause) =>
-          new EvaluationAlignmentActivityError({
-            activity: "evaluateBaselineEvaluationDraft",
-            cause,
-          }),
+      Effect.tapError((cause) => logActivityFailure("evaluateBaselineEvaluationDraft", cause)),
+      Effect.mapError((cause) =>
+        cause instanceof BadRequestError ? cause : toAlignmentActivityError("evaluateBaselineEvaluationDraft", cause),
       ),
     ),
   )
@@ -300,11 +310,11 @@ export const evaluateBaselineEvaluationDraft = (input: {
 export const evaluateIncrementalEvaluationDraft = (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string | null
   readonly jobId?: string | null
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly draft: GeneratedEvaluationDraft
   readonly previousConfusionMatrix: Parameters<typeof evaluateIncrementalDraftUseCase>[0]["previousConfusionMatrix"]
   readonly positiveExamples: readonly HydratedEvaluationAlignmentExample[]
@@ -312,8 +322,8 @@ export const evaluateIncrementalEvaluationDraft = (input: {
 }): Promise<IncrementalEvaluationRefreshResult> =>
   Effect.runPromise(
     evaluateIncrementalDraftUseCase({
-      issueName: input.issueName,
-      issueDescription: input.issueDescription,
+      signalName: input.signalName,
+      signalDescription: input.signalDescription,
       draft: input.draft,
       previousConfusionMatrix: input.previousConfusionMatrix,
       positiveExamples: input.positiveExamples,
@@ -321,19 +331,19 @@ export const evaluateIncrementalEvaluationDraft = (input: {
       judgeTelemetry: {
         organizationId: input.organizationId,
         projectId: input.projectId,
-        issueId: input.issueId,
+        signalId: input.signalId,
         evaluationId: input.evaluationId,
         ...(input.jobId !== undefined ? { jobId: input.jobId } : {}),
       },
     }).pipe(
       withAi(AIGenerateLive, getRedisClient()),
+      Effect.provide(QuickJsScriptRuntimeLive),
       withTracing,
-      Effect.mapError(
-        (cause) =>
-          new EvaluationAlignmentActivityError({
-            activity: "evaluateIncrementalEvaluationDraft",
-            cause,
-          }),
+      Effect.tapError((cause) => logActivityFailure("evaluateIncrementalEvaluationDraft", cause)),
+      Effect.mapError((cause) =>
+        cause instanceof BadRequestError
+          ? cause
+          : toAlignmentActivityError("evaluateIncrementalEvaluationDraft", cause),
       ),
     ),
   )

@@ -4,6 +4,7 @@ import { pickTraceHistogramBucketSeconds, resolveTraceHistogramRangeIso } from "
 import type { InfiniteTableInfiniteScroll, InfiniteTableSorting } from "@repo/ui"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { useMemo } from "react"
+import { projectScopeData, projectScopeKey, useProjectScope } from "../projects/project-scope.tsx"
 import {
   countSessionsByProject,
   getSessionCohortSummary,
@@ -12,7 +13,7 @@ import {
   getSessionDistribution,
   getSessionMetricsByProject,
   getSessionTimeHistogramByProject,
-  listSessionIssues,
+  listSessionSignals,
   listSessionsByProject,
   type SessionDetailRecord,
   type SessionRecord,
@@ -37,22 +38,13 @@ export function deriveSessionStatus(endTime: string | Date, now: number = Date.n
 
 /**
  * Default-on session filter: hide "orphan fragment" rows that carry no LLM
- * activity (sessions whose every span produced 0 tokens and no model name —
- * typically OTel-direct customers with mixed span/session-id propagation where
- * framework spans split off into their own session).
+ * activity (sessions whose every span produced 0 tokens and no model name).
  *
  * URL representation of the sidebar toggle:
- *   - key absent          → default ON; this helper injects the filter.
- *   - `{op:"eq",value:true}`  → explicit ON; equivalent to absent, filter is kept.
- *   - `{op:"eq",value:false}` → sentinel meaning "user opted out of the default";
- *                                this helper STRIPS the field so the repo applies
- *                                no `hasLlmActivity` clause at all (i.e. shows
- *                                both LLM-active sessions and orphan fragments).
- *
- * The `false` sentinel lives in the URL so the toggle state is shareable, but
- * never reaches the repo as a filter condition — sending `false` to the
- * synthetic clause would otherwise narrow the list to *only* orphans, which is
- * not what "Including orphan fragments" means.
+ *   - key absent → default ON; this helper injects the filter.
+ *   - `{op:"eq",value:true}` → explicit ON; equivalent to absent.
+ *   - `{op:"eq",value:false}` → user opted out; stripped before querying so
+ *     the repo applies no `hasLlmActivity` clause.
  */
 export function withSessionDefaults(filters: FilterSet | undefined): FilterSet {
   if (filters?.hasLlmActivity !== undefined) {
@@ -67,6 +59,18 @@ export function withSessionDefaults(filters: FilterSet | undefined): FilterSet {
   return { ...(filters ?? {}), hasLlmActivity: [{ op: "eq", value: true }] }
 }
 
+export function isHasLlmActivityFilterOn(filters: FilterSet | undefined): boolean {
+  const cond = filters?.hasLlmActivity?.find((c) => c.op === "eq")
+  if (cond === undefined) return true
+  return cond.value !== false && cond.value !== "false"
+}
+
+function withoutHasLlmActivityFilter(filters: FilterSet): FilterSet {
+  if (!("hasLlmActivity" in filters)) return filters
+  const { hasLlmActivity: _drop, ...rest } = filters as Record<string, readonly FilterCondition[]>
+  return rest as FilterSet
+}
+
 export function useSessionsInfiniteScroll({
   projectId,
   sorting,
@@ -78,6 +82,7 @@ export function useSessionsInfiniteScroll({
   readonly filters?: FilterSet
   readonly searchQuery?: string
 }) {
+  const scope = useProjectScope()
   const effectiveFilters = useMemo(() => withSessionDefaults(filters), [filters])
 
   const {
@@ -87,10 +92,11 @@ export function useSessionsInfiniteScroll({
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["sessionsInfiniteScroll", projectId, sorting, effectiveFilters, searchQuery],
+    queryKey: [...projectScopeKey(scope), "sessionsInfiniteScroll", projectId, sorting, effectiveFilters, searchQuery],
     queryFn: async ({ pageParam }) => {
       const result = await listSessionsByProject({
         data: {
+          ...projectScopeData(scope),
           projectId,
           limit: BATCH_SIZE,
           cursor: pageParam,
@@ -156,13 +162,15 @@ export function useSessionsCount({
   readonly filters?: FilterSet
   readonly searchQuery?: string
 }) {
+  const scope = useProjectScope()
   const effectiveFilters = useMemo(() => withSessionDefaults(filters), [filters])
 
   const { data, isLoading } = useQuery({
-    queryKey: ["sessionsCount", projectId, effectiveFilters, searchQuery],
+    queryKey: [...projectScopeKey(scope), "sessionsCount", projectId, effectiveFilters, searchQuery],
     queryFn: () =>
       countSessionsByProject({
         data: {
+          ...projectScopeData(scope),
           projectId,
           filters: effectiveFilters,
           ...(searchQuery ? { searchQuery } : {}),
@@ -175,6 +183,47 @@ export function useSessionsCount({
   return {
     totalCount: data?.totalCount ?? 0,
     matchingTraceCount: data?.matchingTraceCount,
+    isLoading,
+  }
+}
+
+export function useSessionsCountWithoutLlmActivityFilter({
+  projectId,
+  filters,
+  searchQuery,
+  enabled = true,
+}: {
+  readonly projectId: string
+  readonly filters?: FilterSet
+  readonly searchQuery?: string
+  readonly enabled?: boolean
+}) {
+  const scope = useProjectScope()
+  const filtersWithoutLlmActivity = useMemo(() => withoutHasLlmActivityFilter(withSessionDefaults(filters)), [filters])
+
+  const { data, isLoading } = useQuery({
+    queryKey: [
+      ...projectScopeKey(scope),
+      "sessionsCountWithoutLlmActivity",
+      projectId,
+      filtersWithoutLlmActivity,
+      searchQuery,
+    ],
+    queryFn: () =>
+      countSessionsByProject({
+        data: {
+          ...projectScopeData(scope),
+          projectId,
+          filters: filtersWithoutLlmActivity,
+          ...(searchQuery ? { searchQuery } : {}),
+        },
+      }),
+    staleTime: 30_000,
+    enabled: enabled && projectId.length > 0,
+  })
+
+  return {
+    totalCount: data?.totalCount ?? 0,
     isLoading,
   }
 }
@@ -193,10 +242,11 @@ export function useSessionDetail({
   readonly sessionId: string
   readonly enabled?: boolean
 }) {
+  const scope = useProjectScope()
   return useQuery({
-    queryKey: ["session-detail", projectId, sessionId],
+    queryKey: [...projectScopeKey(scope), "session-detail", projectId, sessionId],
     queryFn: async () => {
-      const result = await getSessionDetail({ data: { projectId, sessionId } })
+      const result = await getSessionDetail({ data: { ...projectScopeData(scope), projectId, sessionId } })
       return result as SessionDetailRecord | null
     },
     enabled: enabled && projectId.length > 0 && sessionId.length > 0,
@@ -209,11 +259,11 @@ export function useSessionDetail({
 }
 
 /**
- * Issues scored across a session's traces — drives the panel's Issues tab.
+ * Signals scored across a session's traces — drives the panel's Signals tab.
  * Scoped by `traceIds` (the session's authoritative trace set) so orphan
  * sessions still surface their issues.
  */
-export function useSessionIssues({
+export function useSessionSignals({
   projectId,
   traceIds,
   enabled = true,
@@ -222,20 +272,22 @@ export function useSessionIssues({
   readonly traceIds: readonly string[]
   readonly enabled?: boolean
 }) {
+  const scope = useProjectScope()
   return useQuery({
-    queryKey: ["session-issues", projectId, [...traceIds].sort()],
-    queryFn: () => listSessionIssues({ data: { projectId, traceIds: [...traceIds] } }),
+    queryKey: [...projectScopeKey(scope), "session-issues", projectId, [...traceIds].sort()],
+    queryFn: () => listSessionSignals({ data: { ...projectScopeData(scope), projectId, traceIds: [...traceIds] } }),
     enabled: enabled && projectId.length > 0 && traceIds.length > 0,
     staleTime: 30_000,
   })
 }
 
 export function useSessionCohortSummary({ projectId }: { readonly projectId: string }) {
+  const scope = useProjectScope()
   return useQuery<CohortSummary>({
-    queryKey: ["sessions-cohort-summary", projectId],
+    queryKey: [...projectScopeKey(scope), "sessions-cohort-summary", projectId],
     queryFn: () =>
       getSessionCohortSummary({
-        data: { projectId },
+        data: { ...projectScopeData(scope), projectId },
       }),
     staleTime: 30_000,
     enabled: projectId.length > 0,
@@ -249,13 +301,15 @@ export function useSessionMetrics({
   readonly projectId: string
   readonly filters?: FilterSet
 }) {
+  const scope = useProjectScope()
   const effectiveFilters = useMemo(() => withSessionDefaults(filters), [filters])
 
   return useQuery({
-    queryKey: ["sessions-metrics", projectId, effectiveFilters],
+    queryKey: [...projectScopeKey(scope), "sessions-metrics", projectId, effectiveFilters],
     queryFn: () =>
       getSessionMetricsByProject({
         data: {
+          ...projectScopeData(scope),
           projectId,
           filters: effectiveFilters,
         },
@@ -276,6 +330,7 @@ export function useSessionTimeHistogram({
   readonly rangeStartIso?: string
   readonly rangeEndIso?: string
 }) {
+  const scope = useProjectScope()
   const effectiveFilters = useMemo(() => withSessionDefaults(filters), [filters])
 
   const { rangeStartIso, rangeEndIso, bucketSeconds, queryKey } = useMemo(() => {
@@ -294,6 +349,7 @@ export function useSessionTimeHistogram({
       rangeEndIso: effectiveRangeEndIso,
       bucketSeconds: bs,
       queryKey: [
+        ...projectScopeKey(scope),
         "sessions-histogram",
         projectId,
         effectiveFilters,
@@ -302,13 +358,14 @@ export function useSessionTimeHistogram({
         bs,
       ] as const,
     }
-  }, [projectId, effectiveFilters, rangeStartIsoOverride, rangeEndIsoOverride])
+  }, [scope, projectId, effectiveFilters, rangeStartIsoOverride, rangeEndIsoOverride])
 
   const query = useQuery({
     queryKey,
     queryFn: (): Promise<readonly TraceTimeHistogramBucket[]> =>
       getSessionTimeHistogramByProject({
         data: {
+          ...projectScopeData(scope),
           projectId,
           rangeStartIso,
           rangeEndIso,
@@ -337,9 +394,10 @@ export function useSessionDistribution({
   readonly field: PercentileSessionFilterField
   readonly enabled?: boolean
 }) {
+  const scope = useProjectScope()
   return useQuery<TraceDistribution>({
-    queryKey: ["session-distribution", projectId, field],
-    queryFn: () => getSessionDistribution({ data: { projectId, field } }),
+    queryKey: [...projectScopeKey(scope), "session-distribution", projectId, field],
+    queryFn: () => getSessionDistribution({ data: { ...projectScopeData(scope), projectId, field } }),
     // Distribution is intentionally insensitive to other filters and changes
     // slowly relative to a user's interaction window — long stale time keeps
     // the chart steady while picking a threshold.
@@ -355,15 +413,16 @@ export function useSessionDistinctValues({
   enabled = true,
 }: {
   readonly projectId: string
-  readonly column: "tags" | "models" | "providers" | "serviceNames"
+  readonly column: "userId" | "tags" | "models" | "providers" | "serviceNames" | "tools" | "definedTools"
   readonly search?: string
   readonly enabled?: boolean
 }) {
+  const scope = useProjectScope()
   return useQuery({
-    queryKey: ["session-distinct", projectId, column, search],
+    queryKey: [...projectScopeKey(scope), "session-distinct", projectId, column, search],
     queryFn: () =>
       getSessionDistinctValues({
-        data: { projectId, column, limit: 50, ...(search ? { search } : {}) },
+        data: { ...projectScopeData(scope), projectId, column, limit: 50, ...(search ? { search } : {}) },
       }),
     staleTime: 60_000,
     enabled: enabled && projectId.length > 0,

@@ -51,12 +51,15 @@ export const sessionSchema = z.object({
   costTotalMicrocents: z.number(),
 
   userId: externalUserIdSchema,
+  userEmail: z.string(),
   simulationId: z.union([z.literal(""), simulationIdSchema]), // optional simulation CUID link, empty string when absent
   tags: z.array(z.string()).readonly(),
   metadata: z.record(z.string(), z.string()).readonly(),
   models: z.array(z.string()).readonly(),
   providers: z.array(z.string()).readonly(),
   serviceNames: z.array(z.string()).readonly(),
+  agentNames: z.array(z.string()).readonly(),
+  definedTools: z.array(z.string()).readonly(), // union of tool names declared available across the session's spans; empty when instrumentation never reported a toolset
 
   rootSpanId: z.union([z.literal(""), spanIdSchema]), // root of the session's first trace, empty string when no root span has been ingested
   rootSpanName: z.string(),
@@ -82,3 +85,18 @@ export const sessionDetailSchema = sessionSchema.extend({
 })
 
 export type SessionDetail = z.infer<typeof sessionDetailSchema>
+
+/**
+ * The canonical session conversation: system instructions + the latest
+ * responsive span's input window + its output — the exact list the session
+ * drawer renders, so message indices align across every anchoring consumer.
+ */
+export const sessionConversationMessages = (
+  session: Pick<SessionDetail, "systemInstructions" | "lastInputMessages" | "outputMessages">,
+): readonly GenAIMessage[] => {
+  const systemMessage =
+    Array.isArray(session.systemInstructions) && session.systemInstructions.length > 0
+      ? [{ role: "system", parts: session.systemInstructions } as GenAIMessage]
+      : []
+  return [...systemMessage, ...session.lastInputMessages, ...session.outputMessages]
+}

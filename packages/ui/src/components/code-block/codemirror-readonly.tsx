@@ -1,74 +1,59 @@
-import { json } from "@codemirror/lang-json"
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
-import { EditorState } from "@codemirror/state"
+import { EditorState, type Extension } from "@codemirror/state"
 import { EditorView, lineNumbers } from "@codemirror/view"
 import { useEffect, useMemo, useRef } from "react"
 import { useMountEffect } from "../../hooks/use-mount-effect.ts"
 import { cn } from "../../utils/cn.ts"
+import { fillHeightTheme, isJson, languageSupport, readonlyTheme } from "./codemirror-shared.ts"
 
 interface CodeMirrorReadonlyProps {
   readonly value: string
   readonly className?: string
   readonly wrapLines?: boolean
+  readonly onReady?: () => void
+  readonly language?: string | undefined
+  readonly fillHeight?: boolean
 }
 
-function isJson(value: string): boolean {
-  const trimmed = value.trim()
-  if (trimmed.length === 0) return false
-  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return false
-  try {
-    JSON.parse(trimmed)
-    return true
-  } catch {
-    return false
-  }
-}
-
-const readonlyTheme = EditorView.theme({
-  "&": {
-    fontSize: "12px",
-    fontFamily: "var(--font-mono)",
-  },
-  ".cm-content": {
-    padding: "8px 0",
-  },
-  ".cm-gutters": {
-    backgroundColor: "transparent",
-    borderRight: "1px solid hsl(var(--border))",
-    color: "hsl(var(--muted-foreground))",
-  },
-  "&.cm-focused": {
-    outline: "none",
-  },
-  ".cm-scroller": {
-    overflow: "auto",
-  },
-  ".cm-cursor, .cm-dropCursor": {
-    display: "none !important",
-  },
-})
-
-function buildState(doc: string, isJsonContent: boolean, wrapLines: boolean) {
-  const extensions = [
+function buildState(
+  doc: string,
+  isJsonContent: boolean,
+  wrapLines: boolean,
+  language: string | undefined,
+  fillHeight: boolean,
+) {
+  const extensions: Extension[] = [
     readonlyTheme,
     lineNumbers(),
-    syntaxHighlighting(defaultHighlightStyle),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
   ]
+
+  if (fillHeight) {
+    extensions.push(fillHeightTheme)
+  }
 
   if (wrapLines) {
     extensions.push(EditorView.lineWrapping)
   }
 
-  if (isJsonContent) {
-    extensions.push(json())
+  const parser = languageSupport(language, isJsonContent)
+  if (parser) {
+    extensions.push(parser)
   }
 
   return EditorState.create({ doc, extensions })
 }
 
-export function CodeMirrorReadonly({ value, className, wrapLines = true }: CodeMirrorReadonlyProps) {
+export function CodeMirrorReadonly({
+  value,
+  className,
+  wrapLines = true,
+  onReady,
+  language,
+  fillHeight = false,
+}: CodeMirrorReadonlyProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const initialValueRef = useRef(value)
@@ -79,10 +64,11 @@ export function CodeMirrorReadonly({ value, className, wrapLines = true }: CodeM
     if (!container) return
 
     const view = new EditorView({
-      state: buildState(initialValueRef.current, isJsonContent, wrapLines),
+      state: buildState(initialValueRef.current, isJsonContent, wrapLines, language, fillHeight),
       parent: container,
     })
     viewRef.current = view
+    onReady?.()
 
     return () => {
       view.destroy()
@@ -96,9 +82,14 @@ export function CodeMirrorReadonly({ value, className, wrapLines = true }: CodeM
     const view = viewRef.current
     if (!view) return
     if (view.state.doc.toString() !== value) {
-      view.setState(buildState(value, isJsonContent, wrapLines))
+      view.setState(buildState(value, isJsonContent, wrapLines, language, fillHeight))
     }
-  }, [value, isJsonContent, wrapLines])
+  }, [value, isJsonContent, wrapLines, language, fillHeight])
 
-  return <div ref={containerRef} className={cn("rounded-md overflow-hidden bg-muted", className)} />
+  return (
+    <div
+      ref={containerRef}
+      className={cn("rounded-md overflow-hidden bg-muted", { "h-full": fillHeight }, className)}
+    />
+  )
 }

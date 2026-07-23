@@ -1,5 +1,6 @@
-import type { OrganizationId, ProjectId, RepositoryError, TraceId } from "@domain/shared"
+import type { OrganizationId, ProjectId, RepositoryError, SessionId, TraceId } from "@domain/shared"
 import { Context, type Effect } from "effect"
+import type { MessageEmbeddingRole } from "../helpers/message-embedding.ts"
 
 export interface TraceSemanticHighlightMatch {
   readonly chunkIndex: number
@@ -19,30 +20,33 @@ export interface TraceSearchDocumentRow {
   readonly retentionDays?: number
 }
 
-export interface TraceSearchEmbeddingRow {
+export interface TraceMessageOccurrenceRow {
   readonly organizationId: OrganizationId
   readonly projectId: ProjectId
   readonly traceId: TraceId
-  /** 0-based contiguous chunk index within the trace. Part of the dedup key. */
-  readonly chunkIndex: number
-  readonly startTime: Date
+  readonly messageIndex: number
   readonly contentHash: string
-  readonly embeddingModel: string
-  readonly embedding: readonly number[]
+  readonly sessionId: SessionId
+  readonly startTime: Date
+  readonly role: MessageEmbeddingRole
+  readonly isOutput: boolean
   readonly retentionDays?: number
-  readonly firstMessageIndex?: number
-  readonly lastMessageIndex?: number
+}
+
+/** The latest content hash + role at a trace message position (deduped by `indexed_at`). */
+export interface TraceMessageOccurrenceContent {
+  readonly contentHash: string
+  readonly role: MessageEmbeddingRole
 }
 
 /**
  * Repository port for trace search indexing operations.
  *
  * Handles upserts to trace_search_documents (lexical) and
- * trace_search_embeddings (semantic) tables. Query-side semantic retrieval
- * runs inline as a subquery inside the main `traces` SQL in
- * `TraceRepositoryLive`, so the port intentionally exposes only write/dedup
- * ops — a standalone `querySemanticCandidates` method would duplicate the
- * cosine-distance SQL that the repository already embeds.
+ * trace_message_occurrences. Query-side project search runs inline as a
+ * subquery inside the main `traces` SQL in `TraceRepositoryLive`, so the port
+ * intentionally exposes only write/dedup ops plus the single-trace semantic
+ * highlight lookup.
  */
 export interface TraceSearchRepositoryShape {
   /**
@@ -52,33 +56,28 @@ export interface TraceSearchRepositoryShape {
   upsertDocument(row: TraceSearchDocumentRow): Effect.Effect<void, RepositoryError>
 
   /**
-   * Upsert a semantic search embedding.
-   * Uses ReplacingMergeTree semantics - later indexed_at wins.
+   * Upsert per-trace message occurrence rows for shared message embeddings.
+   * Rows are idempotent under ReplacingMergeTree by trace message position;
+   * later content at the same trace_id + message_index replaces older hashes.
    */
-  upsertEmbedding(row: TraceSearchEmbeddingRow): Effect.Effect<void, RepositoryError>
+  upsertMessageOccurrences(rows: readonly TraceMessageOccurrenceRow[]): Effect.Effect<void, RepositoryError>
 
   /**
-   * Check if a chunk row exists for this trace at this chunk_index with the
-   * given content hash. Used to skip redundant per-chunk embedding work when
-   * the chunk's contents haven't changed since the last index.
+   * List the (deduped) content hashes + roles for a session's traces. Filtered
+   * by `trace_id` to hit the occurrences sort key. Backs the semantic-similarity
+   * host (mapping session messages → shared embeddings) and the readiness signal
+   * that embeddings have been indexed; an empty result means "not yet indexed".
    */
-  hasEmbeddingWithHash(
-    organizationId: OrganizationId,
-    projectId: ProjectId,
-    traceId: TraceId,
-    chunkIndex: number,
-    contentHash: string,
-  ): Effect.Effect<boolean, RepositoryError>
+  listMessageOccurrencesForTraces(args: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly traceIds: readonly TraceId[]
+  }): Effect.Effect<readonly TraceMessageOccurrenceContent[], RepositoryError>
 
   /**
-   * Cosine-scan the chunks of a single trace against `queryEmbedding` and
-   * return the winning chunk's metadata. Used by `getTraceSearchHighlights`
-   * to paint the semantic-region highlight (LAT-601).
-   *
-   * Returns `null` when the trace has no chunk rows (TTL'd, never indexed,
-   * or pre-PR-2 in flight). When the winning chunk predates migration 00017,
-   * `firstMessageIndex` / `lastMessageIndex` come back NULL — caller falls
-   * back to literal/token highlights only.
+   * Cosine-scan a single trace's message occurrences against `queryEmbedding`
+   * and return the winning message position. Used by `getTraceSearchHighlights`
+   * to paint the semantic-region highlight.
    */
   findSemanticHighlightForTrace(args: {
     readonly organizationId: OrganizationId

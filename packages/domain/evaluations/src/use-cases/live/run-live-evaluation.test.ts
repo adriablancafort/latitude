@@ -1,4 +1,4 @@
-import { type AI, AI_GENERATE_TELEMETRY_TAGS, AIError, type GenerateInput, type GenerateResult } from "@domain/ai"
+import type { AI } from "@domain/ai"
 import { createFakeAI } from "@domain/ai/testing"
 import {
   BillingOverrideRepository,
@@ -16,40 +16,58 @@ import {
   seedBillingUsagePeriod,
 } from "@domain/billing/testing"
 import { OutboxEventWriter, type OutboxEventWriterShape } from "@domain/events"
-import { ScoreAnalyticsRepository, ScoreRepository } from "@domain/scores"
+import { QueuePublisher, type QueuePublisherShape } from "@domain/queue"
+import { type DetectorHealthTracker, type ScriptRuntime, ScriptRuntimeError } from "@domain/sandbox"
+import { createFakeDetectorHealthTracker, createFakeScriptRuntime } from "@domain/sandbox/testing"
+import { type EvaluationScore, ScoreAnalyticsRepository, ScoreRepository } from "@domain/scores"
 import { createFakeScoreAnalyticsRepository, createFakeScoreRepository } from "@domain/scores/testing"
 import {
+  CacheError,
   ExternalUserId,
-  IssueId,
   NotFoundError,
   OrganizationId,
   ProjectId,
   RepositoryError,
+  ScoreId,
   SessionId,
   SettingsReader,
+  SignalId,
   SimulationId,
   SpanId,
   SqlClient,
   TraceId,
 } from "@domain/shared"
 import { createFakeSqlClient } from "@domain/shared/testing"
-import { type TraceDetail, TraceRepository } from "@domain/spans"
-import { createFakeTraceRepository } from "@domain/spans/testing"
+import {
+  MessageEmbeddingRepository,
+  SessionRepository,
+  SpanRepository,
+  type TraceDetail,
+  TraceRepository,
+  TraceSearchRepository,
+} from "@domain/spans"
+import {
+  createFakeMessageEmbeddingRepository,
+  createFakeSessionRepository,
+  createFakeSpanRepository,
+  createFakeTraceRepository,
+  createFakeTraceSearchRepository,
+} from "@domain/spans/testing"
 import { Effect, Layer } from "effect"
 import { describe, expect, it } from "vitest"
+import {
+  EVALUATION_CONVERSATION_PLACEHOLDER,
+  wrapPromptAsEvaluationScript,
+} from "../../codegen/judge-script-template.ts"
 import {
   defaultEvaluationTrigger,
   type Evaluation,
   emptyEvaluationAlignment,
   evaluationSchema,
 } from "../../entities/evaluation.ts"
-import { type EvaluationIssue, EvaluationIssueRepository } from "../../ports/evaluation-issue-repository.ts"
 import { EvaluationRepository, type EvaluationRepositoryShape } from "../../ports/evaluation-repository.ts"
-import {
-  EVALUATION_CONVERSATION_PLACEHOLDER,
-  estimateEvaluationScriptCostMicrocents,
-  wrapPromptAsEvaluationScript,
-} from "../../runtime/evaluation-execution.ts"
+import { type EvaluationSignal, EvaluationSignalRepository } from "../../ports/evaluation-signal-repository.ts"
+import { estimateEvaluationScriptCostMicrocents } from "../../runtime/evaluation-execution.ts"
 import { runLiveEvaluationUseCase } from "./run-live-evaluation.ts"
 
 const INPUT = {
@@ -94,12 +112,14 @@ function makeTraceDetail(
     costTotalMicrocents: 75,
     sessionId: overrides?.sessionId ?? SessionId("session"),
     userId: ExternalUserId("user"),
+    userEmail: "",
     simulationId: SimulationId(""),
     tags: [],
     metadata: {},
     models: ["gpt-4o-mini"],
     providers: ["openai"],
     serviceNames: ["web"],
+    agentNames: [],
     rootSpanId: SpanId("r".repeat(16)),
     rootSpanName: "root",
     systemInstructions: [{ type: "text", text: "You are a careful assistant." }],
@@ -122,7 +142,7 @@ function makeEvaluation(
   overrides?: Partial<
     Pick<
       Evaluation,
-      "id" | "organizationId" | "projectId" | "issueId" | "script" | "trigger" | "archivedAt" | "deletedAt"
+      "id" | "organizationId" | "projectId" | "signalId" | "script" | "trigger" | "archivedAt" | "deletedAt"
     >
   >,
 ) {
@@ -130,7 +150,7 @@ function makeEvaluation(
     id: overrides?.id ?? INPUT.evaluationId,
     organizationId: overrides?.organizationId ?? INPUT.organizationId,
     projectId: overrides?.projectId ?? INPUT.projectId,
-    issueId: overrides?.issueId ?? "i".repeat(24),
+    signalId: overrides?.signalId ?? "i".repeat(24),
     name: "Live evaluation",
     description: "Detects the linked issue on live traces.",
     script: overrides?.script ?? "const result = true",
@@ -144,13 +164,15 @@ function makeEvaluation(
   })
 }
 
-function makeIssue(overrides?: Partial<Pick<EvaluationIssue, "id" | "projectId" | "name" | "description">>) {
+function makeSignal(overrides?: Partial<EvaluationSignal>) {
   return {
-    id: overrides?.id ?? IssueId("i".repeat(24)),
+    id: overrides?.id ?? SignalId("i".repeat(24)),
     projectId: overrides?.projectId ?? INPUT.projectId,
     name: overrides?.name ?? "Deployment checklist omission",
     description: overrides?.description ?? "The assistant fails to mention key deployment steps.",
-  } satisfies EvaluationIssue
+    resolvedAt: overrides?.resolvedAt ?? null,
+    ignoredAt: overrides?.ignoredAt ?? null,
+  } satisfies EvaluationSignal
 }
 
 function createEvaluationRepository(findById: EvaluationRepositoryShape["findById"]): EvaluationRepositoryShape {
@@ -158,22 +180,64 @@ function createEvaluationRepository(findById: EvaluationRepositoryShape["findByI
     findById,
     save: () => Effect.die("Unexpected call to save"),
     listByProjectId: () => Effect.die("Unexpected call to listByProjectId"),
-    listByIssueId: () => Effect.die("Unexpected call to listByIssueId"),
-    listByIssueIds: () => Effect.die("Unexpected call to listByIssueIds"),
+    listBySignalId: () => Effect.die("Unexpected call to listBySignalId"),
+    listBySignalIds: () => Effect.die("Unexpected call to listBySignalIds"),
     archive: () => Effect.die("Unexpected call to archive"),
     unarchive: () => Effect.die("Unexpected call to unarchive"),
     softDelete: () => Effect.die("Unexpected call to softDelete"),
-    softDeleteByIssueId: () => Effect.die("Unexpected call to softDeleteByIssueId"),
+    softDeleteBySignalId: () => Effect.die("Unexpected call to softDeleteBySignalId"),
   }
 }
 
-function createIssueRepository(
-  findById: (id: ReturnType<typeof IssueId>) => Effect.Effect<EvaluationIssue, NotFoundError>,
+function makePersistedScore(overrides: Partial<EvaluationScore> = {}): EvaluationScore {
+  return {
+    id: ScoreId("e".repeat(24)),
+    organizationId: INPUT.organizationId,
+    projectId: INPUT.projectId,
+    sessionId: null,
+    traceId: TraceId(INPUT.traceId),
+    spanId: null,
+    simulationId: null,
+    signalId: null,
+    sourceType: "evaluation",
+    sourceId: INPUT.evaluationId,
+    metadata: { evaluationHash: "hash-v1" },
+    value: 0.1,
+    passed: true,
+    feedback: "Prior persisted verdict.",
+    error: null,
+    errored: false,
+    duration: 0,
+    tokens: 0,
+    cost: 0,
+    draftedAt: null,
+    annotatorId: null,
+    createdAt: new Date("2026-06-17T10:00:00.000Z"),
+    updatedAt: new Date("2026-06-17T10:00:00.000Z"),
+    ...overrides,
+  }
+}
+
+function createSignalRepository(
+  findById: (id: ReturnType<typeof SignalId>) => Effect.Effect<EvaluationSignal, NotFoundError>,
+  claimReopenOnOccurrence: (input: {
+    readonly signalId: ReturnType<typeof SignalId>
+    readonly occurredAt: Date
+    readonly now: Date
+  }) => Effect.Effect<boolean> = () => Effect.succeed(false),
 ) {
   return {
     findById,
+    claimReopenOnOccurrence,
   }
 }
+
+const createNoopPublisher = (overrides?: Partial<QueuePublisherShape>): QueuePublisherShape => ({
+  publish: () => Effect.void,
+  scheduleRepeatable: () => Effect.void,
+  close: () => Effect.void,
+  ...overrides,
+})
 
 function createScoreWriteLayer(input?: {
   readonly scoreRepository?: ReturnType<typeof createFakeScoreRepository>["repository"] | undefined
@@ -238,37 +302,62 @@ function createUseCaseLayer(input: {
   readonly evaluationRepository: EvaluationRepositoryShape
   readonly scoreRepository?: ReturnType<typeof createFakeScoreRepository>["repository"] | undefined
   readonly scoreWriteLayer?: ReturnType<typeof createScoreWriteLayer> | undefined
-  readonly issueRepository?: ReturnType<typeof createIssueRepository> | undefined
+  readonly signalRepository?: ReturnType<typeof createSignalRepository> | undefined
   readonly aiLayer?: ReturnType<typeof createFakeAI>["layer"] | undefined
   readonly billingLayer?: ReturnType<typeof createBillingLayer> | undefined
+  readonly scriptRuntimeLayer?: ReturnType<typeof createFakeScriptRuntime>["layer"] | undefined
+  readonly detectorHealthLayer?: ReturnType<typeof createFakeDetectorHealthTracker>["layer"] | undefined
+  readonly traceSearchRepository?: ReturnType<typeof createFakeTraceSearchRepository>["repository"] | undefined
+  readonly messageEmbeddingRepository?:
+    | ReturnType<typeof createFakeMessageEmbeddingRepository>["repository"]
+    | undefined
+  readonly publisher?: QueuePublisherShape | undefined
 }): Layer.Layer<
   | AI
   | BillingOverrideRepository
   | BillingSpendReservation
   | BillingUsageEventRepository
   | BillingUsagePeriodRepository
-  | EvaluationIssueRepository
+  | DetectorHealthTracker
+  | EvaluationSignalRepository
   | EvaluationRepository
-  | ScoreAnalyticsRepository
+  | MessageEmbeddingRepository
   | OutboxEventWriter
+  | QueuePublisher
+  | ScoreAnalyticsRepository
   | ScoreRepository
+  | ScriptRuntime
+  | SessionRepository
   | SettingsReader
+  | SpanRepository
   | SqlClient
   | StripeSubscriptionLookup
-  | TraceRepository,
+  | TraceRepository
+  | TraceSearchRepository,
   never,
   never
 > {
   return Layer.mergeAll(
     Layer.succeed(TraceRepository, input.traceRepository),
+    Layer.succeed(SessionRepository, createFakeSessionRepository().repository),
+    Layer.succeed(SpanRepository, createFakeSpanRepository().repository),
+    Layer.succeed(
+      MessageEmbeddingRepository,
+      input.messageEmbeddingRepository ?? createFakeMessageEmbeddingRepository().repository,
+    ),
+    Layer.succeed(TraceSearchRepository, input.traceSearchRepository ?? createFakeTraceSearchRepository().repository),
+    Layer.succeed(QueuePublisher, input.publisher ?? createNoopPublisher()),
     Layer.succeed(EvaluationRepository, input.evaluationRepository),
     input.scoreWriteLayer ?? createScoreWriteLayer({ scoreRepository: input.scoreRepository }),
     Layer.succeed(
-      EvaluationIssueRepository,
-      input.issueRepository ?? createIssueRepository(() => Effect.die("Issue should not be loaded in this scenario")),
+      EvaluationSignalRepository,
+      input.signalRepository ??
+        createSignalRepository(() => Effect.die("Signal should not be loaded in this scenario")),
     ),
     input.aiLayer ?? createFakeAI().layer,
     input.billingLayer ?? createBillingLayer(),
+    input.scriptRuntimeLayer ?? createFakeScriptRuntime().layer,
+    input.detectorHealthLayer ?? createFakeDetectorHealthTracker().layer,
   )
 }
 
@@ -519,7 +608,7 @@ describe("runLiveEvaluationUseCase", () => {
   it("skips when a canonical result already exists for the evaluation and trace", async () => {
     let traceLoadCalls = 0
     let duplicateCheckCalls = 0
-    let issueLoadCalls = 0
+    let signalLoadCalls = 0
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => {
         traceLoadCalls += 1
@@ -528,18 +617,18 @@ describe("runLiveEvaluationUseCase", () => {
     })
     const evaluation = makeEvaluation()
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository(() => {
-      issueLoadCalls += 1
-      return Effect.die("Issue should not be loaded when a canonical result already exists")
+    const signalRepository = createSignalRepository(() => {
+      signalLoadCalls += 1
+      return Effect.die("Signal should not be loaded when a canonical result already exists")
     })
     const operations: string[] = []
     const duplicateFixture = createFakeScoreRepository({
-      existsByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) => {
+      findByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) => {
         duplicateCheckCalls += 1
         expect(projectId).toEqual(ProjectId(INPUT.projectId))
         expect(evaluationId).toBe(evaluation.id)
         expect(traceId).toEqual(TraceId(INPUT.traceId))
-        return Effect.succeed(true)
+        return Effect.succeed(makePersistedScore())
       },
     })
     const scoreRepository = {
@@ -583,7 +672,7 @@ describe("runLiveEvaluationUseCase", () => {
             traceRepository,
             evaluationRepository,
             scoreWriteLayer,
-            issueRepository,
+            signalRepository,
             aiLayer,
           }),
         ),
@@ -598,7 +687,7 @@ describe("runLiveEvaluationUseCase", () => {
     })
     expect(duplicateCheckCalls).toBe(1)
     expect(traceLoadCalls).toBe(0)
-    expect(issueLoadCalls).toBe(0)
+    expect(signalLoadCalls).toBe(0)
     expect(calls.generate).toHaveLength(0)
     expect(operations).toEqual([])
   })
@@ -609,26 +698,26 @@ describe("runLiveEvaluationUseCase", () => {
     const evaluation = makeEvaluation({
       script: VALID_SCRIPT,
     })
-    const issue = makeIssue({
-      id: IssueId(evaluation.issueId),
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
     })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository((issueId) => {
-      expect(issueId).toEqual(IssueId(evaluation.issueId))
+    const signalRepository = createSignalRepository((signalId) => {
+      expect(signalId).toEqual(SignalId(evaluation.signalId))
       return Effect.succeed(issue)
     })
     const operations: string[] = []
     const duplicateFixture = createFakeScoreRepository({
-      existsByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) => {
+      findByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) => {
         duplicateCheckCalls += 1
         expect(projectId).toEqual(ProjectId(INPUT.projectId))
         expect(evaluationId).toBe(evaluation.id)
         expect(traceId).toEqual(TraceId(INPUT.traceId))
-        return Effect.succeed(duplicateCommitted)
+        return Effect.succeed(duplicateCommitted ? makePersistedScore() : null)
       },
     })
     const scoreRepository = {
@@ -676,21 +765,16 @@ describe("runLiveEvaluationUseCase", () => {
           }),
       },
     })
-    const { layer: aiLayer, calls } = createFakeAI({
-      generate: <T>(input: GenerateInput<T>) =>
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () =>
         Effect.succeed({
-          object: input.schema.parse({
-            passed: true,
-            value: 1,
-            feedback: "The conversation does not exhibit the linked issue.",
-          }),
-          tokens: 120,
+          value: 1,
+          feedback: "The conversation does not exhibit the linked issue.",
           duration: 456_000_000,
-          tokenUsage: {
-            input: 40,
-            output: 80,
-          },
-        } satisfies GenerateResult<T>),
+          tokens: 120,
+          cost: 0,
+        }),
     })
 
     const result = await Effect.runPromise(
@@ -700,8 +784,9 @@ describe("runLiveEvaluationUseCase", () => {
             traceRepository,
             evaluationRepository,
             scoreWriteLayer,
-            issueRepository,
+            signalRepository,
             aiLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
           }),
         ),
       ),
@@ -714,11 +799,64 @@ describe("runLiveEvaluationUseCase", () => {
       traceId: INPUT.traceId,
     })
     expect(duplicateCheckCalls).toBe(2)
-    expect(calls.generate).toHaveLength(1)
+    expect(scriptRuntime.calls.run).toHaveLength(1)
     expect(outboxEvents.map((event) => (event as { eventName: string }).eventName)).toEqual([
       "BillingUsagePeriodUpdated",
     ])
     expect(operations).toEqual(["billing-outbox-write", "score-save"])
+  })
+
+  it("re-claims the regression reopen when a retry finds the score already persisted", async () => {
+    const evaluation = makeEvaluation()
+    const persisted = makePersistedScore({ signalId: SignalId(evaluation.signalId) })
+    const claimCalls: Array<{ signalId: string; occurredAt: Date }> = []
+    const signalRepository = createSignalRepository(
+      () => Effect.die("Signal detail is not needed on the dedupe path"),
+      ({ signalId, occurredAt }) =>
+        Effect.sync(() => {
+          claimCalls.push({ signalId, occurredAt })
+          return true
+        }),
+    )
+    const outboxEvents: Array<{ eventName: string; payload: Record<string, unknown> }> = []
+    const scoreWriteLayer = createScoreWriteLayer({
+      scoreRepository: createFakeScoreRepository({
+        findByEvaluationIdAndTraceId: () => Effect.succeed(persisted),
+      }).repository,
+      outboxEventWriter: {
+        write: (event: Parameters<OutboxEventWriterShape["write"]>[0]) =>
+          Effect.sync(() => {
+            outboxEvents.push({ eventName: event.eventName, payload: event.payload as Record<string, unknown> })
+          }),
+      },
+    })
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.die("Trace should not be loaded when a canonical result already exists"),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            scoreWriteLayer,
+            signalRepository,
+          }),
+        ),
+      ),
+    )
+
+    expect(result).toEqual({
+      action: "skipped",
+      reason: "result-already-exists",
+      evaluationId: INPUT.evaluationId,
+      traceId: INPUT.traceId,
+    })
+    expect(claimCalls).toEqual([{ signalId: SignalId(evaluation.signalId), occurredAt: persisted.createdAt }])
+    expect(outboxEvents.map((event) => event.eventName)).toEqual(["SignalRegressed"])
+    expect(outboxEvents[0]?.payload.triggerScoreId).toBe(persisted.id)
   })
 
   it("skips when the trace no longer exists", async () => {
@@ -752,8 +890,8 @@ describe("runLiveEvaluationUseCase", () => {
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository(() =>
-      Effect.fail(new NotFoundError({ entity: "Issue", id: evaluation.issueId })),
+    const signalRepository = createSignalRepository(() =>
+      Effect.fail(new NotFoundError({ entity: "Signal", id: evaluation.signalId })),
     )
 
     const result = await Effect.runPromise(
@@ -762,7 +900,7 @@ describe("runLiveEvaluationUseCase", () => {
           createUseCaseLayer({
             traceRepository,
             evaluationRepository,
-            issueRepository,
+            signalRepository,
           }),
         ),
       ),
@@ -778,13 +916,13 @@ describe("runLiveEvaluationUseCase", () => {
 
   it("skips before AI execution when billing blocks the live evaluation", async () => {
     const evaluation = makeEvaluation({ script: VALID_SCRIPT })
-    const issue = makeIssue({ id: IssueId(evaluation.issueId) })
+    const issue = makeSignal({ id: SignalId(evaluation.signalId) })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository(() => Effect.succeed(issue))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
     const { repository: billingUsagePeriodRepository } = createFakeBillingUsagePeriodRepository()
     const now = new Date()
     const currentPeriodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
@@ -818,7 +956,7 @@ describe("runLiveEvaluationUseCase", () => {
           createUseCaseLayer({
             traceRepository,
             evaluationRepository,
-            issueRepository,
+            signalRepository,
             aiLayer,
             billingLayer: createBillingLayer({ billingUsagePeriodRepository }),
           }),
@@ -837,28 +975,28 @@ describe("runLiveEvaluationUseCase", () => {
 
   it("records billing after hosted AI execution completes", async () => {
     const evaluation = makeEvaluation({ script: VALID_SCRIPT })
-    const issue = makeIssue({ id: IssueId(evaluation.issueId) })
+    const issue = makeSignal({ id: SignalId(evaluation.signalId) })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository(() => Effect.succeed(issue))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
+    const { repository: billingUsageEventRepository, eventsByPeriodAndIdempotencyKey } =
+      createFakeBillingUsageEventRepository()
     const operations: string[] = []
-    const { layer: aiLayer, calls } = createFakeAI({
-      generate: <T>(input: GenerateInput<T>) =>
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () =>
         Effect.sync(() => {
-          operations.push("ai-generate")
+          operations.push("script-run")
           return {
-            object: input.schema.parse({
-              passed: true,
-              value: 1,
-              feedback: "The conversation does not exhibit the linked issue.",
-            }),
-            tokens: 12,
+            value: 1,
+            feedback: "The conversation does not exhibit the linked issue.",
             duration: 1,
-            tokenUsage: { input: 6, output: 6 },
-          } satisfies GenerateResult<T>
+            tokens: 12,
+            cost: 0,
+          }
         }),
     })
     const scoreWriteLayer = createScoreWriteLayer({
@@ -876,34 +1014,206 @@ describe("runLiveEvaluationUseCase", () => {
           createUseCaseLayer({
             traceRepository,
             evaluationRepository,
-            issueRepository,
+            signalRepository,
             aiLayer,
-            billingLayer: createBillingLayer(),
+            billingLayer: createBillingLayer({ billingUsageEventRepository }),
             scoreWriteLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
           }),
         ),
       ),
     )
 
     expect(result.action).toBe("persisted")
-    expect(operations).toEqual(["ai-generate", "billing-outbox-write", "score-outbox-write"])
-    expect(calls.generate).toHaveLength(1)
+    expect(operations).toEqual(["script-run", "billing-outbox-write", "score-outbox-write"])
+    expect([...eventsByPeriodAndIdempotencyKey.values()]).toEqual([
+      expect.objectContaining({ action: "live-eval-scan", credits: 30 }),
+    ])
+    expect(scriptRuntime.calls.run).toHaveLength(1)
+  })
+
+  const EMBEDDING_SCRIPT = "return Passed((await semanticSimilarity('frustration')) >= 0.5 ? 1 : 0)"
+
+  // Occurrences are written at ingest even when embedding is skipped (over budget); the readiness gate
+  // must key off embeddings, not occurrences. `withEmbeddings` seeds vectors for those occurrences.
+  const embeddingGateRepos = (opts: { readonly withEmbeddings: boolean }) => {
+    const traceSearchRepository = createFakeTraceSearchRepository({
+      listMessageOccurrencesForTraces: () => Effect.succeed([{ contentHash: "hash-a", role: "user" as const }]),
+    }).repository
+    const messageEmbeddingRepository = createFakeMessageEmbeddingRepository({
+      findByHashes: ({ contentHashes, embeddingModel }) =>
+        Effect.succeed(
+          opts.withEmbeddings
+            ? contentHashes.map((contentHash) => ({
+                organizationId: OrganizationId(INPUT.organizationId),
+                projectId: ProjectId(INPUT.projectId),
+                contentHash,
+                embedding: [1, 0, 0],
+                embeddingModel: embeddingModel ?? "voyage-4-large",
+                insertedAt: new Date(0),
+              }))
+            : [],
+        ),
+    }).repository
+    return { traceSearchRepository, messageEmbeddingRepository }
+  }
+
+  it("defers a semantic evaluation and re-publishes when the session has occurrences but no embeddings yet", async () => {
+    const evaluation = makeEvaluation({ script: EMBEDDING_SCRIPT })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() =>
+      Effect.die("Signal should not be loaded while deferring for embeddings"),
+    )
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.die("Script should not run while deferring for embeddings"),
+    })
+    const published: Array<{ payload: unknown; options: unknown }> = []
+    const publisher = createNoopPublisher({
+      publish: (_queue, _task, payload, options) =>
+        Effect.sync(() => {
+          published.push({ payload, options })
+        }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            signalRepository,
+            publisher,
+            scriptRuntimeLayer: scriptRuntime.layer,
+            ...embeddingGateRepos({ withEmbeddings: false }),
+          }),
+        ),
+      ),
+    )
+
+    expect(result).toEqual({
+      action: "skipped",
+      reason: "awaiting-embeddings",
+      evaluationId: INPUT.evaluationId,
+      traceId: INPUT.traceId,
+    })
+    expect(published).toHaveLength(1)
+    expect(published[0]?.payload).toMatchObject({
+      evaluationId: INPUT.evaluationId,
+      traceId: INPUT.traceId,
+      embeddingWaitAttempt: 1,
+    })
+    expect(published[0]?.options).toMatchObject({ debounceMs: expect.any(Number) })
+    expect(scriptRuntime.calls.run).toHaveLength(0)
+  })
+
+  it("skips a semantic evaluation without persisting a score once the wait attempts are exhausted", async () => {
+    const evaluation = makeEvaluation({ script: EMBEDDING_SCRIPT })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() =>
+      Effect.die("Signal should not be loaded when embeddings are unavailable"),
+    )
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.die("Script should not run when embeddings are unavailable"),
+    })
+    const { persistedScores, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const published: unknown[] = []
+    const publisher = createNoopPublisher({
+      publish: (_queue, _task, payload) =>
+        Effect.sync(() => {
+          published.push(payload)
+        }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase({ ...INPUT, embeddingWaitAttempt: 99 }).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            signalRepository,
+            publisher,
+            scoreWriteLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
+            ...embeddingGateRepos({ withEmbeddings: false }),
+          }),
+        ),
+      ),
+    )
+
+    expect(result).toEqual({
+      action: "skipped",
+      reason: "embeddings-unavailable",
+      evaluationId: INPUT.evaluationId,
+      traceId: INPUT.traceId,
+    })
+    expect(published).toHaveLength(0)
+    expect(scriptRuntime.calls.run).toHaveLength(0)
+    expect(persistedScores).toHaveLength(0)
+  })
+
+  it("runs a semantic evaluation when the session's embeddings are indexed", async () => {
+    const evaluation = makeEvaluation({ script: EMBEDDING_SCRIPT })
+    const issue = makeSignal({ id: SignalId(evaluation.signalId) })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 1, feedback: "ok", duration: 1, tokens: 0, cost: 0 }),
+    })
+    const published: unknown[] = []
+    const publisher = createNoopPublisher({
+      publish: (_queue, _task, payload) =>
+        Effect.sync(() => {
+          published.push(payload)
+        }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            signalRepository,
+            publisher,
+            billingLayer: createBillingLayer(),
+            scriptRuntimeLayer: scriptRuntime.layer,
+            ...embeddingGateRepos({ withEmbeddings: true }),
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    expect(published).toHaveLength(0)
+    expect(scriptRuntime.calls.run).toHaveLength(1)
   })
 
   it("persists the live evaluation result through the canonical score write path after hosted execution", async () => {
     const evaluation = makeEvaluation({
       script: VALID_SCRIPT,
     })
-    const issue = makeIssue({
-      id: IssueId(evaluation.issueId),
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
     })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository((issueId) => {
-      expect(issueId).toEqual(IssueId(evaluation.issueId))
+    const signalRepository = createSignalRepository((signalId) => {
+      expect(signalId).toEqual(SignalId(evaluation.signalId))
       return Effect.succeed(issue)
     })
     const { operations, persistedScores, inserted, outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
@@ -913,18 +1223,17 @@ describe("runLiveEvaluationUseCase", () => {
       input: 40,
       output: aiTokens - 40,
     }
-    const { layer: aiLayer, calls } = createFakeAI({
-      generate: <T>(input: GenerateInput<T>) =>
+    const cost = estimateEvaluationScriptCostMicrocents({ tokens: aiTokens, tokenUsage: aiTokenUsage })
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () =>
         Effect.succeed({
-          object: input.schema.parse({
-            passed: true,
-            value: 1,
-            feedback: "The conversation does not exhibit the linked issue.",
-          }),
-          tokens: aiTokens,
+          value: 1,
+          feedback: "The conversation does not exhibit the linked issue.",
           duration: aiDuration,
-          tokenUsage: aiTokenUsage,
-        } satisfies GenerateResult<T>),
+          tokens: aiTokens,
+          cost,
+        }),
     })
 
     const result = await Effect.runPromise(
@@ -934,8 +1243,9 @@ describe("runLiveEvaluationUseCase", () => {
             traceRepository,
             evaluationRepository,
             scoreWriteLayer,
-            issueRepository,
+            signalRepository,
             aiLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
           }),
         ),
       ),
@@ -946,7 +1256,7 @@ describe("runLiveEvaluationUseCase", () => {
 
     expect(result.summary).toEqual({
       evaluationId: evaluation.id,
-      issueId: evaluation.issueId,
+      signalId: evaluation.signalId,
       traceId: traceDetail.traceId,
       sessionId: traceDetail.sessionId,
       scoreId: result.context.score.id,
@@ -979,14 +1289,14 @@ describe("runLiveEvaluationUseCase", () => {
         traceId: traceDetail.traceId,
         spanId: traceDetail.rootSpanId,
         simulationId: null,
-        source: "evaluation",
+        sourceType: "evaluation",
         sourceId: evaluation.id,
-        issueId: null,
+        signalId: evaluation.signalId,
         value: 1,
         passed: true,
         feedback: "The conversation does not exhibit the linked issue.",
         metadata: {
-          evaluationHash: evaluation.alignment.evaluationHash,
+          evaluationHash: evaluation.alignment?.evaluationHash,
         },
         error: null,
         errored: false,
@@ -1006,56 +1316,31 @@ describe("runLiveEvaluationUseCase", () => {
       "BillingUsagePeriodUpdated",
       "ScoreCreated",
     ])
-    expect(calls.generate).toHaveLength(1)
+    expect(scriptRuntime.calls.run).toHaveLength(1)
     expectImmutableAnalyticsSyncOrder(operations)
-    expect(calls.generate[0]?.telemetry).toMatchObject({
-      spanName: "evaluation.judge.live",
-      tags: [...AI_GENERATE_TELEMETRY_TAGS.evaluationJudgeLive],
-      metadata: {
-        organizationId: INPUT.organizationId,
-        projectId: INPUT.projectId,
-        evaluationId: INPUT.evaluationId,
-        issueId: "i".repeat(24),
-        traceId: INPUT.traceId,
-      },
-    })
   })
 
-  it("assigns the linked issue immediately for failed live evaluation results", async () => {
-    const evaluation = makeEvaluation({
-      script: VALID_SCRIPT,
-    })
-    const issue = makeIssue({
-      id: IssueId(evaluation.issueId),
-    })
+  it("reopens a resolved signal and emits SignalRegressed on a present verdict", async () => {
+    const evaluation = makeEvaluation({ script: VALID_SCRIPT })
+    const resolvedAt = new Date("2026-05-01T00:00:00.000Z")
+    const issue = makeSignal({ id: SignalId(evaluation.signalId), resolvedAt })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository((issueId) => {
-      expect(issueId).toEqual(IssueId(evaluation.issueId))
-      return Effect.succeed(issue)
-    })
-    const { operations, persistedScores, inserted, outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
-    const aiDuration = 321_000_000
-    const aiTokens = 90
-    const aiTokenUsage = {
-      input: 30,
-      output: aiTokens - 30,
-    }
-    const { layer: aiLayer } = createFakeAI({
-      generate: <T>(input: GenerateInput<T>) =>
-        Effect.succeed({
-          object: input.schema.parse({
-            passed: false,
-            value: 0,
-            feedback: "The conversation exhibits the linked issue.",
-          }),
-          tokens: aiTokens,
-          duration: aiDuration,
-          tokenUsage: aiTokenUsage,
-        } satisfies GenerateResult<T>),
+    const claimCalls: { readonly signalId: string; readonly occurredAt: Date }[] = []
+    const signalRepository = createSignalRepository(
+      () => Effect.succeed(issue),
+      (claimInput) =>
+        Effect.sync(() => {
+          claimCalls.push({ signalId: String(claimInput.signalId), occurredAt: claimInput.occurredAt })
+          return true
+        }),
+    )
+    const { outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 1, feedback: "Present.", duration: 1, tokens: 0, cost: 0 }),
     })
 
     const result = await Effect.runPromise(
@@ -1065,8 +1350,147 @@ describe("runLiveEvaluationUseCase", () => {
             traceRepository,
             evaluationRepository,
             scoreWriteLayer,
-            issueRepository,
+            signalRepository,
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    if (result.action !== "persisted") throw new Error("Expected a persisted live evaluation result")
+    expect(claimCalls).toEqual([{ signalId: String(evaluation.signalId), occurredAt: result.context.score.createdAt }])
+    const regressed = outboxEvents.find((event) => (event as { eventName: string }).eventName === "SignalRegressed") as
+      | { payload: Record<string, unknown> }
+      | undefined
+    expect(regressed?.payload).toMatchObject({
+      signalId: evaluation.signalId,
+      triggerScoreId: result.context.score.id,
+    })
+  })
+
+  it("does not emit SignalRegressed when the reopen claim loses the race", async () => {
+    const evaluation = makeEvaluation({ script: VALID_SCRIPT })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+      resolvedAt: new Date("2026-05-01T00:00:00.000Z"),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(
+      () => Effect.succeed(issue),
+      () => Effect.succeed(false),
+    )
+    const { outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 1, feedback: "Present.", duration: 1, tokens: 0, cost: 0 }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            scoreWriteLayer,
+            signalRepository,
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    expect(outboxEvents.map((event) => (event as { eventName: string }).eventName)).not.toContain("SignalRegressed")
+  })
+
+  it("skips the reopen claim entirely for absent verdicts", async () => {
+    const evaluation = makeEvaluation({ script: VALID_SCRIPT })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+      resolvedAt: new Date("2026-05-01T00:00:00.000Z"),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(
+      () => Effect.succeed(issue),
+      () => Effect.die("absent verdicts must not attempt a reopen claim"),
+    )
+    const { outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 0, feedback: "Absent.", duration: 1, tokens: 0, cost: 0 }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            scoreWriteLayer,
+            signalRepository,
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    expect(outboxEvents.map((event) => (event as { eventName: string }).eventName)).not.toContain("SignalRegressed")
+  })
+
+  it("leaves the score unassigned for a failing live evaluation result", async () => {
+    const evaluation = makeEvaluation({
+      script: VALID_SCRIPT,
+    })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository((signalId) => {
+      expect(signalId).toEqual(SignalId(evaluation.signalId))
+      return Effect.succeed(issue)
+    })
+    const { operations, persistedScores, inserted, outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const aiDuration = 321_000_000
+    const aiTokens = 90
+    const aiTokenUsage = {
+      input: 30,
+      output: aiTokens - 30,
+    }
+    const cost = estimateEvaluationScriptCostMicrocents({ tokens: aiTokens, tokenUsage: aiTokenUsage })
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () =>
+        Effect.succeed({
+          value: 0,
+          feedback: "The conversation exhibits the linked issue.",
+          duration: aiDuration,
+          tokens: aiTokens,
+          cost,
+        }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            scoreWriteLayer,
+            signalRepository,
             aiLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
           }),
         ),
       ),
@@ -1082,14 +1506,14 @@ describe("runLiveEvaluationUseCase", () => {
       traceId: traceDetail.traceId,
       spanId: traceDetail.rootSpanId,
       simulationId: null,
-      source: "evaluation",
+      sourceType: "evaluation",
       sourceId: evaluation.id,
-      issueId: evaluation.issueId,
+      signalId: null,
       value: 0,
       passed: false,
       feedback: "The conversation exhibits the linked issue.",
       metadata: {
-        evaluationHash: evaluation.alignment.evaluationHash,
+        evaluationHash: evaluation.alignment?.evaluationHash,
       },
       error: null,
       errored: false,
@@ -1129,26 +1553,22 @@ describe("runLiveEvaluationUseCase", () => {
     const evaluation = makeEvaluation({
       script: VALID_SCRIPT,
     })
-    const issue = makeIssue({
-      id: IssueId(evaluation.issueId),
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
     })
     const traceDetail = makeTraceDetail()
     const { repository: traceRepository } = createFakeTraceRepository({
       findByTraceId: () => Effect.succeed(traceDetail),
     })
     const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
-    const issueRepository = createIssueRepository((issueId) => {
-      expect(issueId).toEqual(IssueId(evaluation.issueId))
+    const signalRepository = createSignalRepository((signalId) => {
+      expect(signalId).toEqual(SignalId(evaluation.signalId))
       return Effect.succeed(issue)
     })
     const { operations, persistedScores, inserted, outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
-    const { layer: aiLayer, calls } = createFakeAI({
-      generate: () =>
-        Effect.fail(
-          new AIError({
-            message: "AI generation failed (openai/gpt-5.4): upstream timeout",
-          }),
-        ),
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.fail(new ScriptRuntimeError({ message: "evaluation script failed: upstream timeout" })),
     })
 
     const result = await Effect.runPromise(
@@ -1158,8 +1578,9 @@ describe("runLiveEvaluationUseCase", () => {
             traceRepository,
             evaluationRepository,
             scoreWriteLayer,
-            issueRepository,
+            signalRepository,
             aiLayer,
+            scriptRuntimeLayer: scriptRuntime.layer,
           }),
         ),
       ),
@@ -1173,7 +1594,7 @@ describe("runLiveEvaluationUseCase", () => {
 
     expect(result.context.execution).toMatchObject({
       kind: "errored",
-      error: "AI generation failed (openai/gpt-5.4): upstream timeout",
+      error: "evaluation script failed: upstream timeout",
       tokens: 0,
       cost: 0,
     })
@@ -1186,16 +1607,16 @@ describe("runLiveEvaluationUseCase", () => {
       traceId: traceDetail.traceId,
       spanId: traceDetail.rootSpanId,
       simulationId: null,
-      source: "evaluation",
+      sourceType: "evaluation",
       sourceId: evaluation.id,
-      issueId: null,
+      signalId: null,
       value: 0,
       passed: false,
-      feedback: "AI generation failed (openai/gpt-5.4): upstream timeout",
+      feedback: "evaluation script failed: upstream timeout",
       metadata: {
-        evaluationHash: evaluation.alignment.evaluationHash,
+        evaluationHash: evaluation.alignment?.evaluationHash,
       },
-      error: "AI generation failed (openai/gpt-5.4): upstream timeout",
+      error: "evaluation script failed: upstream timeout",
       errored: true,
       duration: result.context.execution.duration,
       tokens: 0,
@@ -1209,7 +1630,168 @@ describe("runLiveEvaluationUseCase", () => {
       "BillingUsagePeriodUpdated",
       "ScoreCreated",
     ])
-    expect(calls.generate).toHaveLength(1)
+    expect(scriptRuntime.calls.run).toHaveLength(1)
     expectImmutableAnalyticsSyncOrder(operations)
+  })
+
+  it("executes deterministic (non-template) scripts through the sandbox runtime", async () => {
+    const evaluation = makeEvaluation({
+      // A deterministic script with no llm() call — only executable by the sandbox runtime.
+      script: "return Passed(1, 'no exhibition')",
+    })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
+    const { repository: billingUsageEventRepository, eventsByPeriodAndIdempotencyKey } =
+      createFakeBillingUsageEventRepository()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 1, feedback: "no exhibition", duration: 9_000, tokens: 0, cost: 0 }),
+    })
+    const { layer: aiLayer, calls } = createFakeAI()
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            signalRepository,
+            aiLayer,
+            billingLayer: createBillingLayer({ billingUsageEventRepository }),
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    if (result.action !== "persisted") throw new Error("Expected a persisted live evaluation result")
+    expect(result.context.execution).toMatchObject({
+      kind: "completed",
+      result: { passed: true, value: 1, feedback: "no exhibition" },
+      duration: 9_000,
+      tokens: 0,
+      cost: 0,
+    })
+    expect(scriptRuntime.calls.run).toHaveLength(1)
+    expect(scriptRuntime.calls.run[0]?.script.source).toBe(evaluation.script)
+    expect(calls.generate).toHaveLength(0)
+    expect([...eventsByPeriodAndIdempotencyKey.values()]).toEqual([
+      expect.objectContaining({ action: "deterministic-eval-scan", credits: 1 }),
+    ])
+  })
+
+  it("records detector health per run and surfaces the degraded transition through the outbox once", async () => {
+    const evaluation = makeEvaluation({
+      script: VALID_SCRIPT,
+    })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
+    const { outboxEvents, scoreWriteLayer } = createTrackedScoreWriteFixture()
+    const detectorHealth = createFakeDetectorHealthTracker({
+      recordRun: () => Effect.succeed({ runs: 20, errors: 11, degraded: true, newlyDegraded: true }),
+    })
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.fail(new ScriptRuntimeError({ message: "evaluation script failed: upstream timeout" })),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            scoreWriteLayer,
+            signalRepository,
+            aiLayer,
+            detectorHealthLayer: detectorHealth.layer,
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
+    expect(detectorHealth.calls).toEqual([
+      {
+        organizationId: OrganizationId(INPUT.organizationId),
+        projectId: ProjectId(INPUT.projectId),
+        ownerType: "evaluation",
+        ownerId: evaluation.id,
+        errored: true,
+      },
+    ])
+    const degradedEvents = outboxEvents.filter(
+      (event) => (event as { eventName: string }).eventName === "EvaluationDetectorDegraded",
+    )
+    expect(degradedEvents).toEqual([
+      {
+        eventName: "EvaluationDetectorDegraded",
+        aggregateType: "evaluation",
+        aggregateId: evaluation.id,
+        organizationId: INPUT.organizationId,
+        payload: {
+          organizationId: INPUT.organizationId,
+          projectId: INPUT.projectId,
+          evaluationId: evaluation.id,
+          runs: 20,
+          errors: 11,
+          windowSeconds: 3600,
+        },
+      },
+    ])
+  })
+
+  it("does not let detector-health failures replace the run outcome", async () => {
+    const evaluation = makeEvaluation({
+      script: VALID_SCRIPT,
+    })
+    const issue = makeSignal({
+      id: SignalId(evaluation.signalId),
+    })
+    const traceDetail = makeTraceDetail()
+    const { repository: traceRepository } = createFakeTraceRepository({
+      findByTraceId: () => Effect.succeed(traceDetail),
+    })
+    const evaluationRepository = createEvaluationRepository(() => Effect.succeed(evaluation))
+    const signalRepository = createSignalRepository(() => Effect.succeed(issue))
+    const detectorHealth = createFakeDetectorHealthTracker({
+      recordRun: () => Effect.fail(new CacheError({ message: "redis unavailable" })),
+    })
+    const { layer: aiLayer } = createFakeAI()
+    const scriptRuntime = createFakeScriptRuntime({
+      run: () => Effect.succeed({ value: 1, feedback: "ok", duration: 1_000, tokens: 120, cost: 0 }),
+    })
+
+    const result = await Effect.runPromise(
+      runLiveEvaluationUseCase(INPUT).pipe(
+        Effect.provide(
+          createUseCaseLayer({
+            traceRepository,
+            evaluationRepository,
+            signalRepository,
+            aiLayer,
+            detectorHealthLayer: detectorHealth.layer,
+            scriptRuntimeLayer: scriptRuntime.layer,
+          }),
+        ),
+      ),
+    )
+
+    expect(result.action).toBe("persisted")
   })
 })

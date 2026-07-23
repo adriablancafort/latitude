@@ -25,7 +25,7 @@ const tabsListVariants = cva("relative flex flex-row", {
   },
   compoundVariants: [
     { variant: "bordered", size: "md", className: "rounded-lg p-1" },
-    { variant: "bordered", size: "sm", className: "h-8 items-center rounded-md p-0.5" },
+    { variant: "bordered", size: "sm", className: "h-8 items-center rounded-md p-1" },
   ],
   defaultVariants: {
     variant: "secondary",
@@ -56,12 +56,13 @@ const tabTriggerVariants = cva(
       },
     },
     compoundVariants: [
+      { variant: "bordered", className: "rounded" },
       { size: "md", hideLabels: true, className: "h-8 w-8" },
       { size: "md", hideLabels: false, className: "h-8 gap-1 px-2" },
       { size: "sm", variant: "secondary", hideLabels: true, className: "h-8 w-8" },
       { size: "sm", variant: "secondary", hideLabels: false, className: "h-8 gap-1 px-2" },
       { size: "sm", variant: "bordered", hideLabels: true, className: "h-6.5 w-6.5" },
-      { size: "sm", variant: "bordered", hideLabels: false, className: "h-6.5 gap-1 px-2" },
+      { size: "sm", variant: "bordered", hideLabels: false, className: "h-6.5 gap-1 px-1.5" },
       {
         variant: "secondary",
         hideLabels: true,
@@ -114,11 +115,11 @@ const tabTriggerVariants = cva(
   },
 )
 
-const tabIndicatorVariants = cva("pointer-events-none absolute left-0 top-0 rounded-md", {
+const tabIndicatorVariants = cva("pointer-events-none absolute left-0 top-0", {
   variants: {
     variant: {
-      secondary: "bg-muted",
-      bordered: "border border-border bg-background",
+      secondary: "rounded-md bg-muted",
+      bordered: "rounded border border-border bg-background",
     },
   },
   defaultVariants: {
@@ -141,6 +142,10 @@ export type TabsProps<T extends string = string> = {
   readonly active: T
   readonly onSelect: (id: T) => void
   readonly hideLabels?: boolean
+  readonly disabled?: boolean
+  readonly className?: string
+  /** Extra classes merged onto the sliding active-tab indicator. */
+  readonly indicatorClassName?: string
 } & VariantProps<typeof tabsListVariants>
 
 type SlidingIndicatorParams<T extends string> = {
@@ -177,14 +182,15 @@ function useSlidingIndicator<T extends string>({ active, options, variant, size 
       return
     }
 
-    const listRect = listElement.getBoundingClientRect()
-    const tabRect = activeTabElement.getBoundingClientRect()
-    const x = tabRect.left - listRect.left - listElement.clientLeft
-    const y = tabRect.top - listRect.top - listElement.clientTop
+    // offset* are layout values, immune to ancestor CSS transforms — measuring
+    // with getBoundingClientRect during a dialog's zoom-in animation captured
+    // ~95%-scaled sizes that ResizeObserver (border-box only) never corrected.
+    const x = activeTabElement.offsetLeft
+    const y = activeTabElement.offsetTop
 
     indicatorElement.style.transform = `translate(${x}px, ${y}px)`
-    indicatorElement.style.width = `${tabRect.width}px`
-    indicatorElement.style.height = `${tabRect.height}px`
+    indicatorElement.style.width = `${activeTabElement.offsetWidth}px`
+    indicatorElement.style.height = `${activeTabElement.offsetHeight}px`
 
     setIsIndicatorVisible(true)
   }, [active])
@@ -247,9 +253,12 @@ export function Tabs<T extends string>({
   active,
   onSelect,
   hideLabels = false,
+  disabled = false,
   variant = "secondary",
   size = "md",
   wrap = false,
+  className,
+  indicatorClassName,
 }: TabsProps<T>) {
   const resolvedVariant = variant ?? "secondary"
   const resolvedSize = size ?? "md"
@@ -262,6 +271,7 @@ export function Tabs<T extends string>({
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (disabled) return
       const currentIndex = options.findIndex((o) => o.id === active)
       let nextIndex: number | undefined
 
@@ -288,22 +298,30 @@ export function Tabs<T extends string>({
       onSelect(next.id)
       tabRefs.current.get(next.id)?.focus()
     },
-    [options, active, onSelect],
+    [options, active, onSelect, disabled],
   )
 
   return (
     <div
-      className={cn(tabsListVariants({ variant: resolvedVariant, size: resolvedSize, wrap }))}
+      className={cn(
+        tabsListVariants({ variant: resolvedVariant, size: resolvedSize, wrap }),
+        { "cursor-not-allowed opacity-60": disabled },
+        className,
+      )}
       role="tablist"
       onKeyDown={onKeyDown}
       ref={listRef}
     >
       <div
         aria-hidden="true"
-        className={cn(tabIndicatorVariants({ variant: resolvedVariant }), {
-          hidden: !isIndicatorVisible,
-          "transition-[transform,width,height] duration-200 ease-in-out": isIndicatorAnimated,
-        })}
+        className={cn(
+          tabIndicatorVariants({ variant: resolvedVariant }),
+          {
+            hidden: !isIndicatorVisible,
+            "transition-[transform,width,height] duration-200 ease-in-out": isIndicatorAnimated,
+          },
+          indicatorClassName,
+        )}
         ref={indicatorRef}
       />
       {options.map((option) => {
@@ -314,6 +332,7 @@ export function Tabs<T extends string>({
             ref={(el) => setTabRef(option.id, el)}
             role="tab"
             type="button"
+            disabled={disabled}
             aria-selected={isActive}
             aria-label={hideLabels ? option.label : undefined}
             tabIndex={isActive ? 0 : -1}
@@ -324,8 +343,11 @@ export function Tabs<T extends string>({
                 active: isActive,
                 hideLabels,
               }),
+              disabled && "pointer-events-none",
             )}
-            onClick={() => onSelect(option.id)}
+            onClick={() => {
+              if (!disabled) onSelect(option.id)
+            }}
           >
             {hideLabels ? (
               <>
@@ -335,8 +357,14 @@ export function Tabs<T extends string>({
             ) : (
               <>
                 {option.icon}
-                <Text.H5 color={isActive ? "foreground" : "foregroundMuted"}>{option.label}</Text.H5>
-                {option.suffix}
+                {option.suffix ? (
+                  <span className="inline-flex items-baseline gap-1">
+                    <Text.H5 color={isActive ? "foreground" : "foregroundMuted"}>{option.label}</Text.H5>
+                    {option.suffix}
+                  </span>
+                ) : (
+                  <Text.H5 color={isActive ? "foreground" : "foregroundMuted"}>{option.label}</Text.H5>
+                )}
               </>
             )}
           </button>

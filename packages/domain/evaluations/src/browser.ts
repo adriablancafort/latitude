@@ -1,3 +1,4 @@
+export { compileSettingsToScript } from "./codegen/compile-settings-to-script.ts"
 export {
   ALIGNMENT_CURATED_DATASET_MAX_ROWS,
   ALIGNMENT_CURATED_DATASET_MIN_ROWS,
@@ -48,10 +49,6 @@ export {
   type ListNegativeEvaluationAlignmentExamplesInput,
 } from "./ports/evaluation-alignment-examples-repository.ts"
 export {
-  type EvaluationIssue,
-  EvaluationIssueRepository,
-} from "./ports/evaluation-issue-repository.ts"
-export {
   type EvaluationListLifecycle,
   type EvaluationListOptions,
   type EvaluationListPage,
@@ -60,6 +57,10 @@ export {
   evaluationListLifecycleSchema,
 } from "./ports/evaluation-repository.ts"
 export {
-  deriveIssueAlignmentState,
-  type IssueAlignmentState,
-} from "./use-cases/get-issue-alignment-state.ts"
+  type EvaluationSignal,
+  EvaluationSignalRepository,
+} from "./ports/evaluation-signal-repository.ts"
+export {
+  deriveSignalAlignmentState,
+  type SignalAlignmentState,
+} from "./use-cases/get-signal-alignment-state.ts"

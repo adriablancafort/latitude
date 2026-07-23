@@ -1,4 +1,4 @@
-import type { AlertIncidentKind, AlertIncidentSourceType } from "@domain/shared"
+import type { IncidentSourceType } from "@domain/shared"
 
 /**
  * NOTE: The *Requested events (MagicLinkEmailRequested, InvitationEmailRequested,
@@ -31,7 +31,7 @@ export interface EventPayloads {
     readonly traceIds: readonly string[]
     /**
      * Resolved once at the top of ingest (`parent_org_id != null`). Consumers
-     * branch on it: the LLM fan-out (flaggers, evaluations, issue-clustering)
+     * branch on it: the LLM fan-out (flaggers, evaluations, signal clustering)
      * does not run for sandbox events. Absent on legacy/replayed events ⇒ live.
      */
     readonly isSandbox?: boolean
@@ -48,61 +48,78 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly scoreId: string
-    readonly issueId: string | null
+    readonly signalId: string | null
     readonly status: "draft" | "published"
   }
-  ScoreAssignedToIssue: {
+  ScoreAssignedToSignal: {
     readonly organizationId: string
     readonly projectId: string
-    readonly issueId: string
+    readonly signalId: string
   }
   /**
-   * Emitted by `createIssueFromScoreUseCase` after the issue row is saved.
-   * Drives the alert pipeline's `issue.new` incident creation.
+   * Emitted by `createSignalFromScoreUseCase` after the signal row is saved.
+   * Drives discovery notifications.
    */
-  IssueCreated: {
+  SignalCreated: {
     readonly organizationId: string
     readonly projectId: string
-    readonly issueId: string
+    readonly signalId: string
     readonly createdAt: string
   }
   /**
-   * Emitted by `assignScoreToIssueUseCase` when assigning a score whose
-   * `lastSeenAt` is later than the issue's `resolvedAt`. The use case clears
-   * `resolvedAt` on the same transaction (reifying the regression as a stored
-   * fact); idempotency on subsequent regression-causing scores is enforced by
-   * the cleared field, so a second event will not be emitted in the same cycle.
-   * `triggerScoreId` discriminates per regression cycle so a future regression
-   * after re-resolution is a distinct event.
+   * Emitted by `updateSignalTriageUseCase` whenever the signal's assignee
+   * actually changes (including clears — consumers filter). `assignedAt` is
+   * the triage transaction's `now`, frozen into the outbox payload; it is
+   * the idempotency anchor for downstream notification dedupe, so a
+   * re-assignment (A→B→A) is a distinct event while outbox/queue redelivery
+   * of the same event replays identical data.
    */
-  IssueRegressed: {
+  SignalAssigneeChanged: {
     readonly organizationId: string
     readonly projectId: string
-    readonly issueId: string
+    readonly signalId: string
+    /** New assignee; `null` when the assignment was cleared. */
+    readonly assigneeId: string | null
+    readonly previousAssigneeId: string | null
+    /** User who performed the triage edit (self-assignments never notify). */
+    readonly actorUserId: string
+    readonly assignedAt: string
+  }
+  /**
+   * Emitted when a new occurrence reopens a manually resolved signal: the
+   * reopen claim clears `resolved_at` and stamps `regressed_at`, and exactly
+   * one writer per regression cycle emits this (the conditional claim
+   * serializes concurrent occurrences). `triggerScoreId` identifies the
+   * occurrence that tripped the reopen and discriminates regression cycles
+   * for notification idempotency. Drives the `signal.regressed` notification.
+   */
+  SignalRegressed: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly signalId: string
     readonly regressedAt: string
     readonly triggerScoreId: string
   }
   /**
-   * Emitted by `checkIssueEscalationUseCase` when an issue transitions into
-   * the escalating state. The use case does not write the issue itself —
-   * idempotency comes from `IssueRepository`'s joined `lifecycle.isEscalating`
-   * flag (which reads the open `alert_incidents` row). Drives the
-   * `issue.escalating` incident's open transition (the alert-incidents
-   * worker inserts the new row).
+   * Emitted by `checkSignalEscalationUseCase` when a signal transitions into
+   * the escalating state. The use case does not write the incident itself —
+   * idempotency comes from `SignalRepository`'s joined `lifecycle.isEscalating`
+   * flag (which reads the open incident row). The alert-incidents worker
+   * inserts the new row.
    *
    * `entrySignals` is the snapshot of seasonal-anomaly signals at the moment
    * of entry, persisted onto the new `alert_incidents` row by the worker so
    * the close-side detector can compare against the conditions that tripped
    * open instead of recomputing live. Shape mirrors `EntrySignalsSnapshot`
-   * in `@domain/alerts` — declared inline here to keep `@domain/events`
-   * free of an `@domain/alerts` dependency (which would create a cycle).
+   * in `@domain/incidents` — declared inline here to keep `@domain/events`
+   * free of an `@domain/incidents` dependency (which would create a cycle).
    * `null` only for historical replay of events emitted before the seasonal
    * detector started snapshotting.
    */
-  IssueEscalated: {
+  SignalEscalated: {
     readonly organizationId: string
     readonly projectId: string
-    readonly issueId: string
+    readonly signalId: string
     readonly escalatedAt: string
     readonly entrySignals: {
       readonly expected1h: number
@@ -117,7 +134,7 @@ export interface EventPayloads {
     } | null
   }
   /**
-   * Emitted by `checkIssueEscalationUseCase` when an escalating issue exits.
+   * Emitted by `checkSignalEscalationUseCase` when an escalating signal exits.
    * `reason` discriminates the three exit paths so downstream consumers
    * (notifications copy, observability dashboards) can distinguish a
    * natural band-shape recovery from a forced close:
@@ -127,19 +144,15 @@ export interface EventPayloads {
    *     the seasonal baseline caught up — wouldn't close on `threshold` alone).
    *   - `timeout`: the 72h hard ceiling kicked in (backstop against
    *     ghost incidents that never recover their snapshot conditions).
-   *   - `resolved` / `ignored`: the user manually resolved or ignored the
-   *     issue, so the open escalation is stale and closed directly. Emitted
-   *     by `applyIssueLifecycleCommandUseCase` (not the detector); these
-   *     close silently — see the notification gate in `domain-events.ts`.
    *
-   * Drives the `issue.escalating` incident's close transition — the
+   * Drives the signal escalation incident's close transition — the
    * alert-incidents worker sets `ended_at` on the open row, which is what
    * flips `lifecycle.isEscalating` back to `false` on subsequent reads.
    */
-  IssueEscalationEnded: {
+  SignalEscalationEnded: {
     readonly organizationId: string
     readonly projectId: string
-    readonly issueId: string
+    readonly signalId: string
     readonly endedAt: string
     readonly reason: "threshold" | "absolute-rate-drop" | "timeout" | "resolved" | "ignored"
   }
@@ -152,17 +165,16 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly alertIncidentId: string
-    readonly kind: AlertIncidentKind
-    readonly sourceType: AlertIncidentSourceType
+    readonly sourceType: IncidentSourceType
     readonly sourceId: string
   }
   /**
    * Emitted by the alert-incidents worker after an `alert_incidents` row's
-   * `ended_at` is set (only sustained kinds — currently `issue.escalating` —
-   * can close). Symmetric to `IncidentCreated`. Consumed by the notifications
+   * `ended_at` is set (only sustained incidents can close). Symmetric to
+   * `IncidentCreated`. Consumed by the notifications
    * worker to fire a "closed" notification for the same incident.
    *
-   * `reason` mirrors `IssueEscalationEnded.reason` and is forwarded by the
+   * `reason` mirrors `SignalEscalationEnded.reason` and is forwarded by the
    * worker so observability/notification consumers can distinguish a clean
    * band-shape exit from the backstop and timeout paths. Optional because
    * pre-rewrite events / replays may not carry it; consumers should treat
@@ -172,8 +184,7 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly alertIncidentId: string
-    readonly kind: AlertIncidentKind
-    readonly sourceType: AlertIncidentSourceType
+    readonly sourceType: IncidentSourceType
     readonly sourceId: string
     readonly reason?: "threshold" | "absolute-rate-drop" | "timeout" | "resolved" | "ignored"
   }
@@ -181,7 +192,7 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly scoreId: string
-    readonly issueId: string | null
+    readonly signalId: string | null
     readonly draftedAt: string | null
     readonly feedback: string
     readonly source: string
@@ -291,7 +302,7 @@ export interface EventPayloads {
     readonly actorUserId: string
     readonly projectId: string
     readonly evaluationId: string
-    readonly issueId: string
+    readonly signalId: string
   }
   /**
    * Fired when an existing evaluation for an issue is realigned (re-trained
@@ -303,14 +314,21 @@ export interface EventPayloads {
     readonly actorUserId: string
     readonly projectId: string
     readonly evaluationId: string
-    readonly issueId: string
+    readonly signalId: string
   }
-  AnnotationQueueItemCompleted: {
+  /**
+   * Fired (once per health window) when an evaluation's script runs cross the
+   * detector-health degradation threshold — it is failing `errors / runs` of
+   * its executions, each of which is a silent false negative. Emitted by the
+   * live run path; the transition dedupe lives in the detector-health tracker.
+   */
+  EvaluationDetectorDegraded: {
     readonly organizationId: string
-    readonly actorUserId: string
     readonly projectId: string
-    readonly queueId: string
-    readonly itemId: string
+    readonly evaluationId: string
+    readonly runs: number
+    readonly errors: number
+    readonly windowSeconds: number
   }
   FirstTraceReceived: {
     readonly organizationId: string
@@ -380,7 +398,7 @@ export interface EventPayloads {
    * Emitted when a platform admin updates a user's primary email
    * via the backoffice. Snapshot both addresses so audit queries
    * can attribute future logins under the new email back to the
-   * admin who renamed the account. Issued via Better Auth's
+   * admin who renamed the account. Signald via Better Auth's
    * `adminUpdateUser` endpoint, which writes through the internal
    * adapter — `emailVerified` is intentionally left untouched
    * (admins routinely correct typos for users who already verified).
@@ -422,20 +440,19 @@ export interface EventPayloads {
     readonly targetUserId: string
     readonly sessionId: string
   }
-  /**
-   * Emitted when a platform admin creates a new "demo project" on an
-   * organization via the backoffice. The project row is written
-   * synchronously by the use-case; the actual seeding (datasets,
-   * evaluations, issues, queues, scores, ~30 days of telemetry) runs
-   * in a background Temporal workflow — the audit event records the
-   * admin's intent at the moment the project was created, not the
-   * outcome of the workflow. Reconcile against the workflow handle
-   * when investigating a half-seeded project.
-   */
-  AdminDemoProjectSeeded: {
-    readonly adminUserId: string
+  /** Emitted by `claimOrganizationUseCase` after a temp org is adopted. */
+  OrganizationClaimed: {
     readonly organizationId: string
-    readonly projectId: string
-    readonly projectName: string
+    readonly ownerUserId: string
+  }
+  /**
+   * Emitted by `bootstrapOrganizationUseCase` when an email is supplied; drives the claim email.
+   * Outbox `organizationId: "system"` like `InvitationEmailRequested` — an auth-boundary email.
+   */
+  ClaimEmailRequested: {
+    readonly email: string
+    readonly claimUrl: string
+    readonly organizationName: string
+    readonly expiresAt: string
   }
 }

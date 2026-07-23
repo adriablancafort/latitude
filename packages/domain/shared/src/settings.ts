@@ -1,48 +1,40 @@
 import { Context, Effect } from "effect"
 import { z } from "zod"
-import { ALERT_INCIDENT_KINDS, type AlertIncidentKind } from "./alert-incident-kinds.ts"
+import { INCIDENT_NOTIFICATION_KEYS, type IncidentNotificationKey } from "./alert-incident-kinds.ts"
 import type { RepositoryError } from "./errors.ts"
 import type { ProjectId } from "./id.ts"
 import type { SqlClient } from "./sql-client.ts"
 
 export const organizationSettingsSchema = z.object({
-  keepMonitoring: z.boolean().optional(), // TODO: deprecated. Removed from frontend but maintained to keep cascaded settings scaffold
+  keepMonitoring: z.boolean().optional(), // default for resolve's "keep evaluating" choice; cascaded project → org → system
   billing: z
     .object({
       spendingLimitCents: z.number().int().positive().optional(),
     })
     .optional(),
+  wantsShowcase: z.boolean().optional(),
 })
 
-/**
- * Per-alert-kind switch for incident notifications. Missing entries
- * default to `true` (notifications are on by default; users opt out per
- * kind, per project). Built from `ALERT_INCIDENT_KINDS` so adding a new
- * alert kind automatically extends the schema.
- *
- * Modelled as a plain `z.object` rather than a record intersection
- * because `z.record(z.enum(...))` validates keys against the enum and is
- * needlessly strict here — we want explicit per-key types.
- */
 const incidentNotificationsKindShape = Object.fromEntries(
-  ALERT_INCIDENT_KINDS.map((kind) => [kind, z.boolean().optional()] as const),
-) as { [K in AlertIncidentKind]: z.ZodOptional<z.ZodBoolean> }
+  INCIDENT_NOTIFICATION_KEYS.map((kind) => [kind, z.boolean().optional()] as const),
+) as { [K in IncidentNotificationKey]: z.ZodOptional<z.ZodBoolean> }
 
 export const incidentNotificationsSettingSchema = z.object(incidentNotificationsKindShape)
 export type IncidentNotificationsSetting = z.infer<typeof incidentNotificationsSettingSchema>
 
 /**
- * Project-level "should this notification be requested at all" settings,
- * keyed by `NotificationGroup`. Mirrors the user-prefs structure
- * (`users.notification_preferences.<group>`); the per-group inner shape
- * varies by what's useful at the project level — for `incidents`, it's a
- * per-alert-kind opt-out matrix (different alert kinds have different
- * signal-to-noise ratios).
- *
- * Future groups (`wrapped_reports`, etc.) get their own slot.
+ * Project-level gate for the `destinations` notification group. A single
+ * boolean today (`quarantine`) — the only destinations kind that fans out to
+ * org members. Missing → `true` (on by default; opt out per project).
  */
+export const destinationNotificationsSettingSchema = z.object({
+  quarantine: z.boolean().optional(),
+})
+export type DestinationNotificationsSetting = z.infer<typeof destinationNotificationsSettingSchema>
+
 export const notificationsSettingSchema = z.object({
   incidents: incidentNotificationsSettingSchema.optional(),
+  destinations: destinationNotificationsSettingSchema.optional(),
 })
 export type NotificationsSetting = z.infer<typeof notificationsSettingSchema>
 
@@ -56,7 +48,7 @@ export type NotificationsSetting = z.infer<typeof notificationsSettingSchema>
  * behaviour regardless of notification state.
  *
  * TODO: Remove after releasing monitors for everybody — the knob moves onto the
- * system "Issue escalating" monitor's alert; this stays as the flag-off fallback.
+ * system "Signal escalating" monitor's alert; this stays as the flag-off fallback.
  */
 export const escalationSettingSchema = z.object({
   sensitivity: z.number().int().min(1).max(6).optional(),
@@ -75,13 +67,27 @@ export const projectSettingsSchema = z.object({
   notifications: notificationsSettingSchema.optional(),
   escalation: escalationSettingSchema.optional(),
   onboardingType: z.enum(["prod-traces", "code-agents"]).optional(),
+  onboardingCompleted: z.boolean().optional(),
+  isSample: z.boolean().optional(),
+  /**
+   * Marks a project as belonging to the shared read-only Showcase (built by the
+   * regeneration workflow in the showcase org). Distinct from `isSample` (the
+   * per-signup demo) so exclusion filters — taxonomy gardening, retention
+   * handling, landing-project preference — can skip showcase projects without
+   * conflating them with per-org samples.
+   */
+  isShowcase: z.boolean().optional(),
   sampling: samplingSettingSchema.optional(),
 })
 
 export const isIncidentNotificationEnabled = (
   settings: ProjectSettings | null | undefined,
-  kind: AlertIncidentKind,
+  kind: IncidentNotificationKey,
 ): boolean => settings?.notifications?.incidents?.[kind] ?? true
+
+/** Project-level gate for `destination.quarantined` notifications. On by default. */
+export const isDestinationNotificationEnabled = (settings: ProjectSettings | null | undefined): boolean =>
+  settings?.notifications?.destinations?.quarantine ?? true
 
 export type OrganizationSettings = z.infer<typeof organizationSettingsSchema>
 
@@ -126,5 +132,8 @@ export const resolveSettings = (input?: { projectId?: ProjectId }) =>
       projectSettings = yield* reader.getProjectSettings(input.projectId)
     }
 
-    return resolveSettingsCascade({ organization: orgSettings, project: projectSettings })
+    return resolveSettingsCascade({
+      organization: orgSettings,
+      project: projectSettings,
+    })
   })

@@ -329,6 +329,18 @@ function applySpanDataAttributes(otelSpan: OtelSpan, data: AgentsSpanData): void
           otelSpan.setAttribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
         }
       }
+      // The Responses API echoes the full tool schemas on `_response.tools` (the agent span has
+      // names only); forward them as gen_ai.tool.definitions.
+      const tools = data._response?.tools
+      if (Array.isArray(tools) && tools.length > 0) {
+        otelSpan.setAttribute("gen_ai.tool.definitions", JSON.stringify(tools))
+      }
+      // The agent's `instructions` (system prompt) are echoed on `_response.instructions`;
+      // forward them as gen_ai.system_instructions so they populate the System Instructions field.
+      const instructions = data._response?.instructions
+      if (typeof instructions === "string" && instructions.length > 0) {
+        otelSpan.setAttribute("gen_ai.system_instructions", JSON.stringify([{ type: "text", content: instructions }]))
+      }
       if (data._input !== undefined) {
         otelSpan.setAttribute("gen_ai.input.messages", JSON.stringify(buildInputMessages({ input: data._input })))
       }

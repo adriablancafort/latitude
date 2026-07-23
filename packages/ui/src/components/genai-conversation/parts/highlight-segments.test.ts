@@ -141,7 +141,7 @@ describe("highlightAttributes", () => {
     }
     const attrs = highlightAttributes(h)
     expect(attrs.className).toContain("cursor-pointer")
-    expect(attrs.className).toContain("hit-area-inline-y-2")
+    expect(attrs.className).not.toContain("hit-area-inline-y")
     expect(attrs["data-annotation-id"]).toBe("ann-1")
   })
 
@@ -183,5 +183,21 @@ describe("isLexicalSearchHighlight", () => {
   it("is false for non-search highlight types", () => {
     expect(isLexicalSearchHighlight(range("annotation"))).toBe(false)
     expect(isLexicalSearchHighlight(range("selection"))).toBe(false)
+  })
+})
+
+describe("highlightAttributes searchActive", () => {
+  it("emphasizes the active navigated search match", () => {
+    const attrs = highlightAttributes({
+      messageIndex: 0,
+      partIndex: 0,
+      startOffset: 0,
+      endOffset: 4,
+      type: "search-literal",
+      searchActive: true,
+    })
+
+    expect(attrs.className).toContain("ring-primary")
+    expect(attrs["data-search-match"]).toBe("literal")
   })
 })

@@ -5,19 +5,26 @@ import {
   DetailSection,
   DetailSummary,
   ProviderIcon,
+  Skeleton,
   TagBadgeList,
   Text,
   Tooltip,
 } from "@repo/ui"
 import { formatCount, formatDuration, relativeTime } from "@repo/utils"
-import { ArrowDownRightIcon, ArrowUpRightIcon, BrainIcon, FingerprintIcon, TextIcon } from "lucide-react"
+import { ArrowDownRightIcon, ArrowUpRightIcon, BrainIcon, FingerprintIcon, TextIcon, WrenchIcon } from "lucide-react"
 import { useMemo } from "react"
 import type { SessionDetailRecord } from "../../../../../../domains/sessions/sessions.functions.ts"
 import { useSpansBySessionCollection } from "../../../../../../domains/spans/spans.collection.ts"
+import { MemoryChangesSection } from "../memory-changes/memory-changes-section.tsx"
+import { MemorySummary } from "../memory-summary.tsx"
 import { SessionOutlierBadge, type SessionOutlierMetric } from "../session-outlier-badge.tsx"
+import { aggregateToolPills, ToolPillList } from "../tool-pills.tsx"
 import { DurationBar } from "../trace-detail-drawer/duration-bar.tsx"
 import { computeSessionDurationBreakdown } from "../trace-detail-drawer/duration-composition.ts"
+import { ModelFilterLink } from "../trace-detail-drawer/tabs/spans-tab/model-filter-link.tsx"
 import { UsageSummary } from "../trace-detail-drawer/tabs/spans-tab/span-detail/usage-summary.tsx"
+import { AgentsBreakdown } from "./agents-breakdown/agents-breakdown.tsx"
+import { useAgentGraph } from "./agents-breakdown/use-agent-graph.ts"
 
 // Sessions only expose percentile filters for duration/TTFT/cost
 // (`PERCENTILE_SESSION_FILTER_FIELDS`), so the tokens badge stays informational
@@ -37,10 +44,14 @@ export function MetadataTab({
   session,
   filters,
   onFiltersChange,
+  spansNavEnabled = false,
+  onOpenSpansWithModel,
 }: {
   readonly session: SessionDetailRecord
   readonly filters?: FilterSet | undefined
   readonly onFiltersChange?: ((filters: FilterSet) => void) | undefined
+  readonly spansNavEnabled?: boolean
+  readonly onOpenSpansWithModel?: ((model: string) => void) | undefined
 }) {
   const hasProviders = session.providers.length > 0
   const hasModels = session.models.length > 0
@@ -76,10 +87,13 @@ export function MetadataTab({
   const { data: spans, isLoading: isSpansLoading } = useSpansBySessionCollection({
     projectId: session.projectId,
     sessionId: session.sessionId,
+    traceIds: session.traceIds,
     startTimeFrom: session.startTime,
     startTimeTo: session.endTime,
   })
   const durationBreakdown = useMemo(() => computeSessionDurationBreakdown(spans ?? []), [spans])
+  const agentGraph = useAgentGraph(spans)
+  const toolPills = useMemo(() => aggregateToolPills(spans), [spans])
   const fallbackDurationMs = session.durationNs / 1_000_000
   const durationWallClockMs = durationBreakdown.wallClockMs > 0 ? durationBreakdown.wallClockMs : fallbackDurationMs
   const durationBadge = renderBadge("durationNs", session.durationNs)
@@ -130,11 +144,18 @@ export function MetadataTab({
                 {p}
               </Tooltip>
             ))}
-          {hasModels && (
-            <Text.H5 color="foregroundMuted" noWrap>
-              {session.models.join(", ")}
-            </Text.H5>
-          )}
+          {hasModels &&
+            (spansNavEnabled && onOpenSpansWithModel ? (
+              <div className="flex flex-row flex-wrap items-center gap-1.5">
+                {session.models.map((model) => (
+                  <ModelFilterLink key={model} model={model} onClick={() => onOpenSpansWithModel(model)} />
+                ))}
+              </div>
+            ) : (
+              <Text.H5 color="foregroundMuted" noWrap>
+                {session.models.join(", ")}
+              </Text.H5>
+            ))}
         </div>
       )}
 
@@ -146,7 +167,10 @@ export function MetadataTab({
           isLoading={isSpansLoading}
         />
         <UsageSummary data={session} costBadges={costBadgesNode} />
+        <MemorySummary projectId={session.projectId} sessionId={session.sessionId} />
       </div>
+
+      <AgentsBreakdown graph={agentGraph} />
 
       <div className="flex flex-col gap-1">
         <Text.H6 color="foregroundMuted">Tags</Text.H6>
@@ -158,6 +182,22 @@ export function MetadataTab({
           </Text.H6>
         )}
       </div>
+
+      <DetailSection icon={<WrenchIcon className="h-4 w-4" />} label="Tools" defaultOpen={false}>
+        {() =>
+          isSpansLoading ? (
+            <Skeleton className="h-7 w-48" />
+          ) : toolPills.length > 0 ? (
+            <ToolPillList tools={toolPills} scopeLabel="session" />
+          ) : (
+            <Text.H6 color="foregroundMuted" italic>
+              No tools
+            </Text.H6>
+          )
+        }
+      </DetailSection>
+
+      <MemoryChangesSection projectId={session.projectId} sessionId={session.sessionId} />
 
       <DetailSection icon={<TextIcon className="h-4 w-4" />} label="Metadata" defaultOpen={false}>
         {() =>

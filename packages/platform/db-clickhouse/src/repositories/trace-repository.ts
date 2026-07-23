@@ -15,6 +15,7 @@ import {
   SessionId,
   SimulationId,
   SpanId,
+  type TraceId,
   OrganizationId as toOrganizationId,
   ProjectId as toProjectId,
   toRepositoryError,
@@ -24,9 +25,11 @@ import type {
   CohortBaselineData,
   MetricPercentiles,
   Trace,
+  TraceConversationChunk,
   TraceDetail,
   TraceDistribution,
   TraceListPage,
+  TraceMetadataDetail,
   TraceMetrics,
   TraceTimeHistogramBucket,
 } from "@domain/spans"
@@ -44,6 +47,7 @@ import { buildClickHouseWhere } from "../filter-builder.ts"
 import { TRACE_FIELD_REGISTRY } from "../registries/trace-fields.ts"
 import { buildScoreRollupSubquery, splitScoreFilters } from "../score-filter-subquery.ts"
 import { isActiveSearch, planSearch } from "./search-plan.ts"
+import { TOKEN_ANALYTICS_SUM_SELECT, toTokenAnalytics } from "./token-analytics.ts"
 
 export const LIST_SELECT = `
   organization_id,
@@ -72,22 +76,58 @@ export const LIST_SELECT = `
   sum(cost_total_microcents)   AS cost_total_microcents,
   argMaxIfMerge(session_id)    AS session_id,
   argMaxIfMerge(user_id)       AS user_id,
+  argMaxIfMerge(user_email)    AS user_email,
   groupUniqArrayArray(tags)    AS tags,
   maxMap(metadata)              AS metadata,
   argMaxIfMerge(simulation_id) AS simulation_id,
   groupUniqArrayIfMerge(models)        AS models,
   groupUniqArrayIfMerge(providers)     AS providers,
   groupUniqArrayIfMerge(service_names) AS service_names,
+  groupUniqArrayIfMerge(agent_names)   AS agent_names,
+  groupUniqArrayIfMerge(tools)         AS tools,
+  groupUniqArrayArray(defined_tools)   AS defined_tools,
   argMinIfMerge(root_span_id)   AS root_span_id,
   argMinIfMerge(root_span_name) AS root_span_name
 `
 
-const DETAIL_SELECT = `${LIST_SELECT},
-  argMinIfMerge(input_messages)        AS input_messages,
-  argMaxIfMerge(last_input_messages)   AS last_input_messages,
-  argMaxIfMerge(output_messages)       AS output_messages,
-  argMinIfMerge(system_instructions)   AS system_instructions
+const MESSAGE_OPERATION_FILTER = "operation IN ('chat', 'text_completion', 'generate_content')"
+const SYSTEM_INSTRUCTION_OPERATION_FILTER =
+  "operation IN ('chat', 'text_completion', 'generate_content', 'invoke_agent')"
+
+const SPAN_MESSAGES_SELECT = `
+  trace_id,
+  argMinIf(input_messages, start_time, input_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS first_input_messages,
+  argMaxIf(input_messages, end_time, output_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS last_input_messages,
+  argMaxIf(output_messages, end_time, output_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS final_output_messages,
+  argMinIf(system_instructions, start_time, system_instructions != '' AND ${SYSTEM_INSTRUCTION_OPERATION_FILTER}) AS first_system_instructions
 `
+
+const SPAN_METADATA_MESSAGES_SELECT = `
+  trace_id,
+  argMinIf(input_messages, start_time, input_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS first_input_messages,
+  argMaxIf(output_messages, end_time, output_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS final_output_messages,
+  argMinIf(system_instructions, start_time, system_instructions != '' AND ${SYSTEM_INSTRUCTION_OPERATION_FILTER}) AS first_system_instructions
+`
+
+const DEDUPED_SPAN_MESSAGE_SOURCE_COLUMNS = `
+  trace_id, span_id, operation, input_messages, output_messages,
+  system_instructions, start_time, end_time, ingested_at
+`
+
+const dedupedSpanMessageRowsSubquery = (traceIdPredicate: string) => `(
+  SELECT ${DEDUPED_SPAN_MESSAGE_SOURCE_COLUMNS}
+  FROM spans
+  WHERE organization_id = {organizationId:String}
+    AND project_id = {projectId:String}
+    AND ${traceIdPredicate}
+  ORDER BY trace_id, span_id, ingested_at DESC
+  LIMIT 1 BY trace_id, span_id
+)`
+
+const BOUNDED_READ_SETTINGS = {
+  output_format_parallel_formatting: 0,
+  max_memory_usage: "4000000000",
+} as const
 
 type TraceListRow = {
   organization_id: string
@@ -110,21 +150,34 @@ type TraceListRow = {
   cost_total_microcents: string
   session_id: string
   user_id: string
+  user_email: string
   simulation_id: string
   tags: string[]
   metadata: Record<string, string>
   models: string[]
   providers: string[]
   service_names: string[]
+  agent_names: string[]
+  tools: string[]
+  defined_tools: string[]
   root_span_id: string
   root_span_name: string
 }
 
-type TraceDetailRow = TraceListRow & {
-  input_messages: string
+type SpanMessagesRow = {
+  trace_id: string
+  first_input_messages: string
   last_input_messages: string
-  output_messages: string
-  system_instructions: string
+  final_output_messages: string
+  first_system_instructions: string
+}
+
+type SpanMetadataMessagesRow = Omit<SpanMessagesRow, "last_input_messages">
+
+type TraceConversationChunkRow = {
+  total_messages: string | number
+  payload_bytes: string | number
+  messages: readonly string[]
 }
 
 /**
@@ -139,7 +192,10 @@ const HISTOGRAM_BUCKET_SELECT = `count() AS trace_count,
   quantileTDigest(0.5)(duration_ns) AS duration_median,
   sum(tokens_total) AS tokens_sum,
   sum(span_count) AS span_sum,
-  quantileTDigestIf(0.5)(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_median`
+  quantileTDigestIf(0.5)(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_median,
+  sum(tokens_input) AS tokens_input_sum,
+  sum(tokens_cache_read) AS tokens_cache_read_sum,
+  sum(tokens_cache_create) AS tokens_cache_create_sum`
 
 type TraceHistogramBucketRow = {
   bucket_start: string
@@ -150,6 +206,9 @@ type TraceHistogramBucketRow = {
   tokens_sum: string
   span_sum: string
   ttft_median: string
+  tokens_input_sum: string
+  tokens_cache_read_sum: string
+  tokens_cache_create_sum: string
 }
 
 const parseMessages = (json: string): GenAIMessage[] => {
@@ -159,6 +218,20 @@ const parseMessages = (json: string): GenAIMessage[] => {
   } catch {
     return []
   }
+}
+
+const parseMessage = (json: string): GenAIMessage | null => {
+  try {
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === "object" ? (parsed as GenAIMessage) : null
+  } catch {
+    return null
+  }
+}
+
+const parseClickHouseNumber = (value: string | number | undefined): number => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
 }
 
 const parseSystem = (json: string): GenAISystem => {
@@ -192,12 +265,14 @@ const toBaseFields = (row: TraceListRow): Trace => ({
   costTotalMicrocents: Number(row.cost_total_microcents),
   sessionId: SessionId(normalizeCHString(row.session_id)),
   userId: ExternalUserId(normalizeCHString(row.user_id)),
+  userEmail: normalizeCHString(row.user_email),
   simulationId: SimulationId(normalizeCHString(row.simulation_id)),
   tags: row.tags.map(normalizeCHString),
   metadata: row.metadata ?? {},
   models: row.models.map(normalizeCHString),
   providers: row.providers.map(normalizeCHString),
   serviceNames: row.service_names.map(normalizeCHString),
+  agentNames: row.agent_names.map(normalizeCHString),
   rootSpanId: SpanId(normalizeCHString(row.root_span_id)),
   rootSpanName: normalizeCHString(row.root_span_name),
 })
@@ -224,6 +299,10 @@ type TraceMetricsRow = {
   tokens_avg: string
   tokens_median: string
   tokens_sum: string
+  tokens_input_sum: string
+  tokens_output_sum: string
+  tokens_cache_read_sum: string
+  tokens_cache_create_sum: string
   ttft_min: string
   ttft_max: string
   ttft_avg: string
@@ -263,6 +342,9 @@ const toHistogramBucket = (row: TraceHistogramBucketRow): TraceTimeHistogramBuck
   spanCountSum: Number(row.span_sum),
   // TTFT is gated on `> 0`, so empty buckets return `nan` from the aggregate — coerce to 0.
   timeToFirstTokenNsMedian: finiteOrZero(row.ttft_median),
+  tokensInputSum: Number(row.tokens_input_sum),
+  tokensCacheReadSum: Number(row.tokens_cache_read_sum),
+  tokensCacheCreateSum: Number(row.tokens_cache_create_sum),
 })
 
 const toTraceMetrics = (row: TraceMetricsRow | undefined): TraceMetrics => {
@@ -279,26 +361,44 @@ const toTraceMetrics = (row: TraceMetricsRow | undefined): TraceMetrics => {
     spanCount: toNumericRollup(row.span_min, row.span_max, row.span_avg, row.span_median, row.span_sum),
     tokensTotal: toNumericRollup(row.tokens_min, row.tokens_max, row.tokens_avg, row.tokens_median, row.tokens_sum),
     timeToFirstTokenNs: toTtftRollup(row),
+    tokenAnalytics: toTokenAnalytics(row),
   }
 }
 
-const toDomainTraceDetail = (row: TraceDetailRow): TraceDetail => {
-  const systemInstructions = parseSystem(row.system_instructions)
-  const lastInput = parseMessages(row.last_input_messages)
-  const output = parseMessages(row.output_messages)
+const EMPTY_MESSAGES_ROW: Omit<SpanMessagesRow, "trace_id"> = {
+  first_input_messages: "",
+  last_input_messages: "",
+  final_output_messages: "",
+  first_system_instructions: "",
+}
+
+const toDomainTraceDetail = (summary: Trace, messages: Omit<SpanMessagesRow, "trace_id">): TraceDetail => {
+  const systemInstructions = parseSystem(messages.first_system_instructions)
+  const lastInput = parseMessages(messages.last_input_messages)
+  const output = parseMessages(messages.final_output_messages)
 
   // Prepend system instructions as a system message at index 0
   const systemMessage: GenAIMessage | null =
     systemInstructions.length > 0 ? { role: "system", parts: systemInstructions } : null
 
   return {
-    ...toBaseFields(row),
+    ...summary,
     systemInstructions,
-    inputMessages: parseMessages(row.input_messages),
+    inputMessages: parseMessages(messages.first_input_messages),
     outputMessages: output,
     allMessages: systemMessage ? [systemMessage, ...lastInput, ...output] : [...lastInput, ...output],
   }
 }
+
+const toDomainTraceMetadataDetail = (
+  summary: Trace,
+  messages: Omit<SpanMetadataMessagesRow, "trace_id">,
+): TraceMetadataDetail => ({
+  ...summary,
+  systemInstructions: parseSystem(messages.first_system_instructions),
+  inputMessages: parseMessages(messages.first_input_messages),
+  outputMessages: parseMessages(messages.final_output_messages),
+})
 
 interface SortColumn {
   readonly expr: string
@@ -461,7 +561,11 @@ function collectPercentileRequests(filters: FilterSet | undefined): {
   return { requests, cloned }
 }
 
-const resolvePercentileFilters = (
+/**
+ * Exported for `MetricSeriesReader`, so monitored saved searches resolve
+ * percentile filters exactly like the traces page that defined them.
+ */
+export const resolvePercentileFilters = (
   organizationId: OrganizationId,
   projectId: ProjectId,
   filters: FilterSet | undefined,
@@ -724,6 +828,7 @@ export const TraceRepositoryLive = Layer.effect(
                       }
                     : {}),
                 },
+                ...(plan.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
                 format: "JSONEachRow",
               })
               return result.json<TraceListRow & { relevance_score?: number }>()
@@ -789,6 +894,7 @@ export const TraceRepositoryLive = Layer.effect(
                     }
                   : {}),
               },
+              ...(plan?.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
               format: "JSONEachRow",
             })
             return result.json<TraceListRow>()
@@ -810,34 +916,98 @@ export const TraceRepositoryLive = Layer.effect(
           )
       })
 
-    const listByTraceIds: TraceRepositoryShape["listByTraceIds"] = ({ organizationId, projectId, traceIds }) =>
+    const listSummariesByTraceIds = (input: {
+      readonly organizationId: OrganizationId
+      readonly projectId: ProjectId
+      readonly traceIds: readonly TraceId[]
+    }) =>
       Effect.gen(function* () {
         const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
-        if (traceIds.length === 0) return []
+        if (input.traceIds.length === 0) return []
 
-        return yield* chSqlClient
-          .query(async (client) => {
-            const result = await client.query({
-              query: `SELECT ${DETAIL_SELECT}
+        return yield* chSqlClient.query(async (client) => {
+          const result = await client.query({
+            query: `SELECT ${LIST_SELECT}
                     FROM traces
                     WHERE organization_id = {organizationId:String}
                       AND project_id = {projectId:String}
                       AND trace_id IN ({traceIds:Array(String)})
                     GROUP BY organization_id, project_id, trace_id`,
-              query_params: {
-                organizationId: organizationId as string,
-                projectId: projectId as string,
-                traceIds: Array.from(traceIds) as string[],
-              },
-              format: "JSONEachRow",
-            })
-            return result.json<TraceDetailRow>()
+            query_params: {
+              organizationId: input.organizationId as string,
+              projectId: input.projectId as string,
+              traceIds: Array.from(input.traceIds) as string[],
+            },
+            format: "JSONEachRow",
           })
-          .pipe(
-            Effect.map((rows) => rows.map(toDomainTraceDetail)),
-            Effect.mapError((error) => toRepositoryError(error, "listByTraceIds")),
-          )
+          return result.json<TraceListRow>()
+        })
+      }).pipe(Effect.map((rows) => rows.map(toBaseFields)))
+
+    const listSpanMessagesByTraceIds = (input: {
+      readonly organizationId: OrganizationId
+      readonly projectId: ProjectId
+      readonly traceIds: readonly TraceId[]
+    }) =>
+      Effect.gen(function* () {
+        const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
+        if (input.traceIds.length === 0) return []
+
+        return yield* chSqlClient.query(async (client) => {
+          const result = await client.query({
+            query: `SELECT ${SPAN_MESSAGES_SELECT}
+                    FROM ${dedupedSpanMessageRowsSubquery("trace_id IN ({traceIds:Array(String)})")}
+                    GROUP BY trace_id`,
+            query_params: {
+              organizationId: input.organizationId as string,
+              projectId: input.projectId as string,
+              traceIds: Array.from(input.traceIds) as string[],
+            },
+            format: "JSONEachRow",
+            clickhouse_settings: BOUNDED_READ_SETTINGS,
+          })
+          return result.json<SpanMessagesRow>()
+        })
       })
+
+    const listSpanMetadataMessagesByTraceIds = (input: {
+      readonly organizationId: OrganizationId
+      readonly projectId: ProjectId
+      readonly traceIds: readonly TraceId[]
+    }) =>
+      Effect.gen(function* () {
+        const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
+        if (input.traceIds.length === 0) return []
+
+        return yield* chSqlClient.query(async (client) => {
+          const result = await client.query({
+            query: `SELECT ${SPAN_METADATA_MESSAGES_SELECT}
+                    FROM ${dedupedSpanMessageRowsSubquery("trace_id IN ({traceIds:Array(String)})")}
+                    GROUP BY trace_id`,
+            query_params: {
+              organizationId: input.organizationId as string,
+              projectId: input.projectId as string,
+              traceIds: Array.from(input.traceIds) as string[],
+            },
+            format: "JSONEachRow",
+            clickhouse_settings: BOUNDED_READ_SETTINGS,
+          })
+          return result.json<SpanMetadataMessagesRow>()
+        })
+      })
+
+    const listByTraceIds: TraceRepositoryShape["listByTraceIds"] = (input) =>
+      Effect.gen(function* () {
+        const [summaries, messageRows] = yield* Effect.all(
+          [listSummariesByTraceIds(input), listSpanMessagesByTraceIds(input)],
+          { concurrency: "unbounded" },
+        )
+        const messagesByTraceId = new Map(messageRows.map((row) => [normalizeCHString(row.trace_id), row] as const))
+
+        return summaries.map((summary) =>
+          toDomainTraceDetail(summary, messagesByTraceId.get(summary.traceId) ?? EMPTY_MESSAGES_ROW),
+        )
+      }).pipe(Effect.mapError((error) => toRepositoryError(error, "listByTraceIds")))
 
     const matchesFiltersByTraceId: TraceRepositoryShape["matchesFiltersByTraceId"] = ({
       organizationId,
@@ -985,6 +1155,7 @@ export const TraceRepositoryLive = Layer.effect(
                     ...filterParams,
                     ...plan.params,
                   },
+                  ...(plan.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
                   format: "JSONEachRow",
                 })
                 return result.json<{ total: string }>()
@@ -1030,11 +1201,54 @@ export const TraceRepositoryLive = Layer.effect(
           const havingClause = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
           const extraWhere = whereClauses.length > 0 ? `AND ${whereClauses.join(" AND ")}` : ""
 
-          const runQuery = (extraJoinCondition: string, extraParams: Record<string, unknown>) =>
+          const mapLastAt = (rows: ReadonlyArray<{ last_at: string | null }>) => {
+            const raw = rows[0]?.last_at ?? null
+            if (!raw) return null
+            const parsedDate = new Date(raw.includes(" ") ? `${raw.replace(" ", "T")}Z` : raw)
+            return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+          }
+
+          const parsedSearch = searchQuery ? parseSearchQuery(searchQuery) : undefined
+          const hasSearch = Boolean(parsedSearch && isActiveSearch(parsedSearch))
+
+          // Fast path — no filters, no search (the dominant All-time histogram-anchor call). A trace's
+          // `start_time` is `min(min_start_time)`, so the latest trace start is `max` over a minimal
+          // grouped subquery. Avoids projecting the full, expensive `LIST_SELECT` per trace.
+          if (havingClauses.length === 0 && whereClauses.length === 0 && !hasSearch) {
+            return yield* chSqlClient
+              .query(async (client) => {
+                const result = await client.query({
+                  query: `SELECT toString(maxOrNull(trace_start)) AS last_at
+                          FROM (
+                            SELECT min(min_start_time) AS trace_start
+                            FROM traces
+                            WHERE organization_id = {organizationId:String}
+                              AND project_id = {projectId:String}
+                            GROUP BY organization_id, project_id, trace_id
+                          )`,
+                  query_params: {
+                    organizationId: organizationId as string,
+                    projectId: projectId as string,
+                  },
+                  format: "JSONEachRow",
+                })
+                return result.json<{ last_at: string | null }>()
+              })
+              .pipe(
+                Effect.map(mapLastAt),
+                Effect.mapError((error) => toRepositoryError(error, "findLastTraceAt")),
+              )
+          }
+
+          const runQuery = (
+            extraJoinCondition: string,
+            extraParams: Record<string, unknown>,
+            clickhouseSettings?: Record<string, string | number | boolean>,
+          ) =>
             chSqlClient
               .query(async (client) => {
                 const result = await client.query({
-                  query: `SELECT toString(max(start_time)) AS last_at
+                  query: `SELECT toString(maxOrNull(start_time)) AS last_at
                         FROM (
                           SELECT ${LIST_SELECT}
                           FROM traces
@@ -1051,27 +1265,58 @@ export const TraceRepositoryLive = Layer.effect(
                     ...filterParams,
                     ...extraParams,
                   },
+                  ...(clickhouseSettings ? { clickhouse_settings: clickhouseSettings } : {}),
                   format: "JSONEachRow",
                 })
                 return result.json<{ last_at: string | null }>()
               })
               .pipe(
-                Effect.map((rows) => {
-                  const raw = rows[0]?.last_at ?? null
-                  if (!raw) return null
-                  const parsed = new Date(raw.includes(" ") ? `${raw.replace(" ", "T")}Z` : raw)
-                  return Number.isNaN(parsed.getTime()) ? null : parsed
-                }),
+                Effect.map(mapLastAt),
                 Effect.mapError((error) => toRepositoryError(error, "findLastTraceAt")),
               )
 
-          const parsed = searchQuery ? parseSearchQuery(searchQuery) : undefined
-          if (parsed && isActiveSearch(parsed)) {
-            const plan = yield* planSearch(parsed)
-            return yield* runQuery(`AND trace_id IN (SELECT trace_id FROM (${plan.subquery}))`, plan.params)
+          if (parsedSearch && isActiveSearch(parsedSearch)) {
+            const plan = yield* planSearch(parsedSearch)
+            return yield* runQuery(
+              `AND trace_id IN (SELECT trace_id FROM (${plan.subquery}))`,
+              plan.params,
+              plan.clickhouseSettings,
+            )
           }
 
           return yield* runQuery("", {})
+        }),
+
+      // Earliest activity is the global min of the raw start column — no per-trace GROUP BY or
+      // LIST_SELECT needed (min-of-per-trace-min == global min). `minOrNull` yields null (not epoch)
+      // for a project with no rows.
+      findFirstTraceAt: ({ organizationId, projectId }) =>
+        Effect.gen(function* () {
+          const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
+          return yield* chSqlClient
+            .query(async (client) => {
+              const result = await client.query({
+                query: `SELECT toString(minOrNull(min_start_time)) AS first_at
+                        FROM traces
+                        WHERE organization_id = {organizationId:String}
+                          AND project_id = {projectId:String}`,
+                query_params: {
+                  organizationId: organizationId as string,
+                  projectId: projectId as string,
+                },
+                format: "JSONEachRow",
+              })
+              return result.json<{ first_at: string | null }>()
+            })
+            .pipe(
+              Effect.map((rows) => {
+                const raw = rows[0]?.first_at ?? null
+                if (!raw) return null
+                const parsed = new Date(raw.includes(" ") ? `${raw.replace(" ", "T")}Z` : raw)
+                return Number.isNaN(parsed.getTime()) ? null : parsed
+              }),
+              Effect.mapError((error) => toRepositoryError(error, "findFirstTraceAt")),
+            )
         }),
 
       countAnnotatedByProjectId: ({ organizationId, projectId, filters, searchQuery }) =>
@@ -1081,7 +1326,11 @@ export const TraceRepositoryLive = Layer.effect(
           const havingClause = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
           const extraWhere = whereClauses.length > 0 ? `AND ${whereClauses.join(" AND ")}` : ""
 
-          const runQuery = (extraJoinCondition: string, extraParams: Record<string, unknown>) =>
+          const runQuery = (
+            extraJoinCondition: string,
+            extraParams: Record<string, unknown>,
+            clickhouseSettings?: Record<string, string | number | boolean>,
+          ) =>
             chSqlClient
               .query(async (client) => {
                 const result = await client.query({
@@ -1110,6 +1359,7 @@ export const TraceRepositoryLive = Layer.effect(
                     ...filterParams,
                     ...extraParams,
                   },
+                  ...(clickhouseSettings ? { clickhouse_settings: clickhouseSettings } : {}),
                   format: "JSONEachRow",
                 })
                 return result.json<{ total: string }>()
@@ -1122,7 +1372,11 @@ export const TraceRepositoryLive = Layer.effect(
           const parsed = searchQuery ? parseSearchQuery(searchQuery) : undefined
           if (parsed && isActiveSearch(parsed)) {
             const plan = yield* planSearch(parsed)
-            return yield* runQuery(`AND trace_id IN (SELECT trace_id FROM (${plan.subquery}))`, plan.params)
+            return yield* runQuery(
+              `AND trace_id IN (SELECT trace_id FROM (${plan.subquery}))`,
+              plan.params,
+              plan.clickhouseSettings,
+            )
           }
 
           return yield* runQuery("", {})
@@ -1166,6 +1420,7 @@ export const TraceRepositoryLive = Layer.effect(
                           avg(tokens_total) AS tokens_avg,
                           quantileTDigest(0.5)(tokens_total) AS tokens_median,
                           sum(tokens_total) AS tokens_sum,
+                          ${TOKEN_ANALYTICS_SUM_SELECT},
                           minIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_min,
                           maxIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_max,
                           avgIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_avg,
@@ -1187,6 +1442,7 @@ export const TraceRepositoryLive = Layer.effect(
                     ...filterParams,
                     ...plan.params,
                   },
+                  ...(plan.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
                   format: "JSONEachRow",
                 })
                 return result.json<TraceMetricsRow>()
@@ -1222,6 +1478,7 @@ export const TraceRepositoryLive = Layer.effect(
                         avg(tokens_total) AS tokens_avg,
                         quantileTDigest(0.5)(tokens_total) AS tokens_median,
                         sum(tokens_total) AS tokens_sum,
+                        ${TOKEN_ANALYTICS_SUM_SELECT},
                         minIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_min,
                         maxIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_max,
                         avgIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_avg,
@@ -1293,6 +1550,7 @@ export const TraceRepositoryLive = Layer.effect(
                     ...filterParams,
                     ...plan.params,
                   },
+                  ...(plan.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
                   format: "JSONEachRow",
                 })
                 return result.json<TraceHistogramBucketRow>()
@@ -1339,37 +1597,118 @@ export const TraceRepositoryLive = Layer.effect(
             )
         }),
 
+      findSummaryByTraceId: ({ organizationId, projectId, traceId }) =>
+        listSummariesByTraceIds({ organizationId, projectId, traceIds: [traceId] }).pipe(
+          Effect.flatMap((rows) => {
+            const first = rows[0]
+            return first
+              ? Effect.succeed(first)
+              : Effect.fail(new NotFoundError({ entity: "Trace", id: traceId as string }))
+          }),
+          Effect.mapError((error) =>
+            isNotFoundError(error) ? error : toRepositoryError(error, "findSummaryByTraceId"),
+          ),
+        ),
+
       findByTraceId: ({ organizationId, projectId, traceId }) =>
+        Effect.gen(function* () {
+          const [summaries, messageRows] = yield* Effect.all(
+            [
+              listSummariesByTraceIds({ organizationId, projectId, traceIds: [traceId] }),
+              listSpanMessagesByTraceIds({ organizationId, projectId, traceIds: [traceId] }),
+            ],
+            { concurrency: "unbounded" },
+          )
+          const summary = summaries[0]
+          if (!summary) return yield* Effect.fail(new NotFoundError({ entity: "Trace", id: traceId as string }))
+
+          return toDomainTraceDetail(summary, messageRows[0] ?? EMPTY_MESSAGES_ROW)
+        }).pipe(
+          Effect.mapError((error) => (isNotFoundError(error) ? error : toRepositoryError(error, "findByTraceId"))),
+        ),
+
+      findMetadataByTraceId: ({ organizationId, projectId, traceId }) =>
+        Effect.gen(function* () {
+          const [summaries, messageRows] = yield* Effect.all(
+            [
+              listSummariesByTraceIds({ organizationId, projectId, traceIds: [traceId] }),
+              listSpanMetadataMessagesByTraceIds({ organizationId, projectId, traceIds: [traceId] }),
+            ],
+            { concurrency: "unbounded" },
+          )
+          const summary = summaries[0]
+          if (!summary) return yield* Effect.fail(new NotFoundError({ entity: "Trace", id: traceId as string }))
+
+          return toDomainTraceMetadataDetail(summary, messageRows[0] ?? EMPTY_MESSAGES_ROW)
+        }).pipe(
+          Effect.mapError((error) =>
+            isNotFoundError(error) ? error : toRepositoryError(error, "findMetadataByTraceId"),
+          ),
+        ),
+
+      findConversationChunk: ({ organizationId, projectId, traceId, offset, limit }) =>
         Effect.gen(function* () {
           const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
           return yield* chSqlClient
             .query(async (client) => {
               const result = await client.query({
-                query: `SELECT ${DETAIL_SELECT}
-                      FROM traces
-                      WHERE organization_id = {organizationId:String}
-                        AND project_id = {projectId:String}
-                        AND trace_id = {traceId:FixedString(32)}
-                      GROUP BY organization_id, project_id, trace_id
-                      LIMIT 1`,
+                query: `SELECT
+                          length(all_messages) AS total_messages,
+                          arraySum(message -> length(message), all_messages) AS payload_bytes,
+                          arraySlice(all_messages, {offset:UInt64} + 1, {limit:UInt64}) AS messages
+                        FROM (
+                          SELECT arrayConcat(
+                            if(
+                              length(JSONExtractArrayRaw(system_instructions_json)) > 0,
+                              [concat('{"role":"system","parts":', system_instructions_json, '}')],
+                              []
+                            ),
+                            JSONExtractArrayRaw(last_input_messages_json),
+                            JSONExtractArrayRaw(output_messages_json)
+                          ) AS all_messages
+                          FROM (
+                            SELECT
+                              argMinIf(system_instructions, start_time, system_instructions != '' AND ${SYSTEM_INSTRUCTION_OPERATION_FILTER}) AS system_instructions_json,
+                              argMaxIf(input_messages, end_time, output_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS last_input_messages_json,
+                              argMaxIf(output_messages, end_time, output_messages != '' AND ${MESSAGE_OPERATION_FILTER}) AS output_messages_json
+                            FROM ${dedupedSpanMessageRowsSubquery("trace_id = {traceId:FixedString(32)}")}
+                            GROUP BY trace_id
+                            LIMIT 1
+                          )
+                        )`,
                 query_params: {
                   organizationId: organizationId as string,
                   projectId: projectId as string,
                   traceId,
+                  offset,
+                  limit,
                 },
                 format: "JSONEachRow",
+                clickhouse_settings: BOUNDED_READ_SETTINGS,
               })
-              return result.json<TraceDetailRow>()
+              return result.json<TraceConversationChunkRow>()
             })
             .pipe(
-              Effect.flatMap((rows) => {
-                const first = rows[0]
-                if (!first) {
-                  return Effect.fail(new NotFoundError({ entity: "Trace", id: traceId as string }))
+              Effect.map((rows): TraceConversationChunk => {
+                const row = rows[0]
+                if (!row) return { messages: [], offset, limit, totalMessages: 0, hasMore: false, payloadBytes: 0 }
+
+                const totalMessages = parseClickHouseNumber(row.total_messages)
+                const messages = row.messages.flatMap((message) => {
+                  const parsed = parseMessage(message)
+                  return parsed ? [parsed] : []
+                })
+
+                return {
+                  messages,
+                  offset,
+                  limit,
+                  totalMessages,
+                  hasMore: offset + messages.length < totalMessages,
+                  payloadBytes: parseClickHouseNumber(row.payload_bytes),
                 }
-                return Effect.succeed(toDomainTraceDetail(first))
               }),
-              Effect.mapError((error) => (isNotFoundError(error) ? error : toRepositoryError(error, "findByTraceId"))),
+              Effect.mapError((error) => toRepositoryError(error, "findConversationChunk")),
             )
         }),
 
@@ -1435,21 +1774,19 @@ export const TraceRepositoryLive = Layer.effect(
         Effect.gen(function* () {
           const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
           const COLUMN_EXPRS: Record<string, string> = {
+            userId: "argMaxIfMerge(user_id)",
             tags: "arrayJoin(groupUniqArrayArray(tags))",
             models: "arrayJoin(groupUniqArrayIfMerge(models))",
             providers: "arrayJoin(groupUniqArrayIfMerge(providers))",
             serviceNames: "arrayJoin(groupUniqArrayIfMerge(service_names))",
+            tools: "arrayJoin(groupUniqArrayIfMerge(tools))",
+            definedTools: "arrayJoin(groupUniqArrayArray(defined_tools))",
           }
-          const expr = COLUMN_EXPRS[column]
-          if (!expr) return []
-
           const searchClause = search ? " AND val ILIKE {search:String}" : ""
 
-          return yield* chSqlClient
-            .query(async (client) => {
-              const result = await client.query({
-                query: `SELECT DISTINCT val FROM (
-                        SELECT ${expr} AS val
+          const query = COLUMN_EXPRS[column]
+            ? `SELECT DISTINCT val FROM (
+                        SELECT ${COLUMN_EXPRS[column]} AS val
                         FROM traces
                         WHERE organization_id = {organizationId:String}
                           AND project_id = {projectId:String}
@@ -1457,7 +1794,14 @@ export const TraceRepositoryLive = Layer.effect(
                       )
                       WHERE val != ''${searchClause}
                       ORDER BY val
-                      LIMIT {limit:UInt32}`,
+                      LIMIT {limit:UInt32}`
+            : undefined
+          if (!query) return []
+
+          return yield* chSqlClient
+            .query(async (client) => {
+              const result = await client.query({
+                query,
                 query_params: {
                   organizationId: organizationId as string,
                   projectId: projectId as string,

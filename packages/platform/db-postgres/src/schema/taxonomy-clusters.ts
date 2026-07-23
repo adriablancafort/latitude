@@ -1,7 +1,7 @@
+import { EMBEDDING_DIMENSIONS } from "@domain/ai"
 import {
   TAXONOMY_CLUSTER_DESCRIPTION_MAX_LENGTH,
   TAXONOMY_CLUSTER_NAME_MAX_LENGTH,
-  TAXONOMY_EMBEDDING_DIMENSIONS,
   type TaxonomyCentroid,
   type TaxonomyClusterState,
 } from "@domain/taxonomy"
@@ -14,14 +14,14 @@ const tsvector = customType<{ data: string; driverData: string }>({
 })
 
 /**
- * Canonical leaf-cluster row. Mirrors the issues shape: JSONB centroid +
+ * Canonical leaf-cluster row. Mirrors the signals shape: JSONB centroid +
  * derived `vector(2048)` materialized inside the repository `save`, plus
  * a GIN-indexed `tsvector` for hybrid search.
  *
  * No HNSW/IVFFlat on `centroid_embedding`: per-project cluster count is
  * expected in the hundreds to low thousands; exact sequential scan under
  * `(organization_id, project_id)` outperforms approximate indexes at that
- * scale. Same rule as `@domain/issues`.
+ * scale. Same rule as `@domain/signals`.
  */
 export const taxonomyClusters = latitudeSchema.table(
   "taxonomy_clusters",
@@ -29,6 +29,12 @@ export const taxonomyClusters = latitudeSchema.table(
     id: cuid("id").primaryKey(),
     organizationId: cuid("organization_id").notNull(),
     projectId: cuid("project_id").notNull(),
+    // NULL = global taxonomy; non-null scopes the row to a custom behavior's sub-tree.
+    customBehaviorId: cuid("custom_behavior_id", { default: false }),
+    // NULL = topic lens; non-null scopes the row to a facet's tree. A view's tree
+    // is the clusters where (custom_behavior_id, facet_id) match; (NULL, NULL) = the
+    // global topic tree.
+    facetId: cuid("facet_id", { default: false }),
     parentClusterId: cuid("parent_cluster_id", { default: false }),
     depth: bigint("depth", { mode: "number" }).notNull().default(0),
     path: varchar("path", { length: 256 }).notNull().default(""),
@@ -36,7 +42,7 @@ export const taxonomyClusters = latitudeSchema.table(
     name: varchar("name", { length: TAXONOMY_CLUSTER_NAME_MAX_LENGTH }).notNull(),
     description: varchar("description", { length: TAXONOMY_CLUSTER_DESCRIPTION_MAX_LENGTH }).notNull(),
     centroid: jsonb("centroid").$type<TaxonomyCentroid>().notNull(),
-    centroidEmbedding: vector("centroid_embedding", { dimensions: TAXONOMY_EMBEDDING_DIMENSIONS }),
+    centroidEmbedding: vector("centroid_embedding", { dimensions: EMBEDDING_DIMENSIONS }),
     searchDocument: tsvector("search_document")
       .generatedAlwaysAs(
         (): ReturnType<typeof sql> => sql`

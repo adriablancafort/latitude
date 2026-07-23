@@ -1,6 +1,7 @@
-import type { DatasetId, DatasetRowId } from "@domain/shared"
+import { type DatasetId, type DatasetRowId, ValidationError } from "@domain/shared"
 import { Effect } from "effect"
-import type { RowFieldValue } from "../entities/dataset-row.ts"
+import { writableColumns } from "../columns.ts"
+import type { InsertRowFieldValue } from "../entities/dataset-row.ts"
 import { DatasetRepository } from "../ports/dataset-repository.ts"
 import { DatasetRowRepository } from "../ports/dataset-row-repository.ts"
 
@@ -10,10 +11,12 @@ import { DatasetRowRepository } from "../ports/dataset-row-repository.ts"
 export const updateRow = Effect.fn("datasets.updateRow")(function* (args: {
   readonly datasetId: DatasetId
   readonly rowId: DatasetRowId
-  readonly input: RowFieldValue
-  readonly output: RowFieldValue
-  readonly expectedOutput: RowFieldValue
-  readonly metadata: RowFieldValue
+  readonly input?: InsertRowFieldValue
+  readonly output?: InsertRowFieldValue
+  readonly expectedOutput?: InsertRowFieldValue
+  readonly metadata?: InsertRowFieldValue
+  readonly custom?: Record<string, InsertRowFieldValue>
+  readonly source?: string
 }) {
   yield* Effect.annotateCurrentSpan("datasetId", args.datasetId)
   yield* Effect.annotateCurrentSpan("rowId", args.rowId)
@@ -21,15 +24,26 @@ export const updateRow = Effect.fn("datasets.updateRow")(function* (args: {
   const datasetRepo = yield* DatasetRepository
   const rowRepo = yield* DatasetRowRepository
 
-  yield* rowRepo.findById({
+  const existing = yield* rowRepo.findById({
     datasetId: args.datasetId,
     rowId: args.rowId,
   })
 
+  const dataset = yield* datasetRepo.findById(args.datasetId)
+  const { writableCustomIds } = writableColumns(dataset.columns)
+  const provided = args.custom ?? {}
+  for (const key of Object.keys(provided)) {
+    if (!writableCustomIds.has(key)) {
+      return yield* new ValidationError({ field: "custom", message: `Unknown or removed column "${key}"` })
+    }
+  }
+  // Merge onto the stored custom blob (which CH replaces wholesale) so hidden custom values survive an edit.
+  const custom = { ...existing.custom, ...provided }
+
   const version = yield* datasetRepo.incrementVersion({
     id: args.datasetId,
     rowsUpdated: 1,
-    source: "web",
+    source: args.source ?? "web",
   })
 
   yield* rowRepo
@@ -37,10 +51,11 @@ export const updateRow = Effect.fn("datasets.updateRow")(function* (args: {
       datasetId: args.datasetId,
       rowId: args.rowId,
       version: version.version,
-      input: args.input,
-      output: args.output,
-      expectedOutput: args.expectedOutput,
-      metadata: args.metadata,
+      input: args.input !== undefined ? args.input : existing.input,
+      output: args.output !== undefined ? args.output : existing.output,
+      expectedOutput: args.expectedOutput !== undefined ? args.expectedOutput : existing.expectedOutput,
+      metadata: args.metadata !== undefined ? args.metadata : existing.metadata,
+      custom,
     })
     .pipe(
       Effect.tapError(() =>

@@ -29,7 +29,7 @@ describe("persistDraftAnnotation", () => {
       }).pipe(Effect.provide(layer)),
     )
 
-    expect(score.source).toBe("annotation")
+    expect(score.sourceType).toBe("annotation")
     expect(score.sourceId).toBe(queueId)
     expect(score.draftedAt).toBeInstanceOf(Date)
     expect(score.feedback).toBe("AI-generated feedback for system queue draft")
@@ -112,7 +112,7 @@ describe("persistDraftAnnotation", () => {
         traceId: traceIdRaw,
         value: 0,
         passed: false,
-        feedback: "Issue with refund policy",
+        feedback: "Signal with refund policy",
         anchor: {
           messageIndex: 2,
           partIndex: 0,
@@ -127,7 +127,7 @@ describe("persistDraftAnnotation", () => {
     expect(score.metadata.partIndex).toBe(0)
     expect(score.metadata.startOffset).toBe(10)
     expect(score.metadata.endOffset).toBe(25)
-    expect(score.metadata.rawFeedback).toBe("Issue with refund policy")
+    expect(score.metadata.rawFeedback).toBe("Signal with refund policy")
   })
 
   it("writes ScoreCreated for draft persistence", async () => {
@@ -151,7 +151,7 @@ describe("persistDraftAnnotation", () => {
         payload: expect.objectContaining({
           organizationId: cuid,
           projectId: projectCuid,
-          issueId: null,
+          signalId: null,
         }),
       }),
     ])
@@ -207,7 +207,7 @@ describe("persistDraftAnnotation", () => {
       }).pipe(Effect.provide(layer)),
     )
 
-    expect(score.source).toBe("annotation")
+    expect(score.sourceType).toBe("annotation")
     expect(score.sourceId).toBe(queueId)
     expect(score.draftedAt).not.toBeNull()
     expect(store.size).toBe(1)

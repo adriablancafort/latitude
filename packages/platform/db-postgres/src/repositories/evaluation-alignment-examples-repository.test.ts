@@ -4,7 +4,7 @@ import {
   type EvaluationAlignmentPositivePriority,
 } from "@domain/evaluations"
 import type { ScoreMetadata } from "@domain/scores"
-import { IssueId, OrganizationId, ProjectId, TraceId } from "@domain/shared"
+import { OrganizationId, ProjectId, SignalId, TraceId } from "@domain/shared"
 import { Effect } from "effect"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { scores as scoresTable } from "../schema/scores.ts"
@@ -14,8 +14,8 @@ import { EvaluationAlignmentExamplesRepositoryLive } from "./evaluation-alignmen
 
 const organizationId = OrganizationId("o".repeat(24))
 const projectId = ProjectId("p".repeat(24))
-const issueId = IssueId("i".repeat(24))
-const otherIssueId = IssueId("j".repeat(24))
+const signalId = SignalId("i".repeat(24))
+const otherSignalId = SignalId("j".repeat(24))
 
 const annotationMetadata = (rawFeedback: string): ScoreMetadata => ({
   rawFeedback,
@@ -34,7 +34,7 @@ const makeScoreRow = (
     readonly metadata?: ScoreMetadata
   },
 ): typeof scoresTable.$inferInsert => {
-  const source = overrides.source ?? "annotation"
+  const source = overrides.sourceType ?? "annotation"
 
   return {
     id: overrides.id ?? "s".repeat(24),
@@ -43,12 +43,12 @@ const makeScoreRow = (
     sessionId: overrides.sessionId ?? null,
     traceId: overrides.traceId ?? "trace-default",
     spanId: overrides.spanId ?? null,
-    source,
+    sourceType: source,
     sourceId:
       overrides.sourceId ??
       (source === "annotation" ? "UI" : source === "evaluation" ? "v".repeat(24) : "custom-source"),
     simulationId: overrides.simulationId ?? null,
-    issueId: overrides.issueId ?? null,
+    signalId: overrides.signalId ?? null,
     value: overrides.value ?? (overrides.passed === false ? 0 : 1),
     passed: overrides.passed ?? true,
     feedback: overrides.feedback ?? "feedback",
@@ -94,9 +94,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "k".repeat(24),
         traceId: "trace-positive",
         sessionId: "session-positive",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("leaked token"),
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
       }),
@@ -104,27 +104,27 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "l".repeat(24),
         traceId: "trace-positive",
         sessionId: "session-positive",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("mentioned api key"),
         createdAt: new Date("2026-04-01T00:01:00.000Z"),
       }),
       makeScoreRow({
         id: "m".repeat(24),
         traceId: "trace-draft",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         draftedAt: new Date("2026-04-01T00:02:00.000Z"),
         metadata: annotationMetadata("draft"),
       }),
       makeScoreRow({
         id: "n".repeat(24),
         traceId: "trace-errored",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         errored: true,
         error: "annotation failed",
         metadata: annotationMetadata("errored"),
@@ -134,7 +134,7 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
     const positives = await Effect.runPromise(
       Effect.gen(function* () {
         const repository = yield* EvaluationAlignmentExamplesRepository
-        return yield* repository.listPositiveExamples({ projectId, issueId })
+        return yield* repository.listPositiveExamples({ projectId, signalId })
       }).pipe(makeProvider(database)),
     )
 
@@ -156,9 +156,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "a".repeat(24),
         traceId: "trace-empty-session",
         sessionId: "",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("missing session"),
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
       }),
@@ -166,9 +166,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "b".repeat(24),
         traceId: "trace-prefers-non-empty",
         sessionId: "",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("first row is empty"),
         createdAt: new Date("2026-04-01T00:01:00.000Z"),
       }),
@@ -176,9 +176,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "c".repeat(24),
         traceId: "trace-prefers-non-empty",
         sessionId: "session-present",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("later row has session"),
         createdAt: new Date("2026-04-01T00:02:00.000Z"),
       }),
@@ -187,7 +187,7 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
     const positives = await Effect.runPromise(
       Effect.gen(function* () {
         const repository = yield* EvaluationAlignmentExamplesRepository
-        return yield* repository.listPositiveExamples({ projectId, issueId })
+        return yield* repository.listPositiveExamples({ projectId, signalId })
       }).pipe(makeProvider(database)),
     )
 
@@ -220,9 +220,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "d".repeat(24),
         traceId: "trace-tier-2",
         sessionId: "session-tier-2",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("failed target annotation"),
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
       }),
@@ -230,9 +230,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "e".repeat(24),
         traceId: "trace-tier-2",
         sessionId: "session-tier-2",
-        issueId: otherIssueId as string,
+        signalId: otherSignalId as string,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("passed on other issue"),
         createdAt: new Date("2026-04-01T00:01:00.000Z"),
       }),
@@ -241,9 +241,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "f".repeat(24),
         traceId: "trace-tier-1",
         sessionId: "session-tier-1",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("failed target annotation"),
         createdAt: new Date("2026-04-01T00:02:00.000Z"),
       }),
@@ -252,7 +252,7 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
     const positives = await Effect.runPromise(
       Effect.gen(function* () {
         const repository = yield* EvaluationAlignmentExamplesRepository
-        return yield* repository.listPositiveExamples({ projectId, issueId })
+        return yield* repository.listPositiveExamples({ projectId, signalId })
       }).pipe(makeProvider(database)),
     )
 
@@ -269,9 +269,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "o".repeat(24),
         traceId: "trace-tier-1",
         sessionId: "session-tier-1",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("all good"),
         createdAt: new Date("2026-04-01T01:00:00.000Z"),
       }),
@@ -280,9 +280,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "q".repeat(24),
         traceId: "trace-tier-2",
         sessionId: "session-tier-2",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("passed on target"),
         createdAt: new Date("2026-04-01T01:01:00.000Z"),
       }),
@@ -290,9 +290,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "r".repeat(24),
         traceId: "trace-tier-2",
         sessionId: "session-tier-2",
-        issueId: otherIssueId as string,
+        signalId: otherSignalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("failed on other issue"),
         createdAt: new Date("2026-04-01T01:02:00.000Z"),
       }),
@@ -301,9 +301,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "p".repeat(24),
         traceId: "trace-no-passed-annotation",
         sessionId: "session-no-passed-annotation",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "evaluation",
+        sourceType: "evaluation",
         metadata: evaluationMetadata("hash-no-annotation"),
         createdAt: new Date("2026-04-01T01:03:00.000Z"),
       }),
@@ -312,9 +312,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "t".repeat(24),
         traceId: "trace-target-linked",
         sessionId: "session-target-linked",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("linked to target issue"),
         createdAt: new Date("2026-04-01T01:04:00.000Z"),
       }),
@@ -323,9 +323,9 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         id: "u".repeat(24),
         traceId: "trace-excluded",
         sessionId: "session-excluded",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("exclude me"),
         createdAt: new Date("2026-04-01T01:05:00.000Z"),
       }),
@@ -336,7 +336,7 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         const repository = yield* EvaluationAlignmentExamplesRepository
         return yield* repository.listNegativeExamples({
           projectId,
-          issueId,
+          signalId,
           excludeTraceIds: [TraceId("trace-excluded")],
         })
       }).pipe(makeProvider(database)),
@@ -355,36 +355,36 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
       makeScoreRow({
         id: "v".repeat(24),
         traceId: "trace-positive-before",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("older positive"),
         createdAt: new Date("2026-04-01T01:00:00.000Z"),
       }),
       makeScoreRow({
         id: "w".repeat(24),
         traceId: "trace-positive-after",
-        issueId: issueId as string,
+        signalId: signalId as string,
         passed: false,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("new positive"),
         createdAt: new Date("2026-04-01T03:00:00.000Z"),
       }),
       makeScoreRow({
         id: "x".repeat(24),
         traceId: "trace-negative-before",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("older negative"),
         createdAt: new Date("2026-04-01T01:30:00.000Z"),
       }),
       makeScoreRow({
         id: "y".repeat(24),
         traceId: "trace-negative-after",
-        issueId: null,
+        signalId: null,
         passed: true,
-        source: "annotation",
+        sourceType: "annotation",
         metadata: annotationMetadata("new negative"),
         createdAt: new Date("2026-04-01T03:30:00.000Z"),
       }),
@@ -397,12 +397,12 @@ describe("EvaluationAlignmentExamplesRepositoryLive", () => {
         return {
           positives: yield* repository.listPositiveExamples({
             projectId,
-            issueId,
+            signalId,
             createdAfter: refreshCutoff,
           }),
           negatives: yield* repository.listNegativeExamples({
             projectId,
-            issueId,
+            signalId,
             createdAfter: refreshCutoff,
           }),
         }

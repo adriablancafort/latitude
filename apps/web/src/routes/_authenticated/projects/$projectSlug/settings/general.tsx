@@ -225,7 +225,7 @@ function TraceSamplingSection({
         </div>
         {enabled ? (
           <div className="flex w-full flex-col gap-2 border-border border-t p-4">
-            <div className="flex w-full flex-row items-center justify-between gap-4">
+            <div className="flex w-full flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <Label htmlFor="trace-sampling-rate" className="shrink-0">
                 Sampling rate
               </Label>
@@ -279,8 +279,10 @@ function DangerZoneSection({
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <Text.H5 weight="semibold">Delete project</Text.H5>
-          <Text.H6 color="foregroundMuted">
+          <Text.H5 weight="semibold" color="destructive">
+            Delete project
+          </Text.H5>
+          <Text.H6 color="destructive">
             Permanently delete this project and all of its data. This action cannot be undone.
           </Text.H6>
         </div>
@@ -341,8 +343,10 @@ function ChangeSlugForm({ projectId, currentSlug }: { projectId: string; current
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <Text.H5 weight="semibold">Project slug</Text.H5>
-        <Text.H6 color="foregroundMuted">
+        <Text.H5 weight="semibold" color="destructive">
+          Project slug
+        </Text.H5>
+        <Text.H6 color="destructive">
           The slug is part of your telemetry destination. Changing it breaks ingestion until you point your
           instrumentation at the new slug.
         </Text.H6>

@@ -7,17 +7,20 @@ import { Icon } from "../icons/icons.tsx"
 import { Text } from "../text/text.tsx"
 import { Tooltip } from "../tooltip/tooltip.tsx"
 import { Part, type ToolCallResult } from "./part.tsx"
+import type { SubagentToolCallInfo } from "./parts/types.ts"
 
 export type ToolCallActions = ReadonlyMap<string, () => void>
 
+export type SubagentToolCalls = ReadonlyMap<string, SubagentToolCallInfo>
+
 type PartType = GenAIMessage["parts"][number]
 
-function isAlreadyCollapsible(parts: readonly PartType[]): boolean {
-  return parts[0]?.type === "tool_call" || parts[0]?.type === "tool_call_response"
+function isAlreadyCollapsible(parts: readonly PartType[] | undefined): boolean {
+  return parts?.[0]?.type === "tool_call" || parts?.[0]?.type === "tool_call_response"
 }
 
-function getFirstLinePreview(parts: readonly PartType[]): string {
-  const content = ((parts[0]?.content ?? "") as string).trim()
+function getFirstLinePreview(parts: readonly PartType[] | undefined): string {
+  const content = ((parts?.[0]?.content ?? "") as string).trim()
 
   if (!content) return "..."
 
@@ -37,7 +40,7 @@ function getFirstLinePreview(parts: readonly PartType[]): string {
   )
 }
 
-function CollapsedPreview({ parts }: { readonly parts: readonly PartType[] }) {
+function CollapsedPreview({ parts }: { readonly parts: readonly PartType[] | undefined }) {
   return (
     <div className="min-w-0 max-w-full truncate pr-6 text-sm select-none text-muted-foreground">
       {getFirstLinePreview(parts)}
@@ -117,21 +120,27 @@ function PartsRenderer({
   parts,
   toolResults,
   toolCallActions,
+  subagentToolCalls,
+  failedToolCallIds,
   messageIndex,
 }: {
-  readonly parts: readonly PartType[]
+  readonly parts: readonly PartType[] | undefined
   readonly toolResults?: ReadonlyMap<string, ToolCallResult> | undefined
   readonly toolCallActions?: ToolCallActions
+  readonly subagentToolCalls?: SubagentToolCalls | undefined
+  readonly failedToolCallIds?: ReadonlySet<string> | undefined
   readonly messageIndex?: number | undefined
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {parts.map((part, partIndex) => {
+      {(parts ?? []).map((part, partIndex) => {
         if (!part) return null
 
         const partId = part.type === "tool_call" ? ((part as { id?: string }).id ?? "") : ""
         const result = toolResults?.get(partId)
         const onNavigateToSpan = toolCallActions?.get(partId)
+        const subagent = subagentToolCalls?.get(partId)
+        const toolCallFailed = partId.length > 0 && failedToolCallIds?.has(partId) === true
         const isSelectableTextPart = part.type === "text" || part.type === "reasoning"
         return (
           <div
@@ -144,8 +153,10 @@ function PartsRenderer({
               part={part}
               messageIndex={messageIndex}
               partIndex={partIndex}
+              toolCallFailed={toolCallFailed}
               {...(result ? { toolResult: result } : {})}
               {...(onNavigateToSpan ? { onNavigateToSpan } : {})}
+              {...(subagent ? { subagent } : {})}
             />
           </div>
         )
@@ -187,12 +198,16 @@ function AssistantMessage({
   messageIndex,
   toolResults,
   toolCallActions,
+  subagentToolCalls,
+  failedToolCallIds,
   onNavigate,
 }: {
   readonly message: GenAIMessage
   readonly messageIndex?: number | undefined
   readonly toolResults?: ReadonlyMap<string, ToolCallResult> | undefined
   readonly toolCallActions?: ToolCallActions
+  readonly subagentToolCalls?: SubagentToolCalls | undefined
+  readonly failedToolCallIds?: ReadonlySet<string> | undefined
   readonly onNavigate?: () => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
@@ -212,6 +227,8 @@ function AssistantMessage({
           messageIndex={messageIndex}
           {...(toolResults ? { toolResults } : {})}
           {...(toolCallActions ? { toolCallActions } : {})}
+          {...(subagentToolCalls ? { subagentToolCalls } : {})}
+          {...(failedToolCallIds ? { failedToolCallIds } : {})}
         />
       )}
     </div>
@@ -276,6 +293,8 @@ export function Message({
   alignment = "right",
   toolResults,
   toolCallActions,
+  subagentToolCalls,
+  failedToolCallIds,
   onNavigate,
 }: {
   readonly message: GenAIMessage
@@ -283,6 +302,8 @@ export function Message({
   readonly alignment?: "left" | "right"
   readonly toolResults?: ReadonlyMap<string, ToolCallResult> | undefined
   readonly toolCallActions?: ToolCallActions
+  readonly subagentToolCalls?: SubagentToolCalls | undefined
+  readonly failedToolCallIds?: ReadonlySet<string> | undefined
   readonly onNavigate?: () => void
 }) {
   switch (message.role) {
@@ -295,6 +316,8 @@ export function Message({
           messageIndex={messageIndex}
           {...(toolResults ? { toolResults } : {})}
           {...(toolCallActions ? { toolCallActions } : {})}
+          {...(subagentToolCalls ? { subagentToolCalls } : {})}
+          {...(failedToolCallIds ? { failedToolCallIds } : {})}
           {...(onNavigate ? { onNavigate } : {})}
         />
       )

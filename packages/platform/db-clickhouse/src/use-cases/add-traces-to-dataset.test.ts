@@ -1,4 +1,4 @@
-import { AI, AIError, type AIShape } from "@domain/ai"
+import { AI, AIError, type AIShape, EMBEDDING_DIMENSIONS } from "@domain/ai"
 import {
   addTracesToDataset,
   createDatasetFromTraces,
@@ -17,18 +17,18 @@ import {
   type ChSqlClient,
   DatasetId,
   ExternalUserId,
-  IssueId,
   OrganizationId,
   ProjectId,
   RepositoryError,
   SEED_API_KEY_ID,
   SessionId,
+  SignalId,
   SimulationId,
   SpanId,
   TraceId,
 } from "@domain/shared/seeding"
 import type { TraceDetail } from "@domain/spans"
-import { TRACE_SEARCH_EMBEDDING_DIMENSIONS, TraceRepository } from "@domain/spans"
+import { TraceRepository } from "@domain/spans"
 import { createFakeTraceRepository } from "@domain/spans/testing"
 import { setupTestClickHouse } from "@platform/testkit"
 import { Effect, Layer } from "effect"
@@ -42,7 +42,7 @@ import { withClickHouse } from "../with-clickhouse.ts"
 /** Mock AI layer that provides a fake embedding service for testing. */
 const mockAILayer = Layer.succeed(AI, {
   generate: () => Effect.fail(new AIError({ message: "Generate not implemented in mock" })),
-  embed: () => Effect.succeed({ embedding: new Array(TRACE_SEARCH_EMBEDDING_DIMENSIONS).fill(0.1) }),
+  embed: () => Effect.succeed({ embedding: new Array(EMBEDDING_DIMENSIONS).fill(0.1) }),
   rerank: () => Effect.fail(new AIError({ message: "Rerank not implemented in mock" })),
 } as AIShape)
 
@@ -238,12 +238,14 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
         costTotalMicrocents: 0,
         sessionId: SessionId(""),
         userId: ExternalUserId(""),
+        userEmail: "",
         simulationId: SimulationId(""),
         tags: [],
         metadata: { user_name: "Ada", topic: "regression-testing" },
         models: [],
         providers: [],
         serviceNames: [],
+        agentNames: [],
         rootSpanId: SpanId("span-1"),
         rootSpanName: "root",
         systemInstructions: [],
@@ -298,12 +300,14 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
         costTotalMicrocents: 0,
         sessionId: SessionId(""),
         userId: ExternalUserId(""),
+        userEmail: "",
         simulationId: SimulationId(""),
         tags: [],
         metadata: {},
         models: [],
         providers: [],
         serviceNames: [],
+        agentNames: [],
         rootSpanId: SpanId("span-1"),
         rootSpanName: "root",
         systemInstructions: [],
@@ -362,12 +366,12 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
     ).rejects.toBeInstanceOf(DatasetNotFoundError)
   })
 
-  it("addTracesToDataset resolves traces from issue source via listTracesByIssue", async () => {
+  it("addTracesToDataset resolves traces from issue source via listTracesBySignal", async () => {
     expect(seededTraceIds.length).toBeGreaterThanOrEqual(1)
-    const issueId = IssueId("issue-link-all")
+    const signalId = SignalId("issue-link-all")
 
-    const issueScoreRepo = createFakeScoreAnalyticsRepository({
-      listTracesByIssue: ({ limit = 25, offset = 0 }) =>
+    const signalScoreRepo = createFakeScoreAnalyticsRepository({
+      listTracesBySignal: ({ limit = 25, offset = 0 }) =>
         Effect.succeed({
           items: seededTraceIds.map((traceId) => ({ traceId, lastSeenAt: new Date() })),
           hasMore: false,
@@ -380,10 +384,10 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
       addTracesToDataset({
         projectId: PROJECT_ID,
         datasetId: DATASET_ID,
-        source: { kind: "issue", issueId },
+        source: { kind: "issue", signalId },
         selection: { mode: "all" },
       }),
-      issueScoreRepo,
+      signalScoreRepo,
     )
 
     expect(result.rowIds.length).toBe(seededTraceIds.length)
@@ -402,11 +406,11 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
   // even when the seed deduper produces a single distinct trace.
   it("addTracesToDataset honors allExcept when source is an issue", async () => {
     expect(seededTraceIds.length).toBeGreaterThanOrEqual(1)
-    const issueId = IssueId("issue-link-except")
+    const signalId = SignalId("issue-link-except")
     const fabricatedExcluded = TraceId("fabricated-excluded-trace")
 
-    const issueScoreRepo = createFakeScoreAnalyticsRepository({
-      listTracesByIssue: ({ limit = 25, offset = 0 }) =>
+    const signalScoreRepo = createFakeScoreAnalyticsRepository({
+      listTracesBySignal: ({ limit = 25, offset = 0 }) =>
         Effect.succeed({
           items: [
             ...seededTraceIds.map((traceId) => ({ traceId, lastSeenAt: new Date() })),
@@ -422,10 +426,10 @@ describe("addTracesToDataset and createDatasetFromTraces", () => {
       addTracesToDataset({
         projectId: PROJECT_ID,
         datasetId: DATASET_ID,
-        source: { kind: "issue", issueId },
+        source: { kind: "issue", signalId },
         selection: { mode: "allExcept", traceIds: [fabricatedExcluded] },
       }),
-      issueScoreRepo,
+      signalScoreRepo,
     )
 
     expect(result.rowIds.length).toBe(seededTraceIds.length)

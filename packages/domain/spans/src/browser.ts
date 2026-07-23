@@ -15,15 +15,18 @@ export {
   type MetricPercentiles,
 } from "./cohort-baselines.ts"
 export {
+  AGENT_GRAPH_MAIN_ID,
   COHORT_SUMMARY_CACHE_TTL_SECONDS,
+  MAX_AGENT_GRAPH_DEPTH,
   SESSION_ID_MAX_LENGTH,
   SESSION_SEARCH_MAX_MATCHING_TRACES_PER_ROW,
   SPAN_ID_LENGTH,
   TRACE_END_DEBOUNCE_MS,
   TRACE_ID_LENGTH,
+  TRACE_SEARCH_CHARS_PER_TOKEN_ESTIMATE,
 } from "./constants.ts"
 export type { Session, SessionDetail } from "./entities/session.ts"
-export { sessionDetailSchema, sessionSchema } from "./entities/session.ts"
+export { sessionConversationMessages, sessionDetailSchema, sessionSchema } from "./entities/session.ts"
 export type { SessionSearchMatch } from "./entities/session-search-match.ts"
 export type { Operation, Span, SpanDetail, SpanKind, SpanStatusCode, ToolDefinition } from "./entities/span.ts"
 export {
@@ -34,9 +37,15 @@ export {
   spanStatusCodeSchema,
   toolDefinitionSchema,
 } from "./entities/span.ts"
-export type { Trace, TraceDetail } from "./entities/trace.ts"
+export type { Trace, TraceConversationChunk, TraceDetail } from "./entities/trace.ts"
 export { traceDetailSchema, traceSchema } from "./entities/trace.ts"
 export { SpanDecodingError } from "./errors.ts"
+export {
+  canonicalizeMessageForEmbedding,
+  hashMessageContent,
+  type MessageEmbeddingInput,
+  type MessageEmbeddingRole,
+} from "./helpers/message-embedding.ts"
 export {
   isLlmCompletionOperation,
   resolveLastLlmCompletionSpanId,
@@ -52,6 +61,12 @@ export {
   resolveTraceHistogramRangeIso,
 } from "./helpers.ts"
 export type {
+  MessageEmbedding,
+  MessageEmbeddingRepositoryShape,
+  MessageEmbeddingUpsert,
+} from "./ports/message-embedding-repository.ts"
+export { MessageEmbeddingRepository } from "./ports/message-embedding-repository.ts"
+export type {
   SessionCountResult,
   SessionDistinctColumn,
   SessionListCursor,
@@ -61,8 +76,42 @@ export type {
   SessionRepositoryShape,
 } from "./ports/session-repository.ts"
 export { emptySessionMetrics, SessionRepository } from "./ports/session-repository.ts"
-export type { SpanListOptions, SpanMessagesData, SpanRepositoryShape } from "./ports/span-repository.ts"
+export type {
+  SessionToolSpan,
+  SpanIngestedAtWindow,
+  SpanIngestionCursor,
+  SpanListCursor,
+  SpanListOptions,
+  SpanListOrderDirection,
+  SpanListOrderField,
+  SpanListPage,
+  SpanMessagesData,
+  SpanRepositoryShape,
+} from "./ports/span-repository.ts"
 export { SpanRepository } from "./ports/span-repository.ts"
+export type {
+  RecentDefiningSpan,
+  RecentDefiningSpanPage,
+  RecentToolCall,
+  RecentToolCallPage,
+  ToolAnalyticsRepositoryShape,
+  ToolAnalyticsScope,
+  ToolCallCursor,
+  ToolCallHistogramBucket,
+  ToolContextBreakdownRow,
+  ToolContextDimension,
+  ToolCoOccurrenceRow,
+  ToolDefinitionDetail,
+  ToolErrorBreakdownRow,
+  ToolParameterStat,
+  ToolParameterStatsResult,
+  ToolParameterValueStat,
+  ToolSummary,
+  ToolsAnalytics,
+  ToolsAnalyticsTotals,
+  ToolUsageMetrics,
+} from "./ports/tool-analytics-repository.ts"
+export { ToolAnalyticsRepository } from "./ports/tool-analytics-repository.ts"
 export type {
   NumericRollup,
   TraceDistinctColumn,
@@ -81,17 +130,37 @@ export {
   TRACE_HISTOGRAM_METRICS,
   TraceRepository,
 } from "./ports/trace-repository.ts"
+export type { TraceSearchBudgetShape } from "./ports/trace-search-budget.ts"
+export { TraceSearchBudget } from "./ports/trace-search-budget.ts"
+export type {
+  AgentGraph,
+  AgentGraphSpanInput,
+  AgentMetrics,
+  AgentNode,
+  AgentNodeKind,
+  AgentTrigger,
+} from "./use-cases/build-agent-graph.ts"
+export { agentGraphSpanKey, agentGraphToolCallKey, buildAgentGraph } from "./use-cases/build-agent-graph.ts"
+export type {
+  TraceHighlight,
+  TraceSearchHighlightsResult,
+} from "./use-cases/compute-trace-search-highlights.ts"
+export { computeTraceSearchHighlights } from "./use-cases/compute-trace-search-highlights.ts"
 export type { GetSessionCohortSummaryInput } from "./use-cases/get-session-cohort-summary.ts"
 export { getSessionCohortSummaryUseCase } from "./use-cases/get-session-cohort-summary.ts"
 export type { GetTraceCohortSummaryInput } from "./use-cases/get-trace-cohort-summary.ts"
 export { getTraceCohortSummaryUseCase } from "./use-cases/get-trace-cohort-summary.ts"
+export type { GetTraceConversationChunkInput } from "./use-cases/get-trace-conversation-chunk.ts"
+export { getTraceConversationChunkUseCase } from "./use-cases/get-trace-conversation-chunk.ts"
 export type {
   LoadTraceForTraceEndFound,
   LoadTraceForTraceEndResult,
   LoadTraceForTraceEndSkipped,
 } from "./use-cases/load-trace-for-trace-end.ts"
 export { loadTraceForTraceEndUseCase } from "./use-cases/load-trace-for-trace-end.ts"
-export { buildConversationSpanMaps } from "./use-cases/map-conversation-to-spans.ts"
+export { buildConversationSpanMaps, type ConversationSpanRef } from "./use-cases/map-conversation-to-spans.ts"
+export type { ParsedSearchQuery } from "./use-cases/parse-search-query.ts"
+export { parseSearchQuery } from "./use-cases/parse-search-query.ts"
 export type {
   SelectTraceEndItemsError,
   TraceEndSelectionDecision,

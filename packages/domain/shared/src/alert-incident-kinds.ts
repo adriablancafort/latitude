@@ -1,77 +1,58 @@
 import { z } from "zod"
 
-/** Entity an alert watches: `(sourceType, sourceId)` identifies the incident's subject. */
-export const ALERT_INCIDENT_SOURCE_TYPES = ["issue", "savedSearch"] as const
-export const alertIncidentSourceTypeSchema = z.enum(ALERT_INCIDENT_SOURCE_TYPES)
-export type AlertIncidentSourceType = z.infer<typeof alertIncidentSourceTypeSchema>
+export const MONITOR_TARGET_TYPES = ["savedSearch", "tool", "user", "session"] as const
+export const monitorTargetTypeSchema = z.enum(MONITOR_TARGET_TYPES)
+export type MonitorTargetType = z.infer<typeof monitorTargetTypeSchema>
 
-/**
- * The watched signal. Lives in `@domain/shared` (not `@domain/alerts`) so
- * notifications / monitors / project settings can key off it without depending
- * on the alerts package.
- */
-export const ALERT_INCIDENT_KINDS = [
-  "issue.new",
-  "issue.regressed",
-  "issue.escalating",
-  "savedSearch.match",
-  "savedSearch.threshold",
-  "savedSearch.escalating",
-] as const
-export const alertIncidentKindSchema = z.enum(ALERT_INCIDENT_KINDS)
-export type AlertIncidentKind = z.infer<typeof alertIncidentKindSchema>
+export const MONITOR_TRIGGERS = ["match", "threshold", "escalating"] as const
+export const monitorTriggerSchema = z.enum(MONITOR_TRIGGERS)
+export type MonitorTrigger = z.infer<typeof monitorTriggerSchema>
 
-/** Each kind has exactly one legal source type; create/update reject mismatches. */
-export const ALERT_INCIDENT_KIND_SOURCE_TYPE: Record<AlertIncidentKind, AlertIncidentSourceType> = {
-  "issue.new": "issue",
-  "issue.regressed": "issue",
-  "issue.escalating": "issue",
-  "savedSearch.match": "savedSearch",
-  "savedSearch.threshold": "savedSearch",
-  "savedSearch.escalating": "savedSearch",
-}
-
-/** Point (start == end) vs sustained (needs closing). Drives `endedAt` writes + notification kinds. */
-export const ALERT_INCIDENT_KIND_LIFECYCLE: Record<AlertIncidentKind, "point" | "sustained"> = {
-  "issue.new": "point",
-  "issue.regressed": "point",
-  "issue.escalating": "sustained",
-  "savedSearch.match": "point",
-  "savedSearch.threshold": "point",
-  "savedSearch.escalating": "sustained",
-}
-
-/**
- * Canonical human-readable label per kind. Single source of truth — the monitor
- * panel, incident-chart markers, and email/Slack notification templates all read
- * this so the same kind never shows two different names.
- */
-export const ALERT_INCIDENT_KIND_LABEL: Record<AlertIncidentKind, string> = {
-  "issue.new": "Issue discovered",
-  "issue.regressed": "Issue regressed",
-  "issue.escalating": "Issue escalating",
-  "savedSearch.match": "Search match",
-  "savedSearch.threshold": "Search threshold",
-  "savedSearch.escalating": "Search escalating",
-}
-
-/** Kinds users may put on their own monitors; `issue.*` are system-only. Create/update enforce this. */
-export const USER_CREATABLE_ALERT_KINDS = [
-  "savedSearch.match",
-  "savedSearch.threshold",
-  "savedSearch.escalating",
-] as const satisfies readonly AlertIncidentKind[]
+export const INCIDENT_SOURCE_TYPES = ["monitor", "signal"] as const
+export const incidentSourceTypeSchema = z.enum(INCIDENT_SOURCE_TYPES)
+export type IncidentSourceType = z.infer<typeof incidentSourceTypeSchema>
 
 export const ALERT_SEVERITIES = ["low", "medium", "high"] as const
 export const alertSeveritySchema = z.enum(ALERT_SEVERITIES)
 export type AlertSeverity = z.infer<typeof alertSeveritySchema>
 
-/** Legacy (flag-off) issue-event severity. Flag-on reads severity off the firing alert instead. */
-export const SEVERITY_FOR_KIND: Record<AlertIncidentKind, AlertSeverity> = {
-  "issue.new": "medium",
-  "issue.regressed": "high",
-  "issue.escalating": "high",
-  "savedSearch.match": "low",
-  "savedSearch.threshold": "medium",
-  "savedSearch.escalating": "high",
+export const SIGNAL_INCIDENT_TRIGGERS = ["escalating"] as const
+export const INCIDENT_NOTIFICATION_KEYS = [
+  "signal.escalating",
+  "monitor.match",
+  "monitor.threshold",
+  "monitor.escalating",
+] as const
+export const incidentNotificationKeySchema = z.enum(INCIDENT_NOTIFICATION_KEYS)
+export type IncidentNotificationKey = z.infer<typeof incidentNotificationKeySchema>
+
+export const INCIDENT_NOTIFICATION_KEY_LABEL: Record<IncidentNotificationKey, string> = {
+  "signal.escalating": "Signal escalating",
+  "monitor.match": "Monitor match",
+  "monitor.threshold": "Monitor threshold",
+  "monitor.escalating": "Monitor escalating",
 }
+export const DEFAULT_SEVERITY_FOR_INCIDENT_NOTIFICATION_KEY: Record<IncidentNotificationKey, AlertSeverity> = {
+  "signal.escalating": "high",
+  "monitor.match": "medium",
+  "monitor.threshold": "medium",
+  "monitor.escalating": "high",
+}
+
+const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, high: 2 }
+
+export const meetsMinSeverity = (severity: AlertSeverity, minimum: AlertSeverity): boolean =>
+  SEVERITY_RANK[severity] >= SEVERITY_RANK[minimum]
+
+export const SEVERITY_COLOR: Record<AlertSeverity, string> = {
+  low: "#3b82f6",
+  medium: "#f59e0b",
+  high: "#ef4444",
+}
+
+export const SEVERITY_BADGE_COLOR: Record<AlertSeverity, { readonly background: string; readonly foreground: string }> =
+  {
+    low: { background: "#dbeafe", foreground: "#1e40af" },
+    medium: { background: "#fef3c7", foreground: "#92400e" },
+    high: { background: "#fee2e2", foreground: "#991b1b" },
+  }

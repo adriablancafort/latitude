@@ -12,7 +12,13 @@ import { Context, type Effect } from "effect"
 import type { CohortBaselineData } from "../cohort-baselines.ts"
 import type { Session, SessionDetail } from "../entities/session.ts"
 import type { SessionSearchMatch } from "../entities/session-search-match.ts"
-import type { NumericRollup, TraceDistribution, TraceTimeHistogramBucket } from "./trace-repository.ts"
+import type {
+  NumericRollup,
+  TokenAnalyticsAggregate,
+  TraceDistribution,
+  TraceTimeHistogramBucket,
+} from "./trace-repository.ts"
+import { emptyTokenAnalytics } from "./trace-repository.ts"
 
 /**
  * Repository port for sessions (ClickHouse materialized view).
@@ -64,6 +70,12 @@ export interface SessionRepositoryShape {
     readonly sessionId: SessionId
   }): Effect.Effect<SessionDetail, NotFoundError | RepositoryError, ChSqlClient>
 
+  listBySessionIds(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly sessionIds: readonly SessionId[]
+  }): Effect.Effect<readonly Session[], RepositoryError, ChSqlClient>
+
   distinctFilterValues(input: {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
@@ -87,7 +99,14 @@ export interface SessionRepositoryShape {
   }): Effect.Effect<TraceDistribution, RepositoryError, ChSqlClient>
 }
 
-export type SessionDistinctColumn = "tags" | "models" | "providers" | "serviceNames"
+export type SessionDistinctColumn =
+  | "userId"
+  | "tags"
+  | "models"
+  | "providers"
+  | "serviceNames"
+  | "tools"
+  | "definedTools"
 
 export interface SessionListCursor {
   readonly sortValue: string
@@ -135,6 +154,7 @@ export interface SessionMetrics {
   readonly tokensTotal: NumericRollup
   readonly timeToFirstTokenNs: NumericRollup
   readonly traceCount: number
+  readonly tokenAnalytics: TokenAnalyticsAggregate
 }
 
 const zeroRollup = (): NumericRollup => ({
@@ -153,6 +173,7 @@ export const emptySessionMetrics = (): SessionMetrics => ({
   tokensTotal: zeroRollup(),
   timeToFirstTokenNs: zeroRollup(),
   traceCount: 0,
+  tokenAnalytics: emptyTokenAnalytics(),
 })
 
 export class SessionRepository extends Context.Service<SessionRepository, SessionRepositoryShape>()(

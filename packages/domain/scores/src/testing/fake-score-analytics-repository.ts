@@ -27,26 +27,48 @@ export const createFakeScoreAnalyticsRepository = (overrides?: Partial<ScoreAnal
     aggregateBySource: () => Effect.succeed(EMPTY_AGGREGATE),
     trendBySource: () => Effect.succeed([]),
     trendByProject: () => Effect.succeed([]),
-    escalationThresholdHistogramByIssues: () => Effect.succeed([]),
+    escalationThresholdHistogramBySignals: () => Effect.succeed([]),
     rollupByTraceIds: () => Effect.succeed([]),
     rollupBySessionIds: () => Effect.succeed([]),
-    aggregateByIssues: () => Effect.succeed([]),
-    escalationSignalsByIssues: () => Effect.succeed([]),
-    aggregateTagsByIssues: () => Effect.succeed([]),
-    trendByIssue: () => Effect.succeed([]),
-    listIssueWindowMetrics: () => Effect.succeed([]),
-    histogramByIssues: () => Effect.succeed([]),
-    trendByIssues: () => Effect.succeed([]),
+    aggregateBySignals: () => Effect.succeed([]),
+    aggregateDimensionBySignal: ({ dimension }) =>
+      Effect.succeed({ dimension, baseRate: 0, signalAffectedTraces: 0, values: [] }),
+    aggregateImpactBySignal: ({ signalId }) =>
+      Effect.succeed({
+        signalId,
+        occurrences: 0,
+        affectedTraces: 0,
+        affectedSessions: 0,
+        affectedUsers: 0,
+        costMicrocents: 0,
+        tokens: 0,
+      }),
+    coOccurrenceBySignal: () => Effect.succeed({ mySessions: 0, totalSessions: 0, candidates: [] }),
+    escalationSignalsBySignals: () => Effect.succeed([]),
+    aggregateTagsBySignals: () => Effect.succeed([]),
+    trendBySignal: () => Effect.succeed([]),
+    listSignalWindowMetrics: () => Effect.succeed([]),
+    histogramBySignals: () => Effect.succeed([]),
+    trendBySignals: () => Effect.succeed([]),
     countDistinctTracesByTimeRange: () => Effect.succeed(0),
-    listTracesByIssue: () =>
+    listTracesBySignal: () =>
       Effect.succeed({
         items: [],
         hasMore: false,
         limit: 25,
         offset: 0,
       }),
-    countTracesByIssue: () => Effect.succeed(0),
-    listIssuesByTraceIds: () => Effect.succeed([]),
+    countTracesBySignal: () => Effect.succeed(0),
+    listSessionsBySignal: () =>
+      Effect.succeed({
+        items: [],
+        hasMore: false,
+        limit: 25,
+        offset: 0,
+      }),
+    countSessionsBySignal: () => Effect.succeed(0),
+    listSignalsByTraceIds: () => Effect.succeed([]),
+    listSignalsByUser: () => Effect.succeed([]),
     delete: (id) =>
       Effect.sync(() => {
         const index = inserted.indexOf(id)

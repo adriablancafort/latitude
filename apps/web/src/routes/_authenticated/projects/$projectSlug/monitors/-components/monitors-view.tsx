@@ -3,6 +3,7 @@ import {
   InfiniteTable,
   type InfiniteTableColumn,
   type InfiniteTableInfiniteScroll,
+  type InfiniteTableSelection,
   LatitudeLogo,
   type MenuOption,
   optionsColumn,
@@ -11,13 +12,16 @@ import {
   Text,
   Tooltip,
 } from "@repo/ui"
+import { useNavigate } from "@tanstack/react-router"
 import { BellIcon, BellOffIcon, PencilIcon, Trash2Icon } from "lucide-react"
 import { useState } from "react"
+import { describeMonitorTarget } from "../../../../../../domains/monitors/monitor-target.ts"
 import type { MonitorListRowRecord, MonitorRecord } from "../../../../../../domains/monitors/monitors.collection.ts"
 import {
   ListingLayout as Layout,
   listingLayoutIntrinsicScroll,
 } from "../../../../../../layouts/ListingLayout/index.tsx"
+import { IncidentResolveConfirmModal } from "./incident-resolve-confirm-modal.tsx"
 import { IncidentStatus } from "./incident-status.tsx"
 import { MonitorDeleteConfirmModal } from "./monitor-delete-confirm-modal.tsx"
 import { MonitorMuteConfirmModal } from "./monitor-mute-confirm-modal.tsx"
@@ -68,7 +72,13 @@ export function sortMonitorRows(
   })
 }
 
-function LastIncidentCell({ summary }: { readonly summary: MonitorsTableRow["lastIncident"] }) {
+function LastIncidentCell({
+  summary,
+  onResolve,
+}: {
+  readonly summary: MonitorsTableRow["lastIncident"]
+  readonly onResolve: (incidentId: string) => void
+}) {
   if (!summary) {
     return (
       <Text.H6 color="foregroundMuted" noWrap>
@@ -76,12 +86,64 @@ function LastIncidentCell({ summary }: { readonly summary: MonitorsTableRow["las
       </Text.H6>
     )
   }
-  return <IncidentStatus startedAtIso={summary.startedAtIso} endedAtIso={summary.endedAtIso} />
+  return (
+    <IncidentStatus
+      startedAtIso={summary.startedAtIso}
+      endedAtIso={summary.endedAtIso}
+      {...(summary.endedAtIso === null ? { onResolve: () => onResolve(summary.id) } : {})}
+    />
+  )
 }
 
-function ConditionCell({ alerts }: { readonly alerts: MonitorRecord["alerts"] }) {
-  const [first, ...rest] = alerts
-  if (!first) {
+function ConditionCell({ rule }: { readonly rule: MonitorRecord["rule"] | null }) {
+  if (!rule) return <Text.H6 color="foregroundMuted">—</Text.H6>
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Text.H5 className="min-w-0" noWrap ellipsis>
+        {rule.summary}
+      </Text.H5>
+    </div>
+  )
+}
+
+function TargetCell({
+  monitor,
+  onOpenSearch,
+}: {
+  readonly monitor: MonitorRecord
+  readonly onOpenSearch: (slug: string) => void
+}) {
+  const savedSearchSlug = monitor.targetSavedSearchSlug
+  const savedSearchName = monitor.targetSavedSearchName
+  if (savedSearchSlug && savedSearchName) {
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        <Tooltip
+          asChild
+          trigger={
+            <button
+              type="button"
+              className="min-w-0 cursor-pointer"
+              aria-label={`Open saved search ${savedSearchName} on the traces page`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onOpenSearch(savedSearchSlug)
+              }}
+            >
+              <Badge variant="muted" ellipsis className="max-w-full">
+                {savedSearchName}
+              </Badge>
+            </button>
+          }
+        >
+          View matching traces
+        </Tooltip>
+      </div>
+    )
+  }
+
+  const description = describeMonitorTarget(monitor.target)
+  if (!description) {
     return (
       <Text.H6 color="foregroundMuted" noWrap>
         —
@@ -89,16 +151,9 @@ function ConditionCell({ alerts }: { readonly alerts: MonitorRecord["alerts"] })
     )
   }
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <Text.H5 className="min-w-0" noWrap ellipsis>
-        {first.summary}
-      </Text.H5>
-      {rest.length > 0 ? (
-        <Badge variant="noBorderMuted" className="shrink-0" aria-label={`${rest.length} more alerts`}>
-          +{rest.length}
-        </Badge>
-      ) : null}
-    </div>
+    <Badge variant="muted" ellipsis className="max-w-full">
+      {description.label}
+    </Badge>
   )
 }
 
@@ -109,21 +164,27 @@ export function MonitorsView({
   activeMonitorSlug,
   onActiveMonitorChange,
   projectId,
+  projectSlug,
   sorting,
   onSortChange,
+  selection,
 }: {
   readonly rows: readonly MonitorsTableRow[]
   readonly isLoading: boolean
   readonly infiniteScroll: InfiniteTableInfiniteScroll
-  readonly activeMonitorSlug: string | undefined
+  readonly activeMonitorSlug?: string | undefined
   readonly onActiveMonitorChange: (slug: string | undefined) => void
   readonly projectId: string
+  readonly projectSlug: string
   readonly sorting: MonitorsTableSorting
   readonly onSortChange: (sorting: MonitorsTableSorting) => void
+  readonly selection: InfiniteTableSelection
 }) {
+  const navigate = useNavigate()
   const [pendingMute, setPendingMute] = useState<MonitorRecord | null>(null)
   const [renameTarget, setRenameTarget] = useState<MonitorRecord | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MonitorRecord | null>(null)
+  const [resolveTarget, setResolveTarget] = useState<string | null>(null)
   const activeRowKey = activeMonitorSlug
     ? rows.find((r) => r.monitor.slug === activeMonitorSlug)?.monitor.id
     : undefined
@@ -175,7 +236,26 @@ export function MonitorsView({
       sortKey: "lastIncident",
       width: 187,
       minWidth: 153,
-      render: (row) => <LastIncidentCell summary={row.lastIncident} />,
+      render: (row) => <LastIncidentCell summary={row.lastIncident} onResolve={setResolveTarget} />,
+    },
+    {
+      key: "target",
+      header: "Target",
+      width: 180,
+      minWidth: 120,
+      maxWidth: 220,
+      render: (row) => (
+        <TargetCell
+          monitor={row.monitor}
+          onOpenSearch={(slug) =>
+            void navigate({
+              to: "/projects/$projectSlug",
+              params: { projectSlug },
+              search: { savedSearch: slug },
+            })
+          }
+        />
+      ),
     },
     {
       key: "condition",
@@ -183,7 +263,7 @@ export function MonitorsView({
       width: 340,
       minWidth: 200,
       maxWidth: 340,
-      render: (row) => <ConditionCell alerts={row.monitor.alerts} />,
+      render: (row) => <ConditionCell rule={row.monitor.rule} />,
     },
     optionsColumn<MonitorsTableRow>({
       getOptions: (row): MenuOption[] => {
@@ -223,6 +303,7 @@ export function MonitorsView({
             columns={columns}
             getRowKey={(row) => row.monitor.id}
             infiniteScroll={infiniteScroll}
+            selection={selection}
             sorting={sorting}
             defaultSorting={DEFAULT_MONITORS_SORTING}
             onSortChange={(next) =>
@@ -239,6 +320,7 @@ export function MonitorsView({
         </Layout.List>
       </Layout.Body>
       <MonitorMuteConfirmModal projectId={projectId} monitor={pendingMute} onOpenChange={setPendingMute} />
+      <IncidentResolveConfirmModal projectId={projectId} incidentId={resolveTarget} onOpenChange={setResolveTarget} />
       {renameTarget ? (
         <MonitorRenameModal
           key={renameTarget.id}

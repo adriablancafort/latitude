@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import type { Flagger } from "../entities/flagger.ts"
 import type { FlaggerSlug } from "../flagger-strategies/types.ts"
 import { FlaggerRepository } from "../ports/flagger-repository.ts"
+import { findOrCreateFlaggerUseCase } from "./find-or-create-flagger.ts"
 import { evictProjectFlaggersUseCase } from "./get-project-flaggers.ts"
 
 export interface UpdateFlaggerInput {
@@ -19,7 +20,7 @@ export type UpdateFlaggerError = RepositoryError
 
 /**
  * Updates a flagger row and evicts the project's flagger cache entry so
- * `processFlaggersUseCase` picks up the new `enabled` or `sampling` value on
+ * `screenSessionFlaggersUseCase` picks up the new `enabled` or `sampling` value on
  * the next run (otherwise the 5-minute cache TTL would gate the change).
  * Eviction is folded in here so callers can't forget —
  * `evictProjectFlaggersUseCase` is permissive (no-op when `CacheStore` isn't
@@ -34,6 +35,10 @@ export const updateFlaggerUseCase = Effect.fn("flaggers.updateFlagger")(function
   const updated = yield* sqlClient.transaction(
     Effect.gen(function* () {
       const repository = yield* FlaggerRepository
+      // Ensure a row exists for strategies the project was never provisioned
+      // (shown disabled in settings) so enabling one persists instead of being
+      // a silent no-op against a missing row.
+      yield* findOrCreateFlaggerUseCase({ projectId: input.projectId, slug: input.slug })
       const row = yield* repository.update({
         projectId: input.projectId,
         slug: input.slug,

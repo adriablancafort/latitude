@@ -1,5 +1,6 @@
 import type { IncidentRecovery } from "@domain/notifications"
-import { ALERT_INCIDENT_KIND_SOURCE_TYPE, type AlertIncidentKind, type AlertSeverity } from "@domain/shared"
+import type { AlertSeverity, IncidentNotificationKey } from "@domain/shared"
+import type { SignalPriority } from "@domain/signals"
 import { Section } from "@react-email/components"
 // @ts-expect-error TS6133 - React required at runtime for JSX in workers
 // biome-ignore lint/correctness/noUnusedImports: React required at runtime for JSX in workers
@@ -14,25 +15,30 @@ import {
   formatScope,
   humanizeDurationMs,
   IncidentTrendChartImage,
-  IssueIdFooter,
-  IssueTimestamp,
   MonitorAttribution,
   type MonitorAttributionInfo,
+  PriorityBadge,
   SectionHeader,
   SeverityBadge,
+  SignalIdFooter,
+  SignalTimestamp,
 } from "../-incident-components.tsx"
 
 interface IncidentClosedEmailProps {
-  readonly incidentKind: AlertIncidentKind
+  readonly incidentKind: IncidentNotificationKey
   readonly severity: AlertSeverity
   readonly sourceId: string
   readonly sourceName: string
   readonly description: string | undefined
-  readonly issueUrl: string | undefined
+  readonly signalUrl: string | undefined
   readonly chartUrl: string
   readonly notificationCreatedAt: Date
   readonly organizationName: string
   readonly projectName: string | undefined
+  /** Signal triage snapshot at incident time; absent on legacy payloads and monitor sources. */
+  readonly priority: SignalPriority | undefined
+  /** Live-resolved assignee display name; absent when unassigned or unresolvable. */
+  readonly assigneeName: string | undefined
   readonly recovery: IncidentRecovery
   readonly monitor: MonitorAttributionInfo | undefined
   readonly webAppUrl: string
@@ -44,30 +50,34 @@ export function IncidentClosedEmail({
   sourceId,
   sourceName,
   description,
-  issueUrl,
+  signalUrl,
   chartUrl,
   notificationCreatedAt,
   organizationName,
   projectName,
+  priority,
+  assigneeName,
   recovery,
   monitor,
   webAppUrl,
 }: IncidentClosedEmailProps) {
-  const isSavedSearch = ALERT_INCIDENT_KIND_SOURCE_TYPE[incidentKind] === "savedSearch"
+  const isMonitorIncident = incidentKind.startsWith("monitor.")
   const heading = "Resolved escalation"
-  const subtitle = isSavedSearch
-    ? "We notified everyone watching this project — matching traces have returned below the threshold."
+  const subtitle = isMonitorIncident
+    ? "We notified everyone watching this project — the monitored target has returned below the threshold."
     : "We notified everyone watching this project — the occurrence rate has returned to baseline."
   const scope = formatScope(organizationName, projectName)
   const duration = humanizeDurationMs(recovery.durationMs)
-  const recoveryLine = isSavedSearch
-    ? `Elevated for ${duration} — no further action needed unless matching traces climb again.`
-    : `Elevated for ${duration} — no further action needed unless the issue regresses again.`
-  const ctaHref = isSavedSearch ? monitor?.url : issueUrl
+  const recoveryLine = isMonitorIncident
+    ? `Elevated for ${duration} — no further action needed unless the monitored target climbs again.`
+    : `Elevated for ${duration} — no further action needed unless the signal regresses again.`
+  const ctaHref = isMonitorIncident ? monitor?.url : signalUrl
 
   const metadataRows = [
     { label: "Project", value: scope },
     { label: "Severity", value: <SeverityBadge severity={severity} /> },
+    ...(priority ? [{ label: "Priority", value: <PriorityBadge priority={priority} /> }] : []),
+    ...(assigneeName ? [{ label: "Assigned to", value: assigneeName }] : []),
   ]
 
   return (
@@ -82,7 +92,7 @@ export function IncidentClosedEmail({
 
       <MonitorAttribution monitor={monitor} />
 
-      <SectionHeader label={isSavedSearch ? "Saved search" : "Issue"} />
+      <SectionHeader label={isMonitorIncident ? "Monitor target" : "Signal"} />
       <EmailText variant="heading">{sourceName}</EmailText>
       {description ? (
         <EmailText variant="bodySmall" className="text-muted-foreground">
@@ -90,7 +100,7 @@ export function IncidentClosedEmail({
         </EmailText>
       ) : null}
 
-      <IssueTimestamp timestamp={notificationCreatedAt} />
+      <SignalTimestamp timestamp={notificationCreatedAt} />
 
       <EmailMetadataTable rows={metadataRows} />
 
@@ -98,16 +108,16 @@ export function IncidentClosedEmail({
       <EmailText variant="body" className={emailDesignTokens.spacing.contentGap}>
         {recoveryLine}
       </EmailText>
-      {isSavedSearch ? null : (
+      {isMonitorIncident ? null : (
         <>
           <IncidentTrendChartImage src={chartUrl} />
-          <IssueIdFooter issueId={sourceId} />
+          <SignalIdFooter signalId={sourceId} />
         </>
       )}
 
       {ctaHref ? (
         <Section className={emailDesignTokens.spacing.buttonTop}>
-          <EmailButton href={ctaHref} label={isSavedSearch ? "View monitor" : "View issue"} />
+          <EmailButton href={ctaHref} label={isMonitorIncident ? "View monitor" : "View signal"} />
         </Section>
       ) : null}
     </ContainerLayout>
@@ -115,21 +125,23 @@ export function IncidentClosedEmail({
 }
 
 IncidentClosedEmail.PreviewProps = {
-  incidentKind: "issue.escalating",
+  incidentKind: "signal.escalating",
   severity: "high",
   sourceId: "dds0rt8sqgpuku4u4wabze9r",
   sourceName: "Token leakage in responses",
   description: "Agent occasionally echoes API keys or PII back to the user when summarising prior tool outputs.",
-  issueUrl: "https://console.latitude.so/projects/sample-project/issues?issueId=preview-issue",
+  signalUrl: "https://console.latitude.so/projects/sample-project/issues/preview-issue",
   chartUrl: "https://placehold.co/600x200/dbe5ff/3b5bff?text=Trend+chart",
   notificationCreatedAt: new Date("2026-03-18T10:37:00Z"),
   organizationName: "Acme Inc.",
   projectName: "Support agent",
+  priority: "high",
+  assigneeName: "Anna Bosch",
   recovery: { durationMs: 32 * 60 * 1000 },
   monitor: {
-    name: "Issue escalating",
+    name: "Signal escalating",
     url: "https://console.latitude.so/projects/sample-project/monitors?monitorSlug=issue-escalating",
-    conditionSummary: "Alerts when an ongoing issue is being detected more than expected.",
+    conditionSummary: "Opens an incident when an ongoing signal is being detected more than expected.",
   },
   webAppUrl: "http://localhost:3000",
 } satisfies IncidentClosedEmailProps

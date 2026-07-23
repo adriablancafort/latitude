@@ -10,7 +10,7 @@ import type {
 } from "@domain/shared"
 import { Context, type Effect } from "effect"
 import type { CohortBaselineData } from "../cohort-baselines.ts"
-import type { Trace, TraceDetail } from "../entities/trace.ts"
+import type { Trace, TraceConversationChunk, TraceDetail, TraceMetadataDetail } from "../entities/trace.ts"
 
 /**
  * Repository port for traces (ClickHouse materialized view).
@@ -51,6 +51,12 @@ export interface TraceRepositoryShape {
     readonly searchQuery?: string
   }): Effect.Effect<Date | null, RepositoryError, ChSqlClient>
 
+  /** Earliest `start_time` across all of a project's traces (unfiltered) — the "All time" lower bound. */
+  findFirstTraceAt(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+  }): Effect.Effect<Date | null, RepositoryError, ChSqlClient>
+
   /**
    * Count of traces matching the same filter + search semantics as `countByProjectId` that have at
    * least one `source = 'annotation'` score linked. The shared `searchQuery` path requires AI
@@ -84,6 +90,26 @@ export interface TraceRepositoryShape {
     readonly projectId: ProjectId
     readonly traceId: TraceId
   }): Effect.Effect<TraceDetail, NotFoundError | RepositoryError, ChSqlClient>
+
+  findSummaryByTraceId(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly traceId: TraceId
+  }): Effect.Effect<Trace, NotFoundError | RepositoryError, ChSqlClient>
+
+  findMetadataByTraceId(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly traceId: TraceId
+  }): Effect.Effect<TraceMetadataDetail, NotFoundError | RepositoryError, ChSqlClient>
+
+  findConversationChunk(input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly traceId: TraceId
+    readonly offset: number
+    readonly limit: number
+  }): Effect.Effect<TraceConversationChunk, RepositoryError, ChSqlClient>
 
   matchesFiltersByTraceId(input: {
     readonly organizationId: OrganizationId
@@ -126,7 +152,7 @@ export interface TraceRepositoryShape {
   }): Effect.Effect<TraceDistribution, RepositoryError, ChSqlClient>
 }
 
-export type TraceDistinctColumn = "tags" | "models" | "providers" | "serviceNames"
+export type TraceDistinctColumn = "userId" | "tags" | "models" | "providers" | "serviceNames" | "tools" | "definedTools"
 
 export interface TraceFilterSetMatchCandidate {
   readonly filterId: string
@@ -163,12 +189,34 @@ export interface NumericRollup {
   readonly sum: number
 }
 
+/**
+ * Token-weighted token analytics over the filtered set (not per-row averages):
+ * `cacheHitRate` is `cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreateTokens)`,
+ * `null` when there are no input-side tokens. Token fields are summed totals.
+ */
+export interface TokenAnalyticsAggregate {
+  readonly cacheHitRate: number | null
+  readonly inputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheCreateTokens: number
+  readonly outputTokens: number
+}
+
+export const emptyTokenAnalytics = (): TokenAnalyticsAggregate => ({
+  cacheHitRate: null,
+  inputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreateTokens: 0,
+  outputTokens: 0,
+})
+
 export interface TraceMetrics {
   readonly durationNs: NumericRollup
   readonly costTotalMicrocents: NumericRollup
   readonly spanCount: NumericRollup
   readonly tokensTotal: NumericRollup
   readonly timeToFirstTokenNs: NumericRollup
+  readonly tokenAnalytics: TokenAnalyticsAggregate
 }
 
 const zeroRollup = (): NumericRollup => ({ min: 0, max: 0, avg: 0, median: 0, sum: 0 })
@@ -180,6 +228,7 @@ export const emptyTraceMetrics = (): TraceMetrics => ({
   spanCount: zeroRollup(),
   tokensTotal: zeroRollup(),
   timeToFirstTokenNs: zeroRollup(),
+  tokenAnalytics: emptyTokenAnalytics(),
 })
 
 /**
@@ -198,9 +247,20 @@ export interface TraceTimeHistogramBucket {
   readonly tokensTotalSum: number
   readonly spanCountSum: number
   readonly timeToFirstTokenNsMedian: number
+  readonly tokensInputSum: number
+  readonly tokensCacheReadSum: number
+  readonly tokensCacheCreateSum: number
 }
 
-export const TRACE_HISTOGRAM_METRICS = ["sessions", "cost", "duration", "tokens", "ttft", "traces", "spans"] as const
+export const TRACE_HISTOGRAM_METRICS = [
+  "sessions",
+  "cost",
+  "duration",
+  "tokens",
+  "cacheHitRate",
+  "traces",
+  "spans",
+] as const
 
 export type TraceHistogramMetric = (typeof TRACE_HISTOGRAM_METRICS)[number]
 
@@ -234,6 +294,9 @@ export const emptyTraceTimeHistogramBucket = (bucketStart: string): TraceTimeHis
   tokensTotalSum: 0,
   spanCountSum: 0,
   timeToFirstTokenNsMedian: 0,
+  tokensInputSum: 0,
+  tokensCacheReadSum: 0,
+  tokensCacheCreateSum: 0,
 })
 
 export class TraceRepository extends Context.Service<TraceRepository, TraceRepositoryShape>()(

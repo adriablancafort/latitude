@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -61,7 +61,19 @@ jobs:
         run: ./fern/invoke.sh check
 
       - name: Regenerate Fern-emitted TypeScript SDK
-        run: ./fern/invoke.sh generate --group local --local --force
+        run: pnpm generate:sdk:typescript
 
       - name: Fail if packages/sdk/typescript/src drifted
         run: git diff --exit-code packages/sdk/typescript/src
+
+      - name: Regenerate Fern-emitted Python SDK
+        run: pnpm generate:sdk:python
+
+      - name: Fail if packages/sdk/python/src drifted
+        run: git diff --exit-code packages/sdk/python/src
+
+      - name: Regenerate Fern-emitted CLI
+        run: pnpm generate:cli
+
+      - name: Fail if packages/cli drifted
+        run: git diff --exit-code packages/cli

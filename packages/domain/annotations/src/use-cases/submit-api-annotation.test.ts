@@ -47,12 +47,14 @@ const traceDetailStub = (traceId: string): TraceDetail => ({
   costTotalMicrocents: 0,
   sessionId: SessionId("session"),
   userId: ExternalUserId("user"),
+  userEmail: "",
   simulationId: SimulationId(""),
   tags: [],
   metadata: {},
   models: [],
   providers: [],
   serviceNames: [],
+  agentNames: [],
   rootSpanId: SpanId("r".repeat(16)),
   rootSpanName: "root",
   systemInstructions: [],
@@ -82,12 +84,14 @@ const traceStub = (traceId: string): Trace => ({
   costTotalMicrocents: 0,
   sessionId: SessionId("session"),
   userId: ExternalUserId("user"),
+  userEmail: "",
   simulationId: SimulationId(""),
   tags: [],
   metadata: {},
   models: [],
   providers: [],
   serviceNames: [],
+  agentNames: [],
   rootSpanId: SpanId("r".repeat(16)),
   rootSpanName: "root",
 })
@@ -342,7 +346,7 @@ describe("submitApiAnnotationUseCase", () => {
       )
 
       const persisted = Array.from(store.values())[0]
-      expect(persisted?.source).toBe("annotation")
+      expect(persisted?.sourceType).toBe("annotation")
       expect(persisted?.sourceId).toBe("API")
     })
   })

@@ -1,31 +1,26 @@
 import type { OptimizationCandidate, OptimizationTrajectory } from "@domain/optimizations"
+import { minimalScriptSession } from "@domain/sandbox"
 import { Effect } from "effect"
 import type { HydratedEvaluationAlignmentExample } from "../../alignment/types.ts"
 import {
   buildEvaluationOptimizationJudgeTelemetryCapture,
   type EvaluationOptimizationJudgeTelemetryScope,
 } from "../../runtime/ai-telemetry.ts"
-import { executeEvaluationScriptWithAI } from "../../runtime/evaluation-execution.ts"
+import { executeEvaluationScriptSandboxed } from "../../runtime/sandbox-execution.ts"
 
-// TODO(eval-sandbox): when sandbox is available, executeEvaluationScript will run arbitrary JS
-// and this function's structure will remain the same — it just calls executeEvaluationScript.
 export const evaluateOptimizationCandidate = Effect.fn("evaluations.evaluateOptimizationCandidate")(function* (input: {
   readonly candidate: OptimizationCandidate
   readonly example: HydratedEvaluationAlignmentExample
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
   readonly judgeTelemetry: EvaluationOptimizationJudgeTelemetryScope
 }) {
   yield* Effect.annotateCurrentSpan("evaluation.candidateHash", input.candidate.hash)
   yield* Effect.annotateCurrentSpan("evaluation.exampleTraceId", input.example.traceId)
 
-  const execution = yield* executeEvaluationScriptWithAI({
+  const execution = yield* executeEvaluationScriptSandboxed({
     script: input.candidate.text,
-    conversation: input.example.conversation,
-    issue: {
-      name: input.issueName,
-      description: input.issueDescription,
-    },
+    session: minimalScriptSession(input.example.conversation),
     telemetry: buildEvaluationOptimizationJudgeTelemetryCapture({
       scope: input.judgeTelemetry,
       candidateHash: input.candidate.hash,
@@ -34,7 +29,7 @@ export const evaluateOptimizationCandidate = Effect.fn("evaluations.evaluateOpti
   })
 
   const expectedPositive = input.example.label === "positive"
-  const predictedPositive = execution.result.passed === false
+  const predictedPositive = execution.result.passed === true
   const score = expectedPositive === predictedPositive ? 1 : 0
 
   return {

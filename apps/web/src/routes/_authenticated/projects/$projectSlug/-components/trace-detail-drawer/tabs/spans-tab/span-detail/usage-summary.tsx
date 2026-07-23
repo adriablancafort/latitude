@@ -17,16 +17,17 @@ export interface UsageData {
 }
 
 const TOKEN_COLORS = {
-  cacheRead: "#d8b4fe",
-  cacheCreate: "#a855f7",
-  prompt: "#3b82f6",
-  reasoning: "#16a34a",
-  completion: "#4ade80",
+  cacheRead: "hsl(var(--viz-gold-faint))",
+  cacheCreate: "hsl(var(--viz-gold-soft))",
+  prompt: "hsl(var(--viz-gold))",
+  reasoning: "hsl(var(--viz-blue-soft))",
+  completion: "hsl(var(--viz-blue))",
 } as const
 
 const COST_COLORS = {
-  input: "#3b82f6",
-  output: "#4ade80",
+  input: "hsl(var(--viz-gold))",
+  output: "hsl(var(--viz-blue))",
+  total: "hsl(var(--viz-gray))",
 } as const
 
 export function hasAnyUsage(data: UsageData): boolean {
@@ -44,18 +45,19 @@ export function computeTotalTokens(data: UsageData): number {
 }
 
 export function buildTokenSegments(data: UsageData): SegmentBarItem[] {
-  const prompt = data.tokensInput
-  const cacheRead = data.tokensCacheRead
-  const cacheCreate = data.tokensCacheCreate
-  const completion = data.tokensOutput
-  const reasoning = data.tokensReasoning
-
-  const segments: SegmentBarItem[] = []
-  if (cacheRead > 0) segments.push({ label: "Cache Read", value: cacheRead, color: TOKEN_COLORS.cacheRead })
-  if (cacheCreate > 0) segments.push({ label: "Cache Write", value: cacheCreate, color: TOKEN_COLORS.cacheCreate })
-  if (prompt > 0) segments.push({ label: "Prompt", value: prompt, color: TOKEN_COLORS.prompt })
-  if (reasoning > 0) segments.push({ label: "Reasoning", value: reasoning, color: TOKEN_COLORS.reasoning })
-  if (completion > 0) segments.push({ label: "Completion", value: completion, color: TOKEN_COLORS.completion })
+  // Core categories are always emitted (even at 0) so a no-cache trace reads as
+  // "Cached Input: 0" rather than looking like Latitude failed to capture cache.
+  // The bar drops zero segments; the tooltip breakdown keeps them.
+  const segments: SegmentBarItem[] = [
+    { label: "Input", value: data.tokensInput, color: TOKEN_COLORS.prompt },
+    { label: "Cached Input", value: data.tokensCacheRead, color: TOKEN_COLORS.cacheRead },
+    { label: "Cache Write", value: data.tokensCacheCreate, color: TOKEN_COLORS.cacheCreate },
+  ]
+  // Reasoning is model-dependent, so it only appears when the model reports it.
+  if (data.tokensReasoning > 0) {
+    segments.push({ label: "Reasoning", value: data.tokensReasoning, color: TOKEN_COLORS.reasoning })
+  }
+  segments.push({ label: "Output", value: data.tokensOutput, color: TOKEN_COLORS.completion })
   return segments
 }
 
@@ -66,6 +68,11 @@ export function buildCostSegments(data: UsageData): SegmentBarItem[] {
   const segments: SegmentBarItem[] = []
   if (input > 0) segments.push({ label: "Input", value: input, color: COST_COLORS.input })
   if (output > 0) segments.push({ label: "Output", value: output, color: COST_COLORS.output })
+
+  // Cost reported only as a total (no input/output split) still fills the bar.
+  if (segments.length === 0 && data.costTotalMicrocents > 0) {
+    segments.push({ label: "Cost", value: data.costTotalMicrocents, color: COST_COLORS.total })
+  }
   return segments
 }
 

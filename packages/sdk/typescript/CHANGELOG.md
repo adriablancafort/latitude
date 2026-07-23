@@ -7,6 +7,222 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.6.0] - 2026-07-22
+
+### Added
+
+- `client.memory` group for reading memory observability: `listStores` (cursor-paginated store roll-up), `getStore` (current snapshot, optional point-in-time `at`), `getStoreDiff` (per-record diff between two timestamps), `listStoreUsers`, `getRecord` (body plus version history), `getRecordChange` (one change's before/after diff), `listRecordReads`, and `listRecordUsers`. Store and record ids are opaque query params, so the unattributed (`""`) store and the unnamed record are reachable.
+- `client.sessions.getMemory` / `getMemoryChanges` and `client.traces.getMemory` / `getMemoryChanges` — a session's or trace's memory footprint (per-record read/added/removed token metrics and totals) and its per-record before/after write diffs.
+- `client.users.memoryStores` — the memory stores an end-user accessed.
+
+## [9.5.0] - 2026-07-21
+
+### Added
+
+- `client.signals` lifecycle methods `resolve` / `unresolve` / `ignore` / `unignore`. Resolving archives a signal while its evaluations keep watching for regressions; ignoring archives it, stops monitoring, and mutes notifications.
+- Signal responses now carry `resolvedAt`, `ignoredAt`, and `regressedAt`, and `states` can include `resolved`, `regressed`, and `ignored`.
+- Signal analytics now include `resolved` and `ignored` counts.
+
+### Changed
+
+- Muting a signal is now a pure notification toggle: incidents keep opening while muted.
+
+## [9.4.0] - 2026-07-20
+
+### Added
+
+- `client.sessions` group for reading sessions (the traces of one conversation, grouped by session id): `list` (cursor-paginated, with `filters` + free-text `query`), `analytics` (per-metric totals/medians and a 12-hour bucket series over whole sessions), `get` (session detail with its GenAI `conversation` and `latestTraceId`), `listTraces` (cursor-paginated traces of the session), `listSignals` (signals recorded across the session's traces), and `getSignal` (one session-scoped signal by slug).
+
+## [9.3.0] - 2026-07-16
+
+### Added
+
+- `client.projects.update` `flaggers` map accepts two new slugs: `bluffing` (the assistant proceeds past a failed tool call as if it succeeded) and `pii-leakage` (the assistant's output exposes personal data it should not have surfaced).
+
+## [9.2.0] - 2026-07-16
+
+### Added
+
+- `listTraces` filters now document and validate a dedicated `TraceFilterSet` (including `endTime`). Unknown filter fields and `gtePercentile` on `startTime`/`endTime` are rejected with 400 instead of being silently ignored or failing as 500.
+
+## [9.1.0] - 2026-07-14
+
+### Added
+
+- `client.experiments` — manage project experiments that compare two or more variants against a baseline: `list`, `create`, `get`, `update`, `delete`. Each variant is a population defined by a `filterSet`, an optional search `query`, and a `timeRange`; exactly one variant carries the `baseline` flag. `client.experiments.get` returns the full comparison — per-variant metrics grouped by entity (`sessions`, `users`, `tools`, `signals`, `behaviours`), where every metric is a `{ value, delta }` pair whose `delta` is the signed change versus the baseline (`null` on the baseline variant itself). `tools`, `signals`, and `behaviours` also carry a `top` ranked list.
+
+## [9.0.0] - 2026-07-10
+
+### Changed (breaking)
+
+- `client.monitors.update` (`UpdateMonitorBody`) no longer accepts `target`, `trigger`, `metric`, or `condition`. Monitor target, trigger, metric, and incident-launching conditions are fixed after creation; use this call for `name`, `description`, and `severity` only.
+
+## [8.1.0] - 2026-07-08
+
+### Added
+
+- `SignalDetail.monitoringState` gains a `failed` variant, returned when the most recent evaluation generation or realignment workflow for the signal ended in failure. It carries `phase` (`"generate"` or `"realign"`), an optional `evaluationId` (present only for `realign`), and a nullable `reason` with the resolved failure message. A later successful workflow supersedes an older failure, so `failed` only reflects the latest run.
+
+## [8.0.1] - 2026-07-07
+
+### Changed
+
+- `client.spans.query` and `client.analytics.query` with `stream: "spans"` now use `SpanRowFilterSet` for `filters` — span row filters reject the `gtePercentile` operator (returns `400`). Use `client.analytics.query` with `{ kind: "percentile", field, p }` for span percentile metrics instead.
+
+## [8.0.0] - 2026-07-06
+
+### Changed (breaking)
+
+- `client.traces.get` (`TraceDetail`) now returns a single `conversation` field — the full trace conversation in OpenTelemetry GenAI format: the system instructions, then the running message history sent into the trace's last LLM-completion span, followed by that span's generated output. The previous `systemInstructions`, `inputMessages`, and `outputMessages` fields are removed. They only captured the first turn's input and the last turn's output, silently dropping every intermediate turn and tool call — all of which `conversation` includes.
+
+## [7.4.0] - 2026-07-03
+
+### Added
+
+- `client.spans.query` gains `orderBy` (`startTime`/`duration`/`cost`, asc/desc) and a `status` span filter (`error`/`ok`/`unset`) — enabling "top-N slowest/costliest spans" and error-only drill-downs.
+- `client.analytics.query` breakdown results now include a `label` — the human name for opaque `signalId`/`cluster` keys (the signal name / behavior-cluster name), so by-signal and by-behavior series are self-describing.
+
+### Changed
+
+- `client.analytics.query` percentile metric is now `{ kind: "percentile", field, p }` (`p` in [1,99]) instead of the fixed `p95`. Use `p: 95` for the previous `p95` behavior.
+
+## [7.3.0] - 2026-07-03
+
+### Added
+
+- `client.account.bootstrap` — create a temporary organization (with an API key and a project) and get a link to claim ownership of it. Unauthenticated; powers the agentic zero-account onboarding flow.
+
+## [7.2.0] - 2026-07-03
+
+### Added
+
+- `semantic_similarity` rule condition for signal evaluations. `client.signals.create` (and `update`) now accept a `{ type: "semantic_similarity", query, operator?, threshold }` item in a `rule` evaluation's `conditions`, which matches a session's messages against `query` by embedding similarity. `operator` defaults to `gte`; `threshold` is in `[0, 1]`.
+
+## [7.1.0] - 2026-07-01
+
+### Added
+
+- `client.spans.query` — a cursor-paginated list of spans across all traces in a project, filtered by a span-field `FilterSet` (`operation`, `toolName`, `model`, `provider`, `sessionId`, `traceId`, `tags`, `duration`, `cost`, `tokensInput`/`tokensOutput`) and an optional time `range`. The row-level, span-grain complement to `client.analytics.query` with `stream: "spans"` (aggregates) — use it to drill from an aggregate into the individual spans behind it.
+
+## [7.0.0] - 2026-06-30
+
+Regenerated on the latest Fern toolchain — Fern CLI `0.83.0` → `5.58.0` and the `fern-typescript-node-sdk` generator `3.64.1` → `3.73.4`. The HTTP API surface (endpoints, request/response schemas) is unchanged; `openapi.json` changes are limited to `info` metadata and the auth security scheme (now modeled as an API key).
+
+### Renamed (breaking)
+
+- The root client and its companion exports drop the `Api` infix (via the generator's `naming.namespace` config): `LatitudeApiClient` → `LatitudeClient`, `LatitudeApiError` → `LatitudeError`, `LatitudeApiTimeoutError` → `LatitudeTimeoutError`, `LatitudeApiEnvironment` → `LatitudeEnvironment`, and the wildcard namespace export `LatitudeApi` → `Latitude` (`import * as LatitudeApi` → `import * as Latitude`). Update imports and `new LatitudeApiClient(...)` to `new LatitudeClient(...)`.
+- The client auth option is renamed `token` → `apiKey` (the credential is an organization-scoped API key, sent as `Authorization: Bearer <key>`). Update `new LatitudeClient({ token })` to `new LatitudeClient({ apiKey })`.
+
+### Removed (breaking)
+
+- Some standalone query-parameter enum types are no longer exported as named types — they're now inlined as literal unions. Affected names include `DatasetsListRequestSortBy`/`SortDirection`, `DatasetsListColumnsRequestIncludeRemoved`, `DatasetsListRowsRequestSortDirection`, `IncidentsListRequestSeveritiesItem`/`SourceType`, `SavedSearchesListTracesRequestSortBy`/`SortDirection`, `SignalsListRequestLifecycleGroup`/`SortBy`/`SortDirection`, the `Tools*Request*` and `Users*Request*` parameter enums, and `FilterConditionValueItem`. If you imported any by name, use the literal value inline instead.
+
+### Added
+
+- The `apiKey` option now falls back to the `LATITUDE_API_KEY` environment variable when omitted (via the OpenAPI spec's `x-fern-bearer` extension), so `new LatitudeClient()` works when that env var is set. An explicitly passed `apiKey` takes precedence.
+- The generator emits additional fine-grained union-member/enum types and some internal module restructuring. No new endpoints or methods.
+
+## [6.10.0] - 2026-07-01
+
+### Added
+
+- `client.analytics.query` gains the `moments` stream — semantic-moment labels (kind/actor-tagged moments detected within a session). Metrics: `count`, or `{avg|min|max|median}` of the 0–1 label `confidence` or moment `coherence`. Breakdown by `kind`, `actor`, or `session`. Values are returned raw (0–1).
+- The `traces`/`sessions`/`spans` streams gain a `p95` metric — the 95th-percentile of `duration`/`cost`/`tokens` (seconds/dollars/raw), the tail-latency complement to `median`.
+
+## [6.9.0] - 2026-07-01
+
+### Added
+
+- `client.analytics.query` gains the `behaviors` stream — taxonomy observations (behavior instances clustered from session moments). Metrics: `count`, or `{avg|min|max|median}` of the 0–1 assignment `confidence`. Breakdown by `cluster`, `session`, or `method`.
+
+## [6.8.0] - 2026-07-01
+
+### Added
+
+- `client.analytics.query` gains the `scores` stream — the signal grain. A signal is scored occurrences carrying a `signalId`; analyze one via `stream: "scores"` filtered by `score.signalId` (or broken down by `signalId`). Metrics: `count`, `passRate`, `errorRate`, or `{avg|min|max|median}` of the 0–1 score `value`. Breakdown by `signalId`/`source` or a trace dimension (`model`/`provider`/`service`/`tool`/`tag`) resolved through the score's trace. Score values/rates are returned raw (0–1).
+
+## [6.7.0] - 2026-07-01
+
+### Added
+
+- `client.analytics.query` — run a composable analytics query: a metric over a filtered stream, optionally broken down by a dimension and/or bucketed over time, returning a tidy series (`{ key?, bucketStart?, value }[]`) for charts and dashboards. The request is discriminated on `stream`: `traces` accepts a semantic `query` and a `breakdown` (`model`, `provider`, `service`, `tool`, `tag`, `name`, `userId`, `status`); `sessions` accepts a semantic `query` and the same breakdowns minus `name`; `spans` accepts a `breakdown` (the scalar dims plus the span-only `operation`). Metrics are `count`, `errorRate`, `cacheHitRate`, or `{sum|min|max|avg|median}` over `duration`/`cost`/`tokens`. Adds the `AnalyticsQuery` request and `AnalyticsSeries` response types. Result `value`s are in display units — seconds for `duration`, dollars for `cost`, a 0–1 ratio for `errorRate`/`cacheHitRate`, otherwise a raw count/token total.
+
+## [6.6.0] - 2026-06-30
+
+### Changed
+
+- Renamed `affectedTracesPercent` → `affectedSessionsPercent` on the `Signal` (list) and `SignalDetail` (detail) response types. The value is the fraction of project sessions affected by the signal, in `[0, 1]` (sessions are the platform's primary unit); the previous name mislabeled a sessions-based ratio as traces. Update any code reading `signal.affectedTracesPercent` to `signal.affectedSessionsPercent`.
+
+## [6.5.0] - 2026-06-29
+
+### Added
+
+- `MonitorMetric.CacheHitRate` (`kind: "cacheHitRate"`) — a new monitor metric kind that measures the token-weighted prompt-cache hit rate (cache-read tokens over total input-side tokens, a 0..1 fraction). Pair it with a `below` threshold on `metric.threshold` / `metric.escalating` to alert when caching degrades.
+
+## [6.4.0] - 2026-06-29
+
+### Added
+
+- `client.datasets.updateRow` — partially update a single dataset row by id. Send only the cells you want to change (`input`, `output`, `expectedOutput`, `metadata`, or `custom` values keyed by column identifier); omitted cells keep their current value. Custom values are merged onto the row's existing ones and validated against the dataset's active columns. Adds the `UpdateDatasetRowBody` and `UpdateDatasetRowResponse` types.
+
+## [6.3.0] - 2026-06-29
+
+### Added
+
+- `client.datasets.listColumns`, `addColumn`, `updateColumn`, `deleteColumn`, `reorderColumns`, and `restoreColumn` — manage a dataset's column schema over the API. List the columns (pass `includeRemoved` to include soft-removed ones), add custom columns, rename any column, soft-delete a column (built-in or custom; its data is preserved), reorder columns, and restore a removed column. Adds the `DatasetColumn` and `DatasetColumnSource` types and a `columns` field on `Dataset`.
+- Row writes accept custom column values: `client.datasets.insertRows` takes a `custom` map keyed by column identifier, and `DatasetRow` now carries a `custom` field on reads (removed columns are omitted).
+
+## [6.2.1] - 2026-06-26
+
+### Fixed
+
+- Project list/get/create/update responses now strip internal-only `settings` fields (`isSample`, `onboardingType`, `onboardingCompleted`, `sampling`) that could leak from Postgres and break MCP `listProjects` output validation.
+
+### Changed
+
+- `MonitorTarget` now includes normalized response fields (`kind`, `stream`, `savedSearchId`, and `metric`) returned by monitor endpoints.
+
+## [6.2.0] - 2026-06-26
+
+### Added
+
+- `client.signals.create`, `client.signals.update`, and `client.signals.delete` — author signals over the API. `create` registers a signal with its own evaluation (declarative `settings`, e.g. an LLM judge with `criteria`, or a raw `script`) plus optional `priority` and `filters`; `update` changes a signal's `name`, `description`, and `filters`; `delete` removes a user-authored signal. Adds the `CreateSignalBody`, `UpdateSignalBody`, `CreateSignalResponse`, and `UpdateSignalResponse` types.
+
+### Changed
+
+- `Evaluation.alignment` and `Evaluation.alignedAt` are now optional — they are omitted for raw or deterministic evaluations that are not annotation-aligned.
+
+## [6.1.0] - 2026-06-17
+
+### Added
+
+- `ProjectSettings.notifications.destinations.quarantine` (`DestinationNotificationsSetting`) — project-level toggle for data-destination notifications. Members are notified (in-app + email) when a destination is quarantined after repeated sync failures; set `quarantine: false` to opt the project out. Defaults to `true`.
+- `client.signals`, signal request/response types, and signal exports, replacing the former issues resource name.
+
+## [6.0.0] - 2026-06-12
+
+First stable release of the v6 SDK — the package leaves alpha. The API surface is unchanged from `6.0.0-alpha.8`; from here on, breaking changes only land with a major version bump.
+
+The stable surface covers `client.account`, `client.projects`, `client.members`, `client.apiKeys`, `client.oauthKeys`, `client.traces`, `client.savedSearches`, `client.issues`, `client.incidents`, `client.monitors`, `client.datasets`, `client.scores`, and `client.annotations` — see the alpha entries below for how each landed.
+
+## [6.0.0-alpha.8] - 2026-06-12
+
+### Added
+
+- **`client.incidents.resolve(projectSlug, incidentId)`** and the `POST /v1/projects/{projectSlug}/incidents/{incidentId}` endpoint — resolves (closes) an ongoing incident and returns it. Resolving an already-closed incident is a no-op that returns it unchanged; an incident id that doesn't exist in the project returns 404. If the incident's condition triggers again, a new incident opens.
+
+## [6.0.0-alpha.7] - 2026-06-11
+
+### Changed
+
+- **A monitor now has exactly one alert.** `CreateMonitorBody.alerts` requires exactly one entry (was: one or more). The alert is edited in place via `client.monitors.updateAlert` and lives for as long as its monitor.
+- **Saved searches with a semantic component can't be monitored.** `client.monitors.create` and `client.monitors.updateAlert` return 400 when the watched saved search's query contains unquoted free text (semantic search ranks the closest traces by meaning instead of applying an exact rule, so a monitor has no match rule to count against). Only quoted `"literal"` and backtick `` `phrase` `` terms are monitorable.
+
+### Removed
+
+- **`client.monitors.createAlert(...)`** and the `POST /v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts` endpoint — alerts only come into existence with their monitor (`client.monitors.create`).
+- **`client.monitors.deleteAlert(...)`** and the `DELETE /v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts/{alertId}` endpoint — monitor alerts are edited in place (`updateAlert`), never deleted individually. Alerts are still removed when their monitor or watched saved search is deleted.
+
 ## [6.0.0-alpha.6] - 2026-06-05
 
 ### Added

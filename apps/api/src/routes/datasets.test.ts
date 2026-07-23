@@ -399,6 +399,78 @@ describe("Datasets Routes Integration", () => {
     expect(res.status).toBe(400)
   })
 
+  it<ApiTestContext>("PATCH /{datasetSlug}/rows/{rowId} updates only the cells sent and bumps the version", async ({
+    app,
+    database,
+  }) => {
+    const { tenant, projectSlug, datasetSlug } = await createDatasetForRows(
+      app,
+      database,
+      "aaaaaaaa1111bbbb2222cccc",
+      "Update Row",
+    )
+    const headers = { ...createApiKeyAuthHeaders(tenant.apiKeyToken), "Content-Type": "application/json" }
+    const rowsUrl = `http://localhost/v1/projects/${projectSlug}/datasets/${datasetSlug}/rows`
+
+    const inserted = await app.fetch(
+      new Request(rowsUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ rows: [{ input: "what is two plus two", output: "four" }] }),
+      }),
+    )
+    const insertedBody = (await inserted.json()) as { version: number; rowIds: string[] }
+    const [rowId] = insertedBody.rowIds
+
+    // Add a custom column so we can exercise the custom-merge path too.
+    const createdCol = (await (
+      await app.fetch(
+        new Request(`http://localhost/v1/projects/${projectSlug}/datasets/${datasetSlug}/columns`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name: "Score" }),
+        }),
+      )
+    ).json()) as { identifier: string }
+
+    const updated = await app.fetch(
+      new Request(`${rowsUrl}/${rowId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ expectedOutput: "exactly four", custom: { [createdCol.identifier]: "high" } }),
+      }),
+    )
+    expect(updated.status).toBe(200)
+    const updatedBody = (await updated.json()) as { versionId: string; version: number }
+    expect(updatedBody.version).toBeGreaterThan(insertedBody.version)
+
+    const listed = await app.fetch(new Request(rowsUrl, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }))
+    const row = ((await listed.json()) as { items: Record<string, unknown>[] }).items.find((r) => r.rowId === rowId)
+    expect(row?.input).toBe("what is two plus two")
+    expect(row?.output).toBe("four")
+    expect(row?.expectedOutput).toBe("exactly four")
+    expect(row?.custom).toEqual({ [createdCol.identifier]: "high" })
+  })
+
+  it<ApiTestContext>("PATCH /{datasetSlug}/rows/{rowId} returns 404 for an unknown row", async ({ app, database }) => {
+    const { tenant, projectSlug, datasetSlug } = await createDatasetForRows(
+      app,
+      database,
+      "aaaaaaaa1111bbbb2222dddd",
+      "Update Missing Row",
+    )
+
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/projects/${projectSlug}/datasets/${datasetSlug}/rows/does-not-exist`, {
+        method: "PATCH",
+        headers: { ...createApiKeyAuthHeaders(tenant.apiKeyToken), "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedOutput: "4" }),
+      }),
+    )
+
+    expect(res.status).toBe(404)
+  })
+
   it<ApiTestContext>("DELETE /{datasetSlug}/rows with `mode: all` clears the dataset and reports deletedCount", async ({
     app,
     database,
@@ -701,5 +773,119 @@ describe("Datasets Routes Integration", () => {
     expect(res.status).toBe(201)
     const body = (await res.json()) as { rowIds: string[] }
     expect(body.rowIds).toEqual([])
+  })
+
+  // ─── Columns ─────────────────────────────────────────────────────────────
+
+  type ColumnResponse = {
+    identifier: string
+    name: string
+    source: { kind: string; field?: string }
+    removed?: boolean
+  }
+
+  it<ApiTestContext>("supports the full column lifecycle: create, list, rename, reorder, delete", async ({
+    app,
+    database,
+  }) => {
+    const { tenant, projectSlug, datasetSlug } = await createDatasetForRows(
+      app,
+      database,
+      "eeeeeeeeeeee2222bbbbbbbb",
+      "Columns Lifecycle",
+    )
+    const base = `http://localhost/v1/projects/${projectSlug}/datasets/${datasetSlug}/columns`
+    const headers = { ...createApiKeyAuthHeaders(tenant.apiKeyToken), "Content-Type": "application/json" }
+
+    // List: a fresh dataset reports the four active built-in columns, all custom-free.
+    const listed = await app.fetch(new Request(base, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }))
+    expect(listed.status).toBe(200)
+    const listedBody = (await listed.json()) as { columns: ColumnResponse[] }
+    expect(listedBody.columns.map((c) => c.identifier)).toEqual(["input", "output", "expectedOutput", "metadata"])
+
+    // Create a custom column.
+    const created = await app.fetch(
+      new Request(base, { method: "POST", headers, body: JSON.stringify({ name: "Score" }) }),
+    )
+    expect(created.status).toBe(201)
+    const createdCol = (await created.json()) as ColumnResponse
+    expect(createdCol.source.kind).toBe("custom")
+
+    // Rename it.
+    const renamed = await app.fetch(
+      new Request(`${base}/${createdCol.identifier}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ name: "Rating" }),
+      }),
+    )
+    expect(renamed.status).toBe(200)
+    expect(((await renamed.json()) as ColumnResponse).name).toBe("Rating")
+
+    // Reorder: move the custom column to the front.
+    const reordered = await app.fetch(
+      new Request(`${base}/reorder`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ order: [createdCol.identifier, "input", "output", "expectedOutput", "metadata"] }),
+      }),
+    )
+    expect(reordered.status).toBe(200)
+    const reorderedBody = (await reordered.json()) as { columns: ColumnResponse[] }
+    expect(reorderedBody.columns[0]?.identifier).toBe(createdCol.identifier)
+
+    // Soft-delete: the column drops out of the active schema.
+    const deleted = await app.fetch(
+      new Request(`${base}/${createdCol.identifier}`, {
+        method: "DELETE",
+        headers: createApiKeyAuthHeaders(tenant.apiKeyToken),
+      }),
+    )
+    expect(deleted.status).toBe(204)
+
+    const afterDelete = await app.fetch(new Request(base, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }))
+    const afterBody = (await afterDelete.json()) as { columns: ColumnResponse[] }
+    expect(afterBody.columns.some((c) => c.identifier === createdCol.identifier)).toBe(false)
+
+    // includeRemoved surfaces the soft-removed column, flagged so it can be restored.
+    const withRemoved = await app.fetch(
+      new Request(`${base}?includeRemoved=true`, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }),
+    )
+    const withRemovedBody = (await withRemoved.json()) as { columns: ColumnResponse[] }
+    const removedCol = withRemovedBody.columns.find((c) => c.identifier === createdCol.identifier)
+    expect(removedCol?.removed).toBe(true)
+
+    // Restore brings it back into the active schema.
+    const restored = await app.fetch(
+      new Request(`${base}/${createdCol.identifier}/restore`, { method: "POST", headers }),
+    )
+    expect(restored.status).toBe(200)
+    expect(((await restored.json()) as ColumnResponse).identifier).toBe(createdCol.identifier)
+
+    const afterRestore = await app.fetch(new Request(base, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }))
+    const afterRestoreBody = (await afterRestore.json()) as { columns: ColumnResponse[] }
+    expect(afterRestoreBody.columns.some((c) => c.identifier === createdCol.identifier)).toBe(true)
+  })
+
+  it<ApiTestContext>("soft-deletes a built-in column, excluding it from the active schema", async ({
+    app,
+    database,
+  }) => {
+    const { tenant, projectSlug, datasetSlug } = await createDatasetForRows(
+      app,
+      database,
+      "ffffffffffff3333cccccccc",
+      "Remove Builtin",
+    )
+    const base = `http://localhost/v1/projects/${projectSlug}/datasets/${datasetSlug}/columns`
+
+    const deleted = await app.fetch(
+      new Request(`${base}/metadata`, { method: "DELETE", headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }),
+    )
+    expect(deleted.status).toBe(204)
+
+    const listed = await app.fetch(new Request(base, { headers: createApiKeyAuthHeaders(tenant.apiKeyToken) }))
+    const body = (await listed.json()) as { columns: ColumnResponse[] }
+    expect(body.columns.some((c) => c.identifier === "metadata")).toBe(false)
   })
 })

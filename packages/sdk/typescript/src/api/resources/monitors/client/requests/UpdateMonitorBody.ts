@@ -9,4 +9,16 @@ export interface UpdateMonitorBody {
     name?: string;
     /** New description. */
     description?: string;
+    /** Replacement incident severity. */
+    severity?: UpdateMonitorBody.Severity;
+}
+
+export namespace UpdateMonitorBody {
+    /** Replacement incident severity. */
+    export const Severity = {
+        Low: "low",
+        Medium: "medium",
+        High: "high",
+    } as const;
+    export type Severity = (typeof Severity)[keyof typeof Severity];
 }

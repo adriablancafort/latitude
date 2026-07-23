@@ -91,7 +91,7 @@ function parseInputFromCallLevel(attrs: readonly OtlpKeyValue[]): {
   return { messages: result.messages as GenAIMessage[], system: result.system ?? [] }
 }
 
-function parseOutput(attrs: readonly OtlpKeyValue[]): GenAIMessage[] {
+export function parseVercelOutput(attrs: readonly OtlpKeyValue[]): GenAIMessage[] {
   const text = rawStringAttr(attrs, "ai.response.text")
   const objectJson = rawStringAttr(attrs, "ai.response.object")
   const toolCallsJson = rawStringAttr(attrs, "ai.response.toolCalls")
@@ -103,7 +103,13 @@ function parseOutput(attrs: readonly OtlpKeyValue[]): GenAIMessage[] {
     const toolCalls = parseJsonSafe(toolCallsJson)
     if (Array.isArray(toolCalls)) {
       for (const tc of toolCalls) {
-        contentParts.push({ type: "tool-call", toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.input })
+        contentParts.push({
+          type: "tool-call",
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          input: tc.input,
+          args: tc.input,
+        })
       }
     }
   }
@@ -130,13 +136,17 @@ function parseToolDefinitions(attrs: readonly OtlpKeyValue[]): ToolDefinition[] 
 }
 
 export function parseVercel(attrs: readonly OtlpKeyValue[]): ParsedContent {
-  // Try top-level first, fall back to call-level
+  // Fall back to call-level for messages, but keep a top-level system prompt (call-level carries none).
   let input = parseInputFromTopLevel(attrs)
   if (input.messages.length === 0) {
-    input = parseInputFromCallLevel(attrs)
+    const callLevel = parseInputFromCallLevel(attrs)
+    input = {
+      messages: callLevel.messages,
+      system: input.system.length > 0 ? input.system : callLevel.system,
+    }
   }
 
-  const outputMessages = parseOutput(attrs)
+  const outputMessages = parseVercelOutput(attrs)
   const toolDefinitions = parseToolDefinitions(attrs)
 
   return {

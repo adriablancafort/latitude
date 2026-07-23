@@ -1,11 +1,6 @@
-import { AI, AIError, type AIShape } from "@domain/ai"
+import { AI, AIError, type AIShape, EMBEDDING_DIMENSIONS } from "@domain/ai"
 import { type ChSqlClient, isNotFoundError, OrganizationId, ProjectId, SessionId } from "@domain/shared"
-import {
-  type SessionListPage,
-  SessionRepository,
-  type SessionRepositoryShape,
-  TRACE_SEARCH_EMBEDDING_DIMENSIONS,
-} from "@domain/spans"
+import { type SessionListPage, SessionRepository, type SessionRepositoryShape } from "@domain/spans"
 import { setupTestClickHouse } from "@platform/testkit"
 import { Effect, Layer } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
@@ -23,7 +18,7 @@ import { SessionRepositoryLive } from "./session-repository.ts"
  */
 const mockAILayer = Layer.succeed(AI, {
   generate: () => Effect.fail(new AIError({ message: "Generate not implemented in mock" })),
-  embed: () => Effect.succeed({ embedding: new Array(TRACE_SEARCH_EMBEDDING_DIMENSIONS).fill(0.1) }),
+  embed: () => Effect.succeed({ embedding: new Array(EMBEDDING_DIMENSIONS).fill(0.1) }),
   rerank: () => Effect.fail(new AIError({ message: "Rerank not implemented in mock" })),
 } as AIShape)
 
@@ -46,9 +41,11 @@ interface SpanOverrides {
   readonly tokensInput?: number
   readonly tokensOutput?: number
   readonly costTotalMicrocents?: number
+  readonly metadata?: Record<string, string>
   readonly inputMessages?: string
   readonly outputMessages?: string
   readonly systemInstructions?: string
+  readonly operation?: string
 }
 
 const makeSpanRow = (overrides: SpanOverrides): SpanRow => {
@@ -75,10 +72,11 @@ const makeSpanRow = (overrides: SpanOverrides): SpanRow => {
     status_message: "",
     error_type: "",
     tags: [],
-    metadata: {},
-    operation: "",
+    metadata: overrides.metadata ?? {},
+    operation: overrides.operation ?? "chat",
     provider: overrides.provider ?? "",
     model: overrides.model ?? "",
+    agent_name: "",
     response_model: "",
     tokens_input: overrides.tokensInput ?? 0,
     tokens_output: overrides.tokensOutput ?? 0,
@@ -447,6 +445,7 @@ describe("SessionRepository", () => {
           sessionId: "",
           startTime: start,
           name: "http-handler",
+          operation: "unspecified",
         }),
       ])
 
@@ -974,7 +973,7 @@ describe("SessionRepository", () => {
   })
 
   describe("search", () => {
-    const DIMS = TRACE_SEARCH_EMBEDDING_DIMENSIONS
+    const DIMS = EMBEDDING_DIMENSIONS
     const alignedEmbedding = new Array(DIMS).fill(0.1) as readonly number[]
     // A partially-aligned vector: [0.1, 0, 0, ...] gives cosine ~ 1/sqrt(DIMS)
     // relative to the all-0.1 query — small but >= the 0.30 floor only
@@ -1018,23 +1017,47 @@ describe("SessionRepository", () => {
         ),
       )
 
+    // Shared semantic path (the production default): vectors live in
+    // `message_embeddings`, reachable per trace via `trace_message_occurrences`.
+    // Each former chunk maps to one occurrence message (chunk_index ->
+    // message_index); the embedding vectors and content hashes are unchanged,
+    // so cosine scores and the per-trace max-pool match the legacy path.
     const insertSearchEmbeddings = (rows: readonly SearchEmbedding[]) =>
       Effect.runPromise(
-        insertJsonEachRow(
-          ch.client,
-          "trace_search_embeddings",
-          rows.map((r) => ({
-            organization_id: ORG_ID as string,
-            project_id: PROJECT_ID as string,
-            trace_id: r.traceId,
-            chunk_index: r.chunkIndex,
-            start_time: toClickHouseDateTime(r.startTime),
-            content_hash: `${"b".repeat(64 - r.contentHashSuffix.length)}${r.contentHashSuffix}`,
-            embedding_model: "voyage-4-large",
-            embedding: [...r.embedding],
-            indexed_at: toClickHouseDateTime(r.startTime),
-          })),
-        ),
+        Effect.gen(function* () {
+          const seedRows = rows.map((r) => ({
+            ...r,
+            contentHash: `${"b".repeat(64 - r.contentHashSuffix.length)}${r.contentHashSuffix}`,
+          }))
+          yield* insertJsonEachRow(
+            ch.client,
+            "message_embeddings",
+            [...new Map(seedRows.map((r) => [r.contentHash, r] as const)).values()].map((r) => ({
+              organization_id: ORG_ID as string,
+              project_id: PROJECT_ID as string,
+              content_hash: r.contentHash,
+              embedding: [...r.embedding],
+              embedding_model: "voyage-4-large",
+              inserted_at: toClickHouseDateTime(r.startTime),
+            })),
+          )
+          yield* insertJsonEachRow(
+            ch.client,
+            "trace_message_occurrences",
+            seedRows.map((r) => ({
+              organization_id: ORG_ID as string,
+              project_id: PROJECT_ID as string,
+              trace_id: r.traceId,
+              message_index: r.chunkIndex,
+              content_hash: r.contentHash,
+              session_id: "",
+              start_time: toClickHouseDateTime(r.startTime),
+              role: "user",
+              is_output: 0,
+              indexed_at: toClickHouseDateTime(r.startTime),
+            })),
+          )
+        }),
       )
 
     // 1) Lexical-only: phrase match across two sessions with two traces each,
@@ -1229,6 +1252,58 @@ describe("SessionRepository", () => {
       expect(match.matchingTraceCount).toBe(1)
       expect(match.matchingTraceIds).toEqual([traces[2]])
       expect(match.bestTraceId).toBe(traces[2])
+    })
+
+    it("metadata filters are applied per-trace inside trace_rollup", async () => {
+      const start = new Date(Date.UTC(2026, 0, 3, 11, 0, 0))
+      const sessionId = "metadata-having-session"
+      const traces = ["m1", "m2", "m3"].map(padTrace)
+      const filters = { "metadata.environment": [{ op: "eq" as const, value: "production" }] }
+
+      await insertSpans(
+        traces.map((t, i) =>
+          makeSpanRow({
+            traceId: t,
+            spanId: padSpan(`m${i + 1}`),
+            sessionId,
+            startTime: new Date(start.getTime() + i * 1_000),
+            metadata: { environment: i === 1 ? "production" : "staging" },
+          }),
+        ),
+      )
+      await insertSearchDocs(
+        traces.map((t, i) => ({
+          traceId: t,
+          text: `metadata needle trace ${i}`,
+          startTime: start,
+          contentHashSuffix: `m${i}`,
+        })),
+      )
+
+      const page = await runCh(
+        repo.listByProjectId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          options: { searchQuery: '"metadata needle"', limit: 10, filters },
+        }),
+      )
+
+      expect(page.items).toHaveLength(1)
+      const match = nonNull(page.searchMatches?.[sessionId])
+      expect(match.matchingTraceCount).toBe(1)
+      expect(match.matchingTraceIds).toEqual([traces[1]])
+      expect(match.bestTraceId).toBe(traces[1])
+
+      const count = await runCh(
+        repo.countByProjectId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          searchQuery: '"metadata needle"',
+          filters,
+        }),
+      )
+      expect(count.totalCount).toBe(1)
+      expect(count.matchingTraceCount).toBe(1)
     })
 
     // 4) Cursor stability: paginate ten matching sessions across one project.
@@ -2260,6 +2335,173 @@ describe("SessionRepository", () => {
           .pipe(Effect.provide(Layer.mergeAll(mockAILayer, ChSqlClientLive(ch.client, ORG_ID)))),
       )
       expect(count.totalCount).toBe(1)
+    })
+  })
+
+  describe("distinctFilterValues: tools", () => {
+    it("lists called tools from the rollup, including calls whose spans carry no session id", async () => {
+      const startTime = new Date(Date.UTC(2026, 0, 10, 10, 0, 0))
+      // No session id: rolls up as a trace-keyed pseudo-session, so the
+      // called tool still surfaces as a filter option.
+      const calledNoSession: SpanRow = {
+        ...makeSpanRow({ traceId: "d".repeat(32), spanId: "d1".padEnd(16, "0"), startTime }),
+        operation: "execute_tool",
+        tool_name: "sessionless_tool",
+        tool_call_id: "call_1",
+      }
+      const calledWithSession: SpanRow = {
+        ...makeSpanRow({ traceId: "e".repeat(32), spanId: "e1".padEnd(16, "0"), startTime, sessionId: "sess-1" }),
+        operation: "execute_tool",
+        tool_name: "sessioned_tool",
+        tool_call_id: "call_2",
+      }
+      // Defined but never called: not session activity, so it is not a
+      // sessions filter option (the filter means "at least one call").
+      const definedNoSession: SpanRow = {
+        ...makeSpanRow({ traceId: "f".repeat(32), spanId: "f1".padEnd(16, "0"), startTime }),
+        operation: "chat",
+        tool_definitions: '[{"name":"defined_only_tool","description":"d","parameters":{}}]',
+      }
+      await insertSpans([calledNoSession, calledWithSession, definedNoSession])
+
+      const values = await runCh(
+        repo.distinctFilterValues({ organizationId: ORG_ID, projectId: PROJECT_ID, column: "tools" }),
+      )
+      expect(values).toEqual(["sessioned_tool", "sessionless_tool"])
+    })
+
+    it("lists defined tools for the definedTools multiselect, including sessionless chat spans", async () => {
+      const startTime = new Date(Date.UTC(2026, 0, 10, 10, 0, 0))
+      const definedNoSession: SpanRow = {
+        ...makeSpanRow({ traceId: "f".repeat(32), spanId: "f1".padEnd(16, "0"), startTime }),
+        operation: "chat",
+        tool_definitions: '[{"name":"defined_only_tool","description":"d","parameters":{}}]',
+      }
+      const calledWithSession: SpanRow = {
+        ...makeSpanRow({ traceId: "e".repeat(32), spanId: "e1".padEnd(16, "0"), startTime, sessionId: "sess-1" }),
+        operation: "execute_tool",
+        tool_name: "called_only_tool",
+        tool_call_id: "call_2",
+      }
+      await insertSpans([definedNoSession, calledWithSession])
+
+      const values = await runCh(
+        repo.distinctFilterValues({ organizationId: ORG_ID, projectId: PROJECT_ID, column: "definedTools" }),
+      )
+      expect(values).toEqual(["defined_only_tool"])
+    })
+  })
+
+  describe("annotation author filtering (score.annotatorId)", () => {
+    const ALICE = "annotator-alice-0001"
+    const BOB = "annotator-bob-0001"
+    const start = new Date(Date.UTC(2026, 0, 1, 10, 0, 0))
+
+    const insertScores = (rows: Array<Record<string, unknown>>) =>
+      Effect.runPromise(insertJsonEachRow(ch.client, "scores", rows))
+
+    const scoreRow = (overrides: Record<string, unknown>) => ({
+      id: overrides.id,
+      organization_id: ORG_ID as string,
+      project_id: PROJECT_ID as string,
+      session_id: overrides.session_id ?? "",
+      trace_id: overrides.trace_id ?? "",
+      span_id: "",
+      source: overrides.source ?? "annotation",
+      source_id: overrides.source_id ?? "UI",
+      annotator_id: overrides.annotator_id ?? "",
+      simulation_id: "",
+      signal_id: "",
+      value: overrides.value ?? 1,
+      passed: overrides.passed ?? true,
+      errored: false,
+      duration: 0,
+      tokens: 0,
+      cost: 0,
+      created_at: toClickHouseDateTime(start),
+    })
+
+    const sessionIdsFor = async (filters: Record<string, unknown>) => {
+      const page = await runCh(
+        repo.listByProjectId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          options: { limit: 50, filters: filters as never },
+        }),
+      )
+      return page.items.map((s) => s.sessionId).sort()
+    }
+
+    const seed = async () => {
+      // Three LLM sessions; alice annotated one, bob another, the third is unannotated
+      // and carries only an evaluation score (annotator_id = '').
+      await insertSpans([
+        makeSpanRow({
+          traceId: "a".repeat(32),
+          spanId: "a".repeat(16),
+          sessionId: "sess-alice",
+          startTime: start,
+          model: "gpt-4",
+        }),
+        makeSpanRow({
+          traceId: "b".repeat(32),
+          spanId: "b".repeat(16),
+          sessionId: "sess-bob",
+          startTime: start,
+          model: "gpt-4",
+        }),
+        makeSpanRow({
+          traceId: "c".repeat(32),
+          spanId: "c".repeat(16),
+          sessionId: "sess-none",
+          startTime: start,
+          model: "gpt-4",
+        }),
+      ])
+      await insertScores([
+        scoreRow({
+          id: "score-alice-000000000001",
+          session_id: "sess-alice",
+          trace_id: "a".repeat(32),
+          annotator_id: ALICE,
+        }),
+        scoreRow({
+          id: "score-bob-00000000000002",
+          session_id: "sess-bob",
+          trace_id: "b".repeat(32),
+          annotator_id: BOB,
+        }),
+        scoreRow({
+          id: "score-eval-0000000000003",
+          session_id: "sess-none",
+          trace_id: "c".repeat(32),
+          source: "evaluation",
+          source_id: "eval",
+          passed: false,
+          value: 0,
+        }),
+      ])
+    }
+
+    it("returns only sessions annotated by the selected member", async () => {
+      await seed()
+      expect(await sessionIdsFor({ "score.annotatorId": [{ op: "in", value: [ALICE] }] })).toEqual(["sess-alice"])
+    })
+
+    it("returns the union when multiple members are selected", async () => {
+      await seed()
+      expect(await sessionIdsFor({ "score.annotatorId": [{ op: "in", value: [ALICE, BOB] }] })).toEqual([
+        "sess-alice",
+        "sess-bob",
+      ])
+    })
+
+    it("has-annotations (annotator_id != '') excludes evaluation-only sessions", async () => {
+      await seed()
+      expect(await sessionIdsFor({ "score.annotatorId": [{ op: "neq", value: "" }] })).toEqual([
+        "sess-alice",
+        "sess-bob",
+      ])
     })
   })
 })

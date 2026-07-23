@@ -5,7 +5,7 @@ description: Get started with Latitude through the web UI. No coding required
 
 # No-Code Quick Start
 
-This guide walks you through the Latitude web interface. You'll learn how to navigate the product, review agent interactions, annotate conversations, and understand issues, all without writing code.
+This guide walks you through the Latitude web interface. You'll learn how to navigate the product, review agent interactions, annotate conversations, and understand signals, all without writing code.
 
 ## Prerequisites
 
@@ -18,8 +18,8 @@ When you open a project, you'll see the main navigation with these sections:
 
 - **Search**: Find traces by meaning, and bookmark useful searches for later
 - **Traces**: Every interaction your agent has had, shown as a timeline
-- **Issues**: Failure patterns discovered from your agent's interactions
-- **Datasets**: Saved trace collections for offline analysis and simulations
+- **Signals**: Failure patterns discovered from your agent's interactions
+- **Datasets**: Saved trace collections for offline analysis
 - **Settings**: Project configuration, including flaggers
 
 ## Exploring Traces
@@ -37,19 +37,11 @@ Use the filter sidebar to narrow traces by status, cost, duration, model, provid
 
 ## Finding Traces with Search
 
-The **Search** page is where you go to investigate a specific kind of trace. Type a plain-English query — _"failed payments"_, _"frustrated user"_, _"long latency on signup"_ — and Latitude returns the most relevant traces, ranked by a hybrid of keyword and semantic match. Use `"quotes"` for exact phrases.
+Search lives right on the **Traces** page. Type a plain-English query into the search bar, such as _"failed payments"_, _"frustrated user"_, or _"long latency on signup"_, and Latitude returns the most relevant traces, ranked by a blend of keyword and semantic match. Use `"quotes"` for exact phrases.
 
 Filters work alongside the query, so you can scope to a time range, a specific model, traces with errors, or any custom metadata your application sends.
 
-When a search is one you'll come back to, click **Save search** in the toolbar. Saved searches appear on the Search landing page in a table with the columns:
-
-- **Saved search**: The name, plus a preview of the query and filters
-- **Last found**: When the most recent matching trace appeared
-- **Assigned To**: A team member responsible for reviewing matches
-- **Annotated**: How many matching traces have been reviewed
-- **Total**: How many traces currently match
-
-Use saved searches to define review cohorts for your team. The Annotated and Total counts help you track how much of a cohort has been reviewed. See [Saved Searches](../search/saved-searches) for details.
+When a search is one you'll come back to, click **Save search** and give it a name. Saved searches are then a click away from the **Saved searches** dropdown next to the search bar, each showing its name, query, and filter count. Reopening one restores its query and filters so you, or a teammate, can pick the cohort back up. See [Saved Searches](../search/saved-searches) for details.
 
 ## Automatic Detection with Flaggers
 
@@ -66,41 +58,41 @@ Some failure categories are common enough that Latitude detects them for you. Ev
 - **Output Schema Validation**: Structured output didn't conform to the declared schema
 - **Empty Response**: The assistant returned an empty or degenerate response
 
-When a flagger matches, it writes an annotation directly on the trace. That annotation feeds into [issue discovery](../issues/overview), [scores analytics](../scores/analytics), and [evaluation alignment](../evaluations/alignment) the same way a human annotation would. You can adjust which flaggers are enabled and how aggressively they sample under **Project Settings**. See [Flaggers](../annotations/flaggers) for the full list.
+When a flagger matches, it writes an annotation directly on the trace. That annotation feeds into [signal discovery](../signals/overview), [scores analytics](../scores/analytics), and [evaluation alignment](../evaluations/alignment) the same way a human annotation would. You can adjust which flaggers are enabled and how aggressively they sample under **Project Settings**. See [Flaggers](../annotations/flaggers) for the full list.
 
 ## Reviewing Traces
 
-To leave human feedback on a trace, open it from any list (Search, Traces, an issue's logs) and use the annotation panel on the right:
+To leave human feedback on a trace, open it from any list (Search, Traces, a signal's logs) and use the annotation panel on the right:
 
 - Click anywhere in the conversation to create a message-level annotation, or use the button for a conversation-level one.
 - Mark it as positive (thumbs up) or negative (thumbs down).
 - Write feedback describing what you observed.
-- Optionally link it to an existing issue, or leave issue assignment automatic.
+- Optionally link it to an existing signal, or leave the assignment automatic.
 
 A typical review session combines saved searches and inline annotations: open the saved search you're responsible for, click the first trace, annotate, move on. The saved search's Annotated count goes up as you work.
 
-## Understanding Issues
+## Understanding Signals
 
-The **Issues** page shows failure patterns your agent is experiencing. Issues are discovered automatically when failed scores share similar feedback.
+The **Signals** page shows failure patterns your agent is experiencing. Signals are discovered automatically when failed scores share similar feedback, and you can also [create one yourself](../signals/create).
 
-Each issue has:
+Each signal has:
 
 - **A name and description** summarizing the failure pattern
-- **A lifecycle state**: New, Escalating, Resolved, Regressed, or Ignored
-- **Linked evaluations** that monitor for this issue on live traffic
-- **Occurrence trends** showing how often the issue appears
+- **A lifecycle state**: New, Escalating, or Ongoing
+- **Linked evaluations** that monitor for this signal on live traffic
+- **Occurrence trends** showing how often the signal appears
 
 You can:
 
-- **Generate an evaluation** from an issue to start automated monitoring
-- **Resolve** an issue when you believe it's fixed (with an option to keep monitoring for regressions)
-- **Ignore** an issue that isn't worth tracking
+- **Generate an evaluation** from a signal to monitor it on live traffic
+- **Assign** a signal and set its **priority** to triage it
+- **Mute** a signal that isn't worth acting on, which moves it to the Archived tab and stops its notifications
 
 ## Understanding Evaluations
 
 The **Evaluations** page shows automated monitors that score your agent's interactions in real time.
 
-Evaluations are typically generated from issues. When you click "Generate Evaluation" on an issue, Latitude creates a monitor that watches for that failure pattern on live traffic.
+Evaluations are often generated from signals. When you choose Generate an evaluation on a signal, Latitude builds a monitor that watches for that pattern on live traffic. You can also define a signal's evaluation yourself when you create the signal.
 
 Each evaluation shows:
 
@@ -117,7 +109,7 @@ Scores are the fundamental unit of measurement in Latitude. Every score has:
 - **Feedback** text describing the verdict
 - A **source**: evaluation, annotation (human review), or custom
 
-Scores appear throughout the product: on traces, in evaluation dashboards, in issue details, and in simulation reports.
+Scores appear throughout the product: on traces, in evaluation dashboards, and in signal details.
 
 ## What's Next
 
@@ -126,5 +118,5 @@ Scores appear throughout the product: on traces, in evaluation dashboards, in is
 - [Flaggers](../annotations/flaggers): Built-in automatic annotators for common failures
 - [Scores](../scores/overview): Deep dive into how scores work
 - [Annotations](../annotations/overview): Human review workflows
-- [Issues](../issues/overview): Learn about issue lifecycle and management
+- [Signals](../signals/overview): Learn about signal lifecycle and management
 - [Evaluations](../evaluations/overview): Understand automated monitoring

@@ -3,8 +3,11 @@ import type { ToolDefinition } from "../../entities/span.ts"
 import { stringAttr } from "../attributes.ts"
 import type { OtlpKeyValue } from "../types.ts"
 import { parseClaudeCode } from "./claude-code.ts"
+import { parseFlue } from "./flue.ts"
 import { parseGenAICurrent } from "./genai.ts"
 import { parseGenAIDeprecated } from "./genai_deprecated.ts"
+import { parseJsonValue } from "./json-value.ts"
+import { parseLiveKit } from "./livekit.ts"
 import { parseOpenInference } from "./openinference.ts"
 import { parseVercel } from "./vercel.ts"
 
@@ -62,8 +65,24 @@ const PARSERS: readonly ContentParser[] = [
     parse: parseGenAIDeprecated,
   },
   {
+    canHandle: (attrs) =>
+      hasKey(attrs, "lk.chat_ctx") ||
+      hasKey(attrs, "lk.response.text") ||
+      hasKey(attrs, "lk.response.function_calls") ||
+      hasKey(attrs, "lk.function_tools"),
+    parse: parseLiveKit,
+  },
+  {
+    canHandle: (attrs) => hasKey(attrs, "flue.turn.input") || hasKey(attrs, "flue.turn.output"),
+    parse: parseFlue,
+  },
+  {
     canHandle: (attrs) => hasKey(attrs, "user_prompt"), // Claude Code
     parse: parseClaudeCode,
+  },
+  {
+    canHandle: (attrs) => hasKey(attrs, "input.value") || hasKey(attrs, "output.value"),
+    parse: parseJsonValue,
   },
 ]
 

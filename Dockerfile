@@ -76,8 +76,11 @@ RUN pnpm turbo run build --filter @app/workflows
 # ---------------------------------------------------------------------------
 FROM source AS build-web
 
-ARG VITE_LAT_API_URL
-ARG VITE_LAT_WEB_URL
+# No deployment URLs are baked: frontend URLs are relative and the one
+# SSR-absolute case (og:image) reads runtime LAT_WEB_URL, so one image serves
+# any domain. The optional VITE_* below are Latitude-cloud-only telemetry —
+# left unset on the public image, they simply no-op (nothing deployment-specific
+# is baked).
 ARG VITE_LAT_TURNSTILE_SITE_KEY
 ARG VITE_LAT_POSTHOG_KEY
 ARG VITE_LAT_POSTHOG_HOST
@@ -277,7 +280,7 @@ RUN apt-get update && \
   ARCH=$(dpkg --print-architecture) && \
   case "$ARCH" in \
   amd64) GOOSE_ARCH="x86_64" ;; \
-  arm64) GOOSE_ARCH="aarch64" ;; \
+  arm64) GOOSE_ARCH="arm64" ;; \
   *) GOOSE_ARCH="$ARCH" ;; \
   esac && \
   curl -fsSL "https://github.com/pressly/goose/releases/download/v${GOOSE_VERSION}/goose_linux_${GOOSE_ARCH}" \

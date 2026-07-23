@@ -18,6 +18,7 @@ const buttonContainerVariants = cva(
         default: "bg-transparent",
         destructive: "bg-destructive-muted-foreground hover:bg-destructive-muted-foreground/90",
         outline: "bg-secondary shadow-none hover:bg-secondary/60 hover:shadow-none",
+        "destructive-outline": "bg-secondary shadow-none hover:bg-secondary/60 hover:shadow-none",
         secondary: "bg-secondary hover:bg-secondary/80",
         ghost: "bg-transparent shadow-none hover:shadow-none",
         link: "bg-transparent shadow-none underline-offset-4 hover:underline hover:shadow-none",
@@ -44,6 +45,8 @@ const buttonVariantsConfig = cva(
         destructive: "border-0 bg-transparent text-destructive-foreground",
         outline:
           "border border-input bg-background shadow-none group-hover:bg-secondary group-hover:text-secondary-foreground/80 group-hover:shadow-none",
+        "destructive-outline":
+          "border border-destructive bg-background text-destructive shadow-none group-hover:bg-destructive-muted/40 group-hover:border-destructive-muted-foreground/40 group-hover:shadow-none [&_svg]:text-destructive-muted-foreground/85",
         secondary: "border-0 bg-transparent text-secondary-foreground [&_svg]:text-muted-foreground",
         ghost:
           "border-0 border-transparent bg-transparent text-muted-foreground shadow-none group-hover:bg-muted group-hover:shadow-none",
@@ -144,6 +147,14 @@ function getElementDisplayName(type: unknown): string {
   return ""
 }
 
+/** `asChild` merges container+variant classes onto one element, so `group-*` selectors (which need a separate ancestor `.group`) never match — rewrite them to plain self-referencing pseudo-classes. */
+function degroupSelectors(classNames: string): string {
+  return classNames
+    .replace(/\bgroup-hover:/g, "hover:")
+    .replace(/\bgroup-active:/g, "active:")
+    .replace(/\bgroup-disabled:/g, "disabled:")
+}
+
 function isLeadingIconLikeChild(child: unknown): boolean {
   if (!isValidElement(child)) {
     return false
@@ -180,13 +191,13 @@ function Button({
   const visibleChildren = isLoading ? stripLeadingIconChild(children) : children
 
   if (asChild) {
-    // Used in combobox.ts <ComboboxInput>
     return (
       <Slot
         ref={ref}
         className={cn(
-          buttonContainerVariants({ variant }),
-          buttonVariantsConfig({ variant, size }),
+          degroupSelectors(cn(buttonContainerVariants({ variant }), buttonVariantsConfig({ variant, size }))),
+          // Slot can't add the inner wrapper that normally spaces icon and label.
+          "gap-x-1.5",
           className,
           isLoading && "animate-pulse",
         )}

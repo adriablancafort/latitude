@@ -1,18 +1,18 @@
 import type { IncidentTrend } from "@domain/notifications"
+import { SEVERITY_COLOR } from "@domain/shared"
 import { Resvg } from "@resvg/resvg-js"
-import { INCIDENT_SEVERITY_HEX } from "../../alerts/incident-markers.ts"
 import {
   buildSmoothThresholdPath,
   buildThresholdSegments,
   computeTrendMaxCount,
   type ThresholdPoint,
   toVisibleHeightPercent,
-} from "../../issues/trend-chart/trend-geometry.ts"
+} from "../../signals/trend-chart/trend-geometry.ts"
 import { getChartFontFile } from "./fonts.ts"
 
 /**
  * Server-side renderer for the incident-trend chart embedded in the escalating-incident Slack
- * message and email. It mirrors the in-app issue-detail drawer chart (`IssueTrendBar`) — same
+ * message and email. It mirrors the in-app issue-detail drawer chart (`SignalTrendBar`) — same
  * 14-day / 12h window, same gray occurrence bars, the same smooth dashed seasonal-expectation
  * curve, and a severity band + start dot for the triggering incident — so the notification and
  * the issue page read as the same chart.
@@ -122,7 +122,7 @@ const resolveIncidentSpan = (trend: IncidentTrend, bucketStartsMs: readonly numb
     bandEnd = lastIndex
   }
 
-  return { bandStart, bandEnd, dotBucket, color: INCIDENT_SEVERITY_HEX[marker.severity] }
+  return { bandStart, bandEnd, dotBucket, color: SEVERITY_COLOR[marker.severity] }
 }
 
 /** Map a threshold point from the drawer's `0..N × 0..100` space into this chart's pixel space. */

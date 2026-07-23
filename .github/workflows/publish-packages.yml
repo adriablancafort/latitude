@@ -74,3 +74,35 @@ jobs:
     with:
       ref: ${{ github.sha }}
     secrets: inherit
+
+  publish-hermes-telemetry:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-hermes-telemetry.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  publish-prime-intellect-telemetry:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-prime-intellect-telemetry.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  publish-python-sdk:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-python-sdk.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  publish-cli:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit

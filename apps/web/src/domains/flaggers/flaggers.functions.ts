@@ -1,21 +1,23 @@
 import {
   configureProjectFlaggersForOnboardingUseCase,
+  FLAGGER_DEFAULT_SAMPLING,
+  FLAGGER_DISPLAY,
   FLAGGER_STRATEGY_SLUGS,
   FlaggerRepository,
   type FlaggerSlug,
-  getFlaggerStrategy,
-  isLlmCapableStrategy,
   updateFlaggerUseCase,
 } from "@domain/flaggers"
-import { OrganizationId, ProjectId } from "@domain/shared"
+import { ProjectId } from "@domain/shared"
 import { RedisCacheStoreLive } from "@platform/cache-redis"
-import { FlaggerRepositoryLive, OutboxEventWriterLive, withPostgres } from "@platform/db-postgres"
+import { FlaggerRepositoryLive, OutboxEventWriterLive } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import { z } from "zod"
 import { requireSession } from "../../server/auth.ts"
 import { getPostgresClient, getRedisClient } from "../../server/clients.ts"
+import { requireScopedSession, resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 
 const humanizeSlug = (slug: string) => slug.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
 
@@ -29,24 +31,20 @@ const toFlaggerRecord = (flagger: {
   readonly createdAt: Date
   readonly updatedAt: Date
 }) => {
-  const strategy = getFlaggerStrategy(flagger.slug)
-  const details = strategy && isLlmCapableStrategy(strategy) ? strategy.annotator : strategy?.details
+  const display = FLAGGER_DISPLAY[flagger.slug]
 
   return {
     id: flagger.id,
     organizationId: flagger.organizationId,
     projectId: flagger.projectId,
     slug: flagger.slug,
-    name: details?.name ?? humanizeSlug(flagger.slug),
-    description: details?.description ?? "Flags matching trace behavior for review.",
-    instructions:
-      strategy && isLlmCapableStrategy(strategy)
-        ? strategy.annotator.instructions
-        : "Runs deterministically from telemetry data and does not call an LLM.",
+    name: display?.name ?? humanizeSlug(flagger.slug),
+    description: display?.description ?? "Flags matching trace behavior for review.",
+    instructions: display?.instructions ?? "Runs deterministically from telemetry data and does not call an LLM.",
     enabled: flagger.enabled,
     sampling: flagger.sampling,
-    mode: strategy && isLlmCapableStrategy(strategy) ? "llm" : "deterministic",
-    suppressedBy: strategy?.suppressedBy ?? [],
+    mode: display?.mode ?? "deterministic",
+    suppressedBy: [...(display?.suppressedBy ?? [])],
     createdAt: flagger.createdAt.toISOString(),
     updatedAt: flagger.updatedAt.toISOString(),
   }
@@ -54,15 +52,38 @@ const toFlaggerRecord = (flagger: {
 
 export type FlaggerRecord = ReturnType<typeof toFlaggerRecord>
 
+// A registered strategy a project has no stored row for yet: shown disabled in
+// settings without writing to the DB. The placeholder id is the slug; the real
+// row (with a real id) replaces it on the next read once the user enables it.
+const toMissingFlaggerRecord = (slug: FlaggerSlug, organizationId: string, projectId: string): FlaggerRecord => {
+  const display = FLAGGER_DISPLAY[slug]
+  const epoch = new Date(0).toISOString()
+
+  return {
+    id: slug,
+    organizationId,
+    projectId,
+    slug,
+    name: display?.name ?? humanizeSlug(slug),
+    description: display?.description ?? "Flags matching trace behavior for review.",
+    instructions: display?.instructions ?? "Runs deterministically from telemetry data and does not call an LLM.",
+    enabled: false,
+    sampling: FLAGGER_DEFAULT_SAMPLING,
+    mode: display?.mode ?? "deterministic",
+    suppressedBy: [...(display?.suppressedBy ?? [])],
+    createdAt: epoch,
+    updatedAt: epoch,
+  }
+}
+
 const toAvailableFlaggerRecord = (slug: FlaggerSlug) => {
-  const strategy = getFlaggerStrategy(slug)
-  const details = strategy && isLlmCapableStrategy(strategy) ? strategy.annotator : strategy?.details
+  const display = FLAGGER_DISPLAY[slug]
 
   return {
     slug,
-    name: details?.name ?? humanizeSlug(slug),
-    description: details?.description ?? "Flags matching trace behavior for review.",
-    mode: strategy && isLlmCapableStrategy(strategy) ? "llm" : "deterministic",
+    name: display?.name ?? humanizeSlug(slug),
+    description: display?.description ?? "Flags matching trace behavior for review.",
+    mode: display?.mode ?? "deterministic",
   }
 }
 
@@ -77,43 +98,47 @@ export const listAvailableFlaggers = createServerFn({ method: "GET" }).handler(
 
 export const listFlaggersByProject = createServerFn({ method: "GET" })
   .inputValidator(z.object({ projectId: z.string() }))
-  .handler(async ({ data }): Promise<readonly FlaggerRecord[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<readonly FlaggerRecord[]> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
     const client = getPostgresClient()
 
-    const flaggers = await Effect.runPromise(
+    const stored = await Effect.runPromise(
       Effect.gen(function* () {
         const repo = yield* FlaggerRepository
         return yield* repo.listByProject({ projectId })
-      }).pipe(withPostgres(FlaggerRepositoryLive, client, orgId), withTracing),
+      }).pipe(withScopedPostgres(FlaggerRepositoryLive, client, orgId), withTracing),
     )
 
-    return flaggers.map(toFlaggerRecord)
+    const storedBySlug = new Map(stored.map((flagger) => [flagger.slug, flagger]))
+    return FLAGGER_STRATEGY_SLUGS.map((slug) => {
+      const row = storedBySlug.get(slug)
+      return row ? toFlaggerRecord(row) : toMissingFlaggerRecord(slug, orgId, data.projectId)
+    })
   })
 
-export const configureProjectFlaggersForOnboarding = createServerFn({ method: "POST" })
+export const configureProjectFlaggersForOnboarding = createServerFn({
+  method: "POST",
+})
   .inputValidator(
     z.object({
       projectId: z.string(),
       enabledSlugs: z.array(z.enum(FLAGGER_STRATEGY_SLUGS)),
     }),
   )
-  .handler(async ({ data }): Promise<void> => {
-    const { organizationId, userId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<void> => {
+    const { userId, organizationId: orgId } = await requireScopedSession(context)
     const projectId = ProjectId(data.projectId)
     const client = getPostgresClient()
 
     await Effect.runPromise(
       configureProjectFlaggersForOnboardingUseCase({
-        organizationId,
+        organizationId: orgId,
         projectId,
         enabledSlugs: data.enabledSlugs,
         actorUserId: userId,
       }).pipe(
-        withPostgres(Layer.mergeAll(FlaggerRepositoryLive, OutboxEventWriterLive), client, orgId),
+        withScopedPostgres(Layer.mergeAll(FlaggerRepositoryLive, OutboxEventWriterLive), client, orgId),
         Effect.provide(RedisCacheStoreLive(getRedisClient())),
         withTracing,
       ),
@@ -129,22 +154,21 @@ export const updateFlagger = createServerFn({ method: "POST" })
       sampling: z.number().int().min(0).max(100),
     }),
   )
-  .handler(async ({ data }): Promise<FlaggerRecord | null> => {
-    const { organizationId, userId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<FlaggerRecord | null> => {
+    const { userId, organizationId: orgId } = await requireScopedSession(context)
     const projectId = ProjectId(data.projectId)
     const client = getPostgresClient()
 
     const flagger = await Effect.runPromise(
       updateFlaggerUseCase({
-        organizationId,
+        organizationId: orgId,
         projectId,
         slug: data.slug,
         enabled: data.enabled,
         sampling: data.sampling,
         actorUserId: userId,
       }).pipe(
-        withPostgres(Layer.mergeAll(FlaggerRepositoryLive, OutboxEventWriterLive), client, orgId),
+        withScopedPostgres(Layer.mergeAll(FlaggerRepositoryLive, OutboxEventWriterLive), client, orgId),
         Effect.provide(RedisCacheStoreLive(getRedisClient())),
         withTracing,
       ),

@@ -49,13 +49,15 @@ export interface TracesExportPayload extends BaseExportPayload {
 }
 
 /**
- * Issues export job payload (no extra filters for v1).
+ * Signals export job payload (no extra filters for v1).
  */
-export interface IssuesExportPayload extends BaseExportPayload {
+export interface SignalsExportPayload extends BaseExportPayload {
   readonly kind: "issues"
   readonly selection?: ExportSelection | undefined
   readonly lifecycleGroup?: "active" | "archived" | undefined
   readonly searchQuery?: string | undefined
+  /** Assignee user ids; `"unassigned"` matches issues with no assignee. */
+  readonly assigneeIds?: readonly string[] | undefined
   readonly timeRange?:
     | {
         readonly fromIso?: string | undefined
@@ -64,7 +66,7 @@ export interface IssuesExportPayload extends BaseExportPayload {
     | undefined
   readonly sort?:
     | {
-        readonly field: "lastSeen" | "occurrences" | "state"
+        readonly field: "lastSeen" | "occurrences" | "affectedSessions" | "state"
         readonly direction: "asc" | "desc"
       }
     | undefined
@@ -73,4 +75,4 @@ export interface IssuesExportPayload extends BaseExportPayload {
 /**
  * Discriminated union of all export job payloads.
  */
-export type ExportPayload = DatasetExportPayload | TracesExportPayload | IssuesExportPayload
+export type ExportPayload = DatasetExportPayload | TracesExportPayload | SignalsExportPayload

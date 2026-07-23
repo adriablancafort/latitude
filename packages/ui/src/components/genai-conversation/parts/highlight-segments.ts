@@ -103,13 +103,14 @@ export function highlightAttributes(activeHighlight: HighlightRange | null): Hig
   const isClickable = isAnnotation && !!activeHighlight.id
   const isSearchMatch = activeHighlight.type === "search-literal" || activeHighlight.type === "search-token"
   const className = cn({
-    "cursor-pointer hit-area-inline-y-2": isClickable,
+    "cursor-pointer": isClickable,
     "bg-yellow-100 border-b-2 border-yellow-300 dark:bg-yellow-400/20 dark:border-yellow-400/50":
       activeHighlight.type === "selection",
     "bg-red-100 dark:bg-red-400/30": isAnnotation && activeHighlight.passed === false,
     "bg-emerald-100 dark:bg-emerald-400/30": isAnnotation && activeHighlight.passed === true,
     "bg-blue-100 dark:bg-blue-400/30": isAnnotation && activeHighlight.passed === undefined,
-    "bg-primary/30 dark:bg-primary/40": isSearchMatch,
+    "bg-primary/45 ring-2 ring-primary dark:bg-primary/55": isSearchMatch && activeHighlight.searchActive,
+    "bg-primary/30 dark:bg-primary/40": isSearchMatch && !activeHighlight.searchActive,
     // mx-0.5 creates a parent-bg-colored gap between adjacent chips;
     // box-decoration-clone keeps the rounding per line on wrap.
     "rounded-sm box-decoration-clone mx-0.5": isAnnotation || isSearchMatch,

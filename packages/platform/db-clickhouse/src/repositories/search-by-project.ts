@@ -157,12 +157,15 @@ const toOrphanSession = (row: SessionSearchRow): Session => {
     costOutputMicrocents: 0,
     costTotalMicrocents: Number(row.cost_total_microcents),
     userId: ExternalUserId(""),
+    userEmail: "",
     simulationId: "",
     tags: [],
     metadata: {},
     models: [],
     providers: [],
     serviceNames: [],
+    agentNames: [],
+    definedTools: [],
     rootSpanId: "",
     rootSpanName: "",
   }
@@ -224,8 +227,7 @@ type SearchCandidate = { trace_id: string; relevance_score: number }
  * can surface before `trace_search_documents` (a `ReplacingMergeTree`) has
  * merged. The outer `LIMIT {candidateCap:UInt32}` caps how many candidates
  * the application materializes, protecting the Node worker from broad
- * lexical phrases on XL projects — semantic plans already cap server-side
- * via `SEMANTIC_SCAN_LIMIT`, lexical/hybrid plans don't.
+ * lexical phrases on XL projects.
  */
 const fetchSearchCandidates = ({
   organizationId,
@@ -251,6 +253,7 @@ const fetchSearchCandidates = ({
             candidateCap: MAX_SEARCH_CANDIDATES,
             ...plan.params,
           },
+          ...(plan.clickhouseSettings ? { clickhouse_settings: plan.clickhouseSettings } : {}),
           format: "JSONEachRow",
         })
         return result.json<SearchCandidate>()
@@ -289,9 +292,12 @@ const TRACE_ROLLUP_BODY = `
     argMaxIfMerge(t.user_id)                       AS user_id,
     argMaxIfMerge(t.simulation_id)                 AS simulation_id,
     groupUniqArrayArray(t.tags)                    AS tags,
+    maxMap(t.metadata)                             AS metadata,
     groupUniqArrayIfMerge(t.models)                AS models,
     groupUniqArrayIfMerge(t.providers)             AS providers,
     groupUniqArrayIfMerge(t.service_names)         AS service_names,
+    groupUniqArrayIfMerge(t.tools)                 AS tools,
+    groupUniqArrayArray(t.defined_tools)           AS defined_tools,
     argMinIfMerge(t.root_span_name)                AS root_span_name,
     sum(t.cost_total_microcents)                   AS cost_total_microcents,
     sum(t.span_count)                              AS span_count,

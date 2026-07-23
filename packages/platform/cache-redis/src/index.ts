@@ -1,6 +1,7 @@
 export { CacheStore, type CacheStoreShape } from "@domain/shared"
 export { RedisCacheStoreLive } from "./ai-cache.ts"
 export { RedisBillingSpendReservationLive } from "./billing-spend-reservation.ts"
+export { RedisDetectorHealthTrackerLive } from "./detector-health.ts"
 export { RedisDistributedLockRepositoryLive } from "./distributed-lock.ts"
 export { EmbedBudgetResolverLive } from "./embed-budget-resolver.ts"
 export { SandboxSignalsLive } from "./sandbox-signals.ts"
@@ -27,4 +28,5 @@ export {
   createRedisConnection,
   createRedisConnectionEffect,
 } from "./connection.ts"
+export { REDIS_KEY_PREFIX } from "./constants.ts"
 export { checkRedisRateLimit, type RateLimitCheckInput, type RateLimitCheckResult } from "./rate-limiter.ts"

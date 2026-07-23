@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { type AnnotationQueue, AnnotationQueueRepository, LIVE_QUEUE_DEFAULT_SAMPLING } from "@domain/annotation-queues"
+import { ApiKeyRepository } from "@domain/api-keys"
 import { type Evaluation, EvaluationRepository } from "@domain/evaluations"
 import { type Flagger, FlaggerRepository, provisionFlaggersUseCase } from "@domain/flaggers"
 import { createProject, ProjectRepository } from "@domain/projects"
@@ -18,7 +18,7 @@ import {
 } from "@domain/shared/seeding"
 import { TRACE_END_DEBOUNCE_MS } from "@domain/spans"
 import {
-  AnnotationQueueRepositoryLive,
+  ApiKeyRepositoryLive,
   closePostgres,
   createPostgresClient,
   EvaluationRepositoryLive,
@@ -26,6 +26,8 @@ import {
   ProjectRepositoryLive,
   withPostgres,
 } from "@platform/db-postgres"
+import { parseEnv } from "@platform/env"
+import { hash } from "@repo/utils"
 import { Effect, Layer } from "effect"
 import { liveSeedFixtureKeys, liveSeedFixtures } from "./fixtures.ts"
 import { type BuiltTraceSpan, buildTraceRequests, type SeedSpanDefinition } from "./otlp.ts"
@@ -37,7 +39,6 @@ import type {
   SamplingPlan,
 } from "./types.ts"
 
-const HIGH_COST_LIVE_QUEUE_SLUG = "high-cost-traces"
 const FRUSTRATION_FLAGGER_SLUG = "frustration"
 const MAX_TRACE_ID_SEARCH_ATTEMPTS = 50_000
 
@@ -58,21 +59,16 @@ const EVALUATION_LABELS: Record<string, string> = {
 
 export type SeedTargets = {
   readonly evaluationsById: Readonly<Record<string, Evaluation>>
-  /**
-   * High-cost live queue in the target project. `undefined` when running in
-   * flaggers-only mode against a fresh project that hasn't been seeded
-   * with the evaluation/live-queue fixtures — callers must guard access.
-   */
-  readonly highCostLiveQueue: AnnotationQueue | undefined
   readonly flaggersBySlug: Readonly<Record<string, Flagger>>
 }
 
 /**
  * Resolved run-time identity for a live-seeds invocation. The default flow
- * targets the seeded `Default Project`; when the CLI overrides the project
- * slug, we look up the project by slug (scoped to `SEED_ORG_ID`, the Acme
- * seed org) and enter `flaggersOnly` mode so the tool doesn't assert that
- * evaluations + the high-cost live queue exist in the target project.
+ * targets the seeded `Default Project` in the Acme org; when the CLI overrides
+ * the project slug, we look up the project by slug **scoped to the org that
+ * owns the `--api-key-token`** (the same org ingest routes to — e.g. a sandbox
+ * org, not necessarily Acme) and enter `flaggersOnly` mode so the tool doesn't
+ * assert that evaluations exist in the target project.
  */
 export type SeedRunContext = {
   readonly organizationId: OrganizationId
@@ -80,18 +76,26 @@ export type SeedRunContext = {
   readonly projectSlug: string
   readonly apiKeyToken: string
   readonly flaggersOnly: boolean
+  /**
+   * Remote mode: no local Postgres access at all. The key→org and project
+   * resolution that the local flow does is skipped — the remote ingest
+   * authenticates the key and resolves `X-Latitude-Project` on its own side.
+   * org/project ids carried here are inert placeholders (only ever hash inputs
+   * for sample search, which remote mode bypasses), targets are empty, and
+   * flagger provisioning is off. Used to seed a remote env (staging, prod) whose
+   * DB this machine can't reach.
+   */
+  readonly remote: boolean
 }
 
 /**
- * Fixtures whose sampling plan doesn't require seeded evaluations or a live
- * queue — safe to run against a fresh project that only has flaggers
- * provisioned. Derived from fixture metadata so the allowlist stays in sync
- * with the actual fixture set.
+ * Fixtures whose sampling plan doesn't require seeded evaluations — safe to run
+ * against a fresh project that only has flaggers provisioned. Derived from
+ * fixture metadata so the allowlist stays in sync with the actual fixture set.
  */
 const isFlaggersOnlyFixture = (fixture: LiveSeedFixtureDefinition): boolean => {
   const hasEvaluationSampling = (fixture.sampling.includeEvaluationIds ?? []).length > 0
-  const hasLiveQueueSampling = fixture.sampling.liveQueueSample !== undefined
-  return !hasEvaluationSampling && !hasLiveQueueSampling
+  return !hasEvaluationSampling
 }
 
 const FLAGGERS_ONLY_FIXTURE_KEYS = new Set<string>(
@@ -100,7 +104,6 @@ const FLAGGERS_ONLY_FIXTURE_KEYS = new Set<string>(
 
 export type LiveSeedSamplePreview = {
   readonly evaluationsById: Readonly<Record<string, boolean>>
-  readonly liveQueue: boolean
   readonly flaggersBySlug: Readonly<Record<string, boolean>>
 }
 
@@ -140,16 +143,28 @@ export type SendLiveSeedDataOptions = {
   readonly seed?: string
   /**
    * Override target project slug. When set, the tool looks up the project by
-   * slug in the Acme seed org and runs in flaggers-only mode (evaluations
-   * + high-cost live queue are not required to exist in the target project).
-   * Fixture selection is restricted to the flagger-triggering set.
+   * slug in the org that owns {@link apiKeyToken} (e.g. a sandbox org) and runs
+   * in flaggers-only mode (evaluations are not required to exist in the target
+   * project). Fixture selection is restricted to the
+   * flagger-triggering set. Required when {@link apiKeyToken} is non-default.
    */
   readonly projectSlug?: string
   /**
    * Override API key token for ingest `Authorization` header. Defaults to the
-   * seed token (`lat_seed_default_api_key_token`), which is Acme-scoped.
+   * seed token (`lat_seed_default_api_key_token`), which is Acme-scoped. The key
+   * also decides which org is seeded — a sandbox's default key targets that
+   * sandbox (its spans route there at ingest, so project work is scoped there).
    */
   readonly apiKeyToken?: string
+  /**
+   * Seed a remote environment with no local Postgres access. Requires
+   * {@link apiKeyToken}, {@link projectSlug}, and a remote {@link ingestBaseUrl}.
+   * Skips key→org resolution, project find/create, flagger provisioning, target
+   * loading, and the sample-aware trace-id search (sampling outcomes can't be
+   * verified against a remote tenant). Fixtures are restricted to the
+   * flaggers-only set, as in any non-default-key run.
+   */
+  readonly remote?: boolean
 }
 
 export type BuildLiveSeedRunPlanOptions = {
@@ -292,7 +307,7 @@ function resolveSelectedFixtures(
     if (!fixture) {
       if (options?.flaggersOnly && liveSeedFixtures.some((f) => f.key === key)) {
         throw new Error(
-          `Fixture "${key}" requires seeded evaluations or live queues that aren't present in the override project. ` +
+          `Fixture "${key}" requires seeded evaluations that aren't present in the override project. ` +
             `In flaggers-only mode, pick from: ${[...FLAGGERS_ONLY_FIXTURE_KEYS].sort().join(", ")}.`,
         )
       }
@@ -400,25 +415,92 @@ async function provisionFlaggers(ctx: SeedRunContext): Promise<void> {
 
 /**
  * Resolve a `SeedRunContext` from CLI options. Defaults to the seed identity
- * (Acme org + Default Project + seed API key). When `projectSlug` is overridden
- * the project is looked up by slug (scoped to `SEED_ORG_ID`, the Acme seed org)
- * and `flaggersOnly` is turned on. Missing projects are created on the fly
- * so the CLI works against a fresh slug without requiring a UI round-trip.
+ * (Acme org + Default Project + seed API key). When `projectSlug` is overridden,
+ * the project is looked up by slug **in the org that owns `--api-key-token`** —
+ * the same org ingest routes the spans to (`Authorization` + `X-Latitude-Project`
+ * in {@link postSpanToIngest}). So a sandbox key + sandbox project slug seeds the
+ * sandbox tenant, with project create + flagger provisioning scoped there rather
+ * than to Acme. Missing projects are created on the fly. `flaggersOnly` is turned
+ * on for overrides so the tool doesn't assert seeded evaluations.
  */
+/**
+ * Resolve the org that owns an API key from its token. The key→org mapping is
+ * deliberately cross-tenant (it's how ingest auth resolves a token before any
+ * org is known), so `findByTokenHash` must run on the RLS-bypassing admin
+ * connection (`LAT_ADMIN_DATABASE_URL`) — the org-scoped runtime role can't see
+ * a key it isn't currently scoped to.
+ */
+async function resolveOrgFromApiKey(apiKeyToken: string): Promise<OrganizationId> {
+  const adminUrl = Effect.runSync(parseEnv("LAT_ADMIN_DATABASE_URL", "string"))
+  const adminClient = createPostgresClient({ databaseUrl: adminUrl })
+
+  try {
+    return await Effect.runPromise(
+      Effect.gen(function* () {
+        const tokenHash = yield* hash(apiKeyToken)
+        const repo = yield* ApiKeyRepository
+        const apiKey = yield* repo.findByTokenHash(tokenHash)
+        return apiKey.organizationId
+      }).pipe(withPostgres(ApiKeyRepositoryLive, adminClient, SEED_ORG_ID)),
+    ).catch((error: unknown) => {
+      if (error instanceof Error && "_tag" in error && error._tag === "NotFoundError") {
+        throw new Error(`No API key matches --api-key-token "${apiKeyToken}".`)
+      }
+      throw error
+    })
+  } finally {
+    await closePostgres(adminClient.pool)
+  }
+}
+
 async function resolveRunContext(options: SendLiveSeedDataOptions): Promise<SeedRunContext> {
   const apiKeyToken = options.apiKeyToken ?? SEED_API_KEY_TOKEN
+  const isSeedKey = apiKeyToken === SEED_API_KEY_TOKEN
 
-  if (!options.projectSlug || options.projectSlug === SEED_PROJECT_SLUG) {
+  // Remote mode: no local DB. The remote ingest authenticates the key and
+  // resolves the project, so we trust the provided slug + key as-is and skip
+  // every Postgres round-trip. org/project ids are inert placeholders here.
+  if (options.remote) {
+    if (!options.apiKeyToken) {
+      throw new Error("--remote requires --api-key-token (the key the remote ingest authenticates).")
+    }
+    if (!options.projectSlug) {
+      throw new Error("--remote requires --project-slug (the project to target on the remote env).")
+    }
+    return {
+      organizationId: SEED_ORG_ID,
+      projectId: SEED_PROJECT_ID,
+      projectSlug: options.projectSlug,
+      apiKeyToken,
+      flaggersOnly: true,
+      remote: true,
+    }
+  }
+
+  // Fast path: the seeded key + default project is the fully-seeded Acme context
+  // (evaluations present), and needs no DB round-trip.
+  if (isSeedKey && (!options.projectSlug || options.projectSlug === SEED_PROJECT_SLUG)) {
     return {
       organizationId: SEED_ORG_ID,
       projectId: SEED_PROJECT_ID,
       projectSlug: SEED_PROJECT_SLUG,
       apiKeyToken,
       flaggersOnly: false,
+      remote: false,
     }
   }
 
   const targetSlug = options.projectSlug
+  if (!targetSlug) {
+    throw new Error("A non-default --api-key-token requires --project-slug (the project to target in that key's org).")
+  }
+
+  // The key decides the tenant — the same org ingest routes to. Resolve it
+  // before opening the org-scoped client; project/flagger work then runs under
+  // that org (RLS is purely `organization_id = get_current_organization_id()`,
+  // so the runtime role can read/write any org once scoped to it).
+  const organizationId = isSeedKey ? SEED_ORG_ID : await resolveOrgFromApiKey(apiKeyToken)
+
   const client = createPostgresClient()
 
   try {
@@ -426,7 +508,7 @@ async function resolveRunContext(options: SendLiveSeedDataOptions): Promise<Seed
       Effect.gen(function* () {
         const repo = yield* ProjectRepository
         return yield* repo.findBySlug(targetSlug)
-      }).pipe(withPostgres(ProjectRepositoryLive, client, SEED_ORG_ID)),
+      }).pipe(withPostgres(ProjectRepositoryLive, client, organizationId)),
     ).catch((error: unknown) => {
       if (error instanceof Error && "_tag" in error && error._tag === "NotFoundError") {
         return null
@@ -440,22 +522,23 @@ async function resolveRunContext(options: SendLiveSeedDataOptions): Promise<Seed
         Effect.gen(function* () {
           const repo = yield* ProjectRepository
           const created = createProject({
-            organizationId: SEED_ORG_ID,
+            organizationId,
             name: targetSlug,
             slug: targetSlug,
           })
           yield* repo.save(created)
-          console.log(`[live-seeds] Created project "${targetSlug}" in the Acme seed org`)
+          console.log(`[live-seeds] Created project "${targetSlug}" in org ${organizationId}`)
           return created
-        }).pipe(withPostgres(ProjectRepositoryLive, client, SEED_ORG_ID)),
+        }).pipe(withPostgres(ProjectRepositoryLive, client, organizationId)),
       ))
 
     return {
-      organizationId: SEED_ORG_ID,
+      organizationId,
       projectId: project.id,
       projectSlug: project.slug,
       apiKeyToken,
       flaggersOnly: true,
+      remote: false,
     }
   } finally {
     await closePostgres(client.pool)
@@ -466,16 +549,15 @@ async function loadSeedTargets(ctx: SeedRunContext): Promise<SeedTargets> {
   const client = createPostgresClient()
 
   try {
-    const { evaluations, liveQueues, flaggers } = await Effect.runPromise(
+    const { evaluations, flaggers } = await Effect.runPromise(
       Effect.gen(function* () {
         const evaluationRepository = yield* EvaluationRepository
-        const queueRepository = yield* AnnotationQueueRepository
         const flaggerRepository = yield* FlaggerRepository
 
         return {
-          // Evaluations + live queues aren't required in fresh-project mode,
-          // but loading them is cheap and lets us still print them in the
-          // plan summary if they happen to exist.
+          // Evaluations aren't required in fresh-project mode, but loading them
+          // is cheap and lets us still print them in the plan summary if they
+          // happen to exist.
           evaluations: yield* evaluationRepository.listByProjectId({
             projectId: ctx.projectId,
             options: {
@@ -483,19 +565,12 @@ async function loadSeedTargets(ctx: SeedRunContext): Promise<SeedTargets> {
               limit: 100,
             },
           }),
-          liveQueues: yield* queueRepository.listLiveQueuesByProject({
-            projectId: ctx.projectId,
-          }),
           flaggers: yield* flaggerRepository.listByProject({
             projectId: ctx.projectId,
           }),
         }
       }).pipe(
-        withPostgres(
-          Layer.mergeAll(EvaluationRepositoryLive, AnnotationQueueRepositoryLive, FlaggerRepositoryLive),
-          client,
-          ctx.organizationId,
-        ),
+        withPostgres(Layer.mergeAll(EvaluationRepositoryLive, FlaggerRepositoryLive), client, ctx.organizationId),
       ),
     )
 
@@ -514,13 +589,6 @@ async function loadSeedTargets(ctx: SeedRunContext): Promise<SeedTargets> {
       }
     }
 
-    const highCostLiveQueue = ctx.flaggersOnly
-      ? liveQueues.find((queue) => queue.slug === HIGH_COST_LIVE_QUEUE_SLUG)
-      : requireItem(
-          liveQueues.find((queue) => queue.slug === HIGH_COST_LIVE_QUEUE_SLUG),
-          `Missing live queue "${HIGH_COST_LIVE_QUEUE_SLUG}" in seeded project`,
-        )
-
     requireItem(
       flaggers.find((flagger) => flagger.slug === FRUSTRATION_FLAGGER_SLUG),
       `Missing flagger "${FRUSTRATION_FLAGGER_SLUG}" in project "${ctx.projectSlug}" — did you forget to provision flaggers?`,
@@ -528,7 +596,6 @@ async function loadSeedTargets(ctx: SeedRunContext): Promise<SeedTargets> {
 
     return {
       evaluationsById,
-      highCostLiveQueue,
       flaggersBySlug: Object.fromEntries(flaggers.map((flagger) => [flagger.slug, flagger])),
     }
   } finally {
@@ -539,13 +606,6 @@ async function loadSeedTargets(ctx: SeedRunContext): Promise<SeedTargets> {
 async function sampleLiveEvaluation(ctx: SeedRunContext, target: Evaluation, traceId: string): Promise<boolean> {
   return deterministicSampling({
     sampling: target.trigger.sampling,
-    keyParts: [ctx.organizationId, ctx.projectId, target.id, traceId],
-  })
-}
-
-async function sampleLiveQueue(ctx: SeedRunContext, target: AnnotationQueue, traceId: string): Promise<boolean> {
-  return deterministicSampling({
-    sampling: target.settings.sampling ?? LIVE_QUEUE_DEFAULT_SAMPLING,
     keyParts: [ctx.organizationId, ctx.projectId, target.id, traceId],
   })
 }
@@ -562,9 +622,9 @@ async function computeSamplePreview(
   targets: SeedTargets,
   traceId: string,
 ): Promise<LiveSeedSamplePreview> {
-  // In flaggers-only mode the target project isn't guaranteed to have
-  // the seeded evaluations or high-cost live queue. Skip those branches
-  // instead of crashing on `targets.evaluationsById[id]` / `highCostLiveQueue`.
+  // In flaggers-only mode the target project isn't guaranteed to have the
+  // seeded evaluations. Skip that branch instead of crashing on
+  // `targets.evaluationsById[id]`.
   const evaluationsById = ctx.flaggersOnly
     ? {}
     : Object.fromEntries(
@@ -579,11 +639,6 @@ async function computeSamplePreview(
         ),
       )
 
-  const liveQueue =
-    ctx.flaggersOnly || !targets.highCostLiveQueue
-      ? false
-      : await sampleLiveQueue(ctx, targets.highCostLiveQueue, traceId)
-
   const flaggersBySlug = Object.fromEntries(
     await Promise.all(
       Object.entries(targets.flaggersBySlug).map(async ([slug, flagger]) => {
@@ -594,7 +649,6 @@ async function computeSamplePreview(
 
   return {
     evaluationsById,
-    liveQueue,
     flaggersBySlug,
   }
 }
@@ -611,7 +665,6 @@ function buildContextSamplingPlan(fixture: LiveSeedFixtureDefinition, targets: S
 
   return {
     excludeEvaluationIds: SEEDED_EVALUATION_ORDER,
-    liveQueueSample: false,
     ...(Object.keys(contextFlaggerSamples).length > 0 ? { flaggerSamples: contextFlaggerSamples } : {}),
   }
 }
@@ -627,10 +680,6 @@ function samplePreviewMatchesPlan(plan: SamplingPlan, preview: LiveSeedSamplePre
     if (preview.evaluationsById[evaluationId]) {
       return false
     }
-  }
-
-  if (plan.liveQueueSample !== undefined && preview.liveQueue !== plan.liveQueueSample) {
-    return false
   }
 
   for (const [queueSlug, expectedSample] of Object.entries(plan.flaggerSamples ?? {})) {
@@ -681,6 +730,17 @@ async function findTraceIdForCaseTrace(input: {
   readonly caseIndex: number
   readonly traceIndex: number
 }): Promise<{ readonly traceId: string; readonly preview: LiveSeedSamplePreview }> {
+  // Remote mode has no local targets to sample against, and the remote tenant's
+  // sampling can't be verified from here — so skip the search and take a stable
+  // trace id directly. The preview is empty (no eval/queue/flagger outcomes).
+  if (input.ctx.remote) {
+    const traceId = hashHex(
+      `seed-live-seeds:${input.runSeed}:${input.fixture.key}:${input.caseIndex.toString()}:${input.traceIndex.toString()}:${input.generatedTrace.key}:0`,
+      32,
+    )
+    return { traceId, preview: { evaluationsById: {}, flaggersBySlug: {} } }
+  }
+
   const samplingPlan =
     input.generatedTrace.role === "target"
       ? input.fixture.sampling
@@ -837,7 +897,9 @@ function printFixturePlan(
 
   console.log("[plan] Live-seed run")
   console.log(`  - ingest endpoint: ${normalizeBaseUrl(ingestBaseUrl)}/v1/traces`)
-  console.log(`  - project slug: ${ctx.projectSlug}${ctx.flaggersOnly ? " (flaggers-only mode)" : ""}`)
+  console.log(
+    `  - project slug: ${ctx.projectSlug}${ctx.remote ? " (remote mode)" : ctx.flaggersOnly ? " (flaggers-only mode)" : ""}`,
+  )
   console.log(`  - flagger provisioning: ${provisioned ? "enabled" : "skipped"}`)
   console.log(`  - trace-end debounce: ${Math.ceil(TRACE_END_DEBOUNCE_MS / 1000).toString()}s`)
   console.log(`  - runId: ${plan.runId}`)
@@ -873,9 +935,6 @@ function printFixturePlan(
     console.log(`    example target traceId: ${targetTrace.traceId}`)
     console.log(`    target service: ${targetTrace.generatedTrace.serviceName}`)
     console.log(`    live evaluations: ${formatEvaluationSamples(targetTrace.samples)}`)
-    if (fixture.sampling.liveQueueSample !== undefined) {
-      console.log(`    high-cost live queue sample: ${targetTrace.samples.liveQueue ? "in" : "out"}`)
-    }
     const flaggerSamples = formatFlaggerSamples(targetTrace.samples, fixture)
     if (flaggerSamples) {
       console.log(`    flagger samples: ${flaggerSamples}`)
@@ -1067,11 +1126,15 @@ export async function sendLiveSeedData(options: SendLiveSeedDataOptions): Promis
   const seed = options.seed ?? randomUUID().replaceAll("-", "")
   const ctx = await resolveRunContext(options)
 
-  if (options.provisionFlaggers) {
+  if (ctx.remote) {
+    console.log("[remote] No local DB access — sample-aware trace-id search and flagger provisioning are disabled.")
+  }
+
+  if (options.provisionFlaggers && !ctx.remote) {
     await provisionFlaggers(ctx)
   }
 
-  const targets = await loadSeedTargets(ctx)
+  const targets: SeedTargets = ctx.remote ? { evaluationsById: {}, flaggersBySlug: {} } : await loadSeedTargets(ctx)
   const plan = await buildLiveSeedRunPlan({
     ...(options.fixtureKeys ? { fixtureKeys: options.fixtureKeys } : {}),
     countPerFixture: options.countPerFixture,
@@ -1081,7 +1144,7 @@ export async function sendLiveSeedData(options: SendLiveSeedDataOptions): Promis
     ctx,
   })
 
-  printFixturePlan(plan, options.ingestBaseUrl, options.provisionFlaggers, options.parallelCases, ctx)
+  printFixturePlan(plan, options.ingestBaseUrl, options.provisionFlaggers && !ctx.remote, options.parallelCases, ctx)
 
   const plannedTraceCount = getPlannedTraceCount(plan.cases)
   const plannedSpanCount = getPlannedSpanCount(plan.cases)

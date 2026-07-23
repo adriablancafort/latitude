@@ -29,7 +29,7 @@ export const baseWriteScoreInputSchema = baseWritableScoreSchema.extend({
   traceId: baseScoreSchema.shape.traceId.default(null),
   spanId: baseScoreSchema.shape.spanId.default(null),
   simulationId: baseScoreSchema.shape.simulationId.default(null),
-  issueId: baseScoreSchema.shape.issueId.default(null),
+  signalId: baseScoreSchema.shape.signalId.default(null),
   error: baseScoreSchema.shape.error.default(null),
   duration: baseScoreSchema.shape.duration.default(0),
   tokens: baseScoreSchema.shape.tokens.default(0),
@@ -39,19 +39,19 @@ export const baseWriteScoreInputSchema = baseWritableScoreSchema.extend({
 })
 export type BaseWriteScoreInput = z.input<typeof baseWriteScoreInputSchema>
 
-export const writeScoreInputSchema = z.discriminatedUnion("source", [
+export const writeScoreInputSchema = z.discriminatedUnion("sourceType", [
   baseWriteScoreInputSchema.extend({
-    source: evaluationScoreSchema.shape.source,
+    sourceType: evaluationScoreSchema.shape.sourceType,
     sourceId: evaluationScoreSchema.shape.sourceId,
     metadata: evaluationScoreSchema.shape.metadata,
   }),
   baseWriteScoreInputSchema.extend({
-    source: annotationScoreSchema.shape.source,
+    sourceType: annotationScoreSchema.shape.sourceType,
     sourceId: annotationScoreSchema.shape.sourceId,
     metadata: annotationScoreSchema.shape.metadata,
   }),
   baseWriteScoreInputSchema.extend({
-    source: customScoreSchema.shape.source,
+    sourceType: customScoreSchema.shape.sourceType,
     sourceId: customScoreSchema.shape.sourceId,
     metadata: customScoreSchema.shape.metadata,
   }),
@@ -77,8 +77,8 @@ const validateDraftUpdate = (existingScore: Score, input: ParsedWriteScoreInput)
     return new ScoreDraftUpdateConflictError({ scoreId: existingScore.id, field: "projectId" })
   }
 
-  if (existingScore.source !== input.source) {
-    return new ScoreDraftUpdateConflictError({ scoreId: existingScore.id, field: "source" })
+  if (existingScore.sourceType !== input.sourceType) {
+    return new ScoreDraftUpdateConflictError({ scoreId: existingScore.id, field: "sourceType" })
   }
 
   if (existingScore.sourceId !== input.sourceId) {
@@ -88,14 +88,14 @@ const validateDraftUpdate = (existingScore: Score, input: ParsedWriteScoreInput)
   return null
 }
 
-const scoreDiscoveryPayloadIssueId = (score: Score, existingScore: Score | null): string | null => {
+const scoreDiscoveryPayloadSignalId = (score: Score, existingScore: Score | null): string | null => {
   if (
     existingScore !== null &&
     existingScore.draftedAt !== null &&
-    existingScore.issueId !== null &&
-    score.issueId === null
+    existingScore.signalId !== null &&
+    score.signalId === null
   ) {
-    return existingScore.issueId
+    return existingScore.signalId
   }
   return null
 }
@@ -110,6 +110,7 @@ const buildScore = ({
   readonly existingScore: Score | null
 }) => {
   const now = new Date()
+  const sessionId = input.sessionId || input.traceId
 
   return parseOrBadRequest(
     scoreSchema,
@@ -117,13 +118,13 @@ const buildScore = ({
       id: input.id ?? generateId<"ScoreId">(),
       organizationId,
       projectId: input.projectId,
-      sessionId: input.sessionId,
+      sessionId,
       traceId: input.traceId,
       spanId: input.spanId,
-      source: input.source,
+      sourceType: input.sourceType,
       sourceId: input.sourceId,
       simulationId: input.simulationId,
-      issueId: input.issueId,
+      signalId: input.signalId,
       value: input.value,
       passed: input.passed,
       feedback: input.feedback,
@@ -147,7 +148,7 @@ export const writeScoreUseCase = Effect.fn("scores.writeScore")(function* (input
   const sqlClient = yield* SqlClient
 
   yield* Effect.annotateCurrentSpan("score.projectId", parsedInput.projectId)
-  yield* Effect.annotateCurrentSpan("score.source", parsedInput.source)
+  yield* Effect.annotateCurrentSpan("score.sourceType", parsedInput.sourceType)
   yield* Effect.annotateCurrentSpan("score.sqlClientOrganizationId", sqlClient.organizationId)
 
   const score = yield* sqlClient.transaction(
@@ -192,7 +193,7 @@ export const writeScoreUseCase = Effect.fn("scores.writeScore")(function* (input
           organizationId: score.organizationId,
           projectId: score.projectId,
           scoreId: score.id,
-          issueId: scoreDiscoveryPayloadIssueId(score, existingScore),
+          signalId: scoreDiscoveryPayloadSignalId(score, existingScore),
           status: score.draftedAt === null ? "published" : "draft",
         },
       })

@@ -8,15 +8,15 @@ The simplest way to use Latitude is with `new Latitude({...})` — no existing O
 
 ```typescript
 import OpenAI from "openai"
+import { createOpenAIInstrumentation } from "@latitude-data/telemetry/instrumentations/openai"
 import { Latitude, capture } from "@latitude-data/telemetry"
 
 const latitude = new Latitude({
   apiKey: process.env.LATITUDE_API_KEY!,
   project: process.env.LATITUDE_PROJECT_SLUG!,
-  instrumentations: { openai: OpenAI }, // Pass the LLM SDK module you use in app code.
+  instrumentations: [createOpenAIInstrumentation(OpenAI)], // Pass the LLM SDK module you use in app code.
 })
 
-await latitude.ready
 const client = new OpenAI()
 
 await capture(
@@ -91,11 +91,11 @@ These examples use `LatitudeTelemetry` — the simplest way to get started.
 | Together AI | `test_together.ts` | `together-ai` | `"togetherai"` |
 | AWS Bedrock | `test_bedrock.ts` | `@aws-sdk/client-bedrock-runtime` | `"bedrock"` |
 | Google Vertex AI | `test_vertex.ts` | `@google-cloud/vertexai` | `"vertexai"` |
-| Vercel AI SDK | `test_vercel_ai.ts` | `ai`, `@ai-sdk/openai` | custom tracer (`"vercelai"`) |
+| Vercel AI SDK | `test_vercel_ai.ts` | `ai`, `@ai-sdk/openai` | `latitude.getTracer("vercelai")` |
 | LangChain | `test_langchain.ts` | `langchain`, `@langchain/openai` | `"langchain"` |
 | LlamaIndex | `test_llamaindex.ts` | `llamaindex` | `"llamaindex"` |
 
-The Vercel AI SDK example shows both patterns: one generation wrapped in `capture()` and one plain AI SDK call using the stable `experimental_telemetry` hook with `getLatitudeTracer("vercelai")`. It does not require a Latitude auto-instrumentation entry.
+The Vercel AI SDK example uses the stable `experimental_telemetry` hook with `latitude.getTracer("vercelai")`. It does not require a Latitude auto-instrumentation entry.
 
 ### Running Provider Examples
 
@@ -136,6 +136,7 @@ Use composable mode when:
 import OpenAI from "openai"
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { LatitudeSpanProcessor, registerLatitudeInstrumentations } from "@latitude-data/telemetry"
+import { createOpenAIInstrumentation } from "@latitude-data/telemetry/instrumentations/openai"
 
 const provider = new NodeTracerProvider({
   spanProcessors: [
@@ -144,7 +145,7 @@ const provider = new NodeTracerProvider({
 })
 
 await registerLatitudeInstrumentations({
-  instrumentations: { openai: OpenAI },
+  instrumentations: [createOpenAIInstrumentation(OpenAI)],
   tracerProvider: provider,
 })
 

@@ -1,5 +1,7 @@
 import type { AI, AICredentialError, AIError, GenerateTelemetryCapture } from "@domain/ai"
-import { type TraceDetail, traceDetailSchema } from "@domain/spans"
+import type { ScriptRuntime, ScriptSessionContext } from "@domain/sandbox"
+import { OrganizationId, ProjectId } from "@domain/shared"
+import type { MessageEmbeddingRepository, TraceSearchRepository } from "@domain/spans"
 import { Effect } from "effect"
 import { z } from "zod"
 import { evaluationSchema } from "../../entities/evaluation.ts"
@@ -7,26 +9,19 @@ import { LiveEvaluationExecutionError } from "../../errors.ts"
 import {
   type EvaluationExecutionResult,
   type EvaluationExecutionResultPayload,
-  type EvaluationIssueContext,
+  type EvaluationSignalContext,
   evaluationExecutionResultPayloadSchema,
   evaluationExecutionResultSchema,
-  evaluationIssueContextSchema,
-  executeEvaluationScriptWithAI,
-  toEvaluationConversationMessages,
+  evaluationSignalContextSchema,
   toEvaluationExecutionResult,
-  validateEvaluationScript,
 } from "../../runtime/evaluation-execution.ts"
+import { executeEvaluationScriptSandboxed } from "../../runtime/sandbox-execution.ts"
+import { buildSemanticSimilarityHost } from "../../runtime/semantic-similarity.ts"
 
 export type ExecuteLiveEvaluationError = AIError | AICredentialError | LiveEvaluationExecutionError
 
-const INVALID_LIVE_EVALUATION_SCRIPT_MESSAGE =
-  "Stored evaluation script is not executable by the MVP live evaluation runtime"
-
-export const liveEvaluationIssueContextSchema = evaluationIssueContextSchema
-export type LiveEvaluationIssueContext = EvaluationIssueContext
-
-export const liveEvaluationConversationInputSchema = traceDetailSchema.shape.allMessages
-export type LiveEvaluationConversationInput = TraceDetail["allMessages"]
+export const liveEvaluationSignalContextSchema = evaluationSignalContextSchema
+export type LiveEvaluationSignalContext = EvaluationSignalContext
 
 export const liveEvaluationResultPayloadSchema = evaluationExecutionResultPayloadSchema
 export type LiveEvaluationResultPayload = EvaluationExecutionResultPayload
@@ -38,10 +33,11 @@ const liveEvaluationExecutionTelemetrySchema = z.object({
 })
 
 export const liveEvaluationExecutionInputSchema = z.object({
+  organizationId: z.string().min(1),
+  projectId: z.string().min(1),
   evaluationId: evaluationSchema.shape.id,
   script: evaluationSchema.shape.script,
-  issue: liveEvaluationIssueContextSchema,
-  conversation: liveEvaluationConversationInputSchema,
+  session: z.custom<ScriptSessionContext>((value) => value !== null && typeof value === "object"),
   telemetry: liveEvaluationExecutionTelemetrySchema.optional(),
 })
 export type LiveEvaluationExecutionInput = z.infer<typeof liveEvaluationExecutionInputSchema>
@@ -65,20 +61,18 @@ export const executeLiveEvaluationUseCase = (input: LiveEvaluationExecutionInput
   Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan("evaluation.id", input.evaluationId)
 
-    if (!validateEvaluationScript(input.script)) {
-      return yield* new LiveEvaluationExecutionError({
-        evaluationId: input.evaluationId,
-        message: INVALID_LIVE_EVALUATION_SCRIPT_MESSAGE,
-      })
-    }
-
-    const conversation = toEvaluationConversationMessages(input.conversation)
     const telemetry = toGenerateTelemetryCapture(input.telemetry)
 
-    const execution = yield* executeEvaluationScriptWithAI({
+    const similarity = yield* buildSemanticSimilarityHost({
+      organizationId: OrganizationId(input.organizationId),
+      projectId: ProjectId(input.projectId),
+      traceIds: input.session.traces.map((trace) => trace.id),
+    })
+
+    const execution = yield* executeEvaluationScriptSandboxed({
       script: input.script,
-      conversation,
-      issue: input.issue,
+      session: input.session,
+      similarity,
       ...(telemetry ? { telemetry } : {}),
     }).pipe(
       Effect.catchTag("EvaluationExecutionError", (error) =>
@@ -104,5 +98,5 @@ export const executeLiveEvaluationUseCase = (input: LiveEvaluationExecutionInput
   }).pipe(Effect.withSpan("evaluations.executeLiveEvaluation")) as Effect.Effect<
     LiveEvaluationExecutionResult,
     ExecuteLiveEvaluationError,
-    AI
+    AI | MessageEmbeddingRepository | ScriptRuntime | TraceSearchRepository
   >

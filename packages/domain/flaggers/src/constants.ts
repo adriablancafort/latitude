@@ -1,9 +1,24 @@
 export const FLAGGER_DEFAULT_SAMPLING = 10
 
-export const AMBIGUOUS_FLAGGER_DEFAULT_RATE_LIMIT = {
+// Independent fixed windows per org+slug; sampled sessions with positive hints
+// (satisfaction/resolution) get the smallest budget.
+export const FLAGGER_HINTED_RATE_LIMIT = {
   maxRequests: 30,
   windowSeconds: 60,
 } as const
+
+export const FLAGGER_SAMPLED_RATE_LIMIT = {
+  maxRequests: 25,
+  windowSeconds: 60,
+} as const
+
+export const FLAGGER_SAMPLED_POSITIVE_RATE_LIMIT = {
+  maxRequests: 5,
+  windowSeconds: 60,
+} as const
+
+export const FLAGGER_PROMPT_MAX_HINTS = 20
+export const FLAGGER_HINT_EVIDENCE_MAX_CHARS = 256
 
 export const FLAGGER_CONTEXT_WINDOW = 8
 
@@ -13,29 +28,32 @@ export const MAX_SUSPICIOUS_SNIPPETS = 5
 export const MAX_EXCERPT_LENGTH = 500
 export const MAX_SNIPPET_EXCERPT_LENGTH = 300
 
-export const FLAGGER_MODEL = {
+export const FLAGGER_DEFAULT_CLASSIFIER_MODEL = {
   provider: "amazon-bedrock",
   model: "anthropic.claude-haiku-4-5-20251001-v1:0",
   temperature: 0,
+  maxTokens: 512,
 } as const
 
-export const FLAGGER_MAX_TOKENS = 2048
-
-export const FLAGGER_INSTRUCTION_EXTRACTOR_MODEL = {
+export const FLAGGER_DEFAULT_INSTRUCTION_EXTRACTOR_MODEL = {
   provider: "amazon-bedrock",
   model: "minimax.minimax-m2.5",
   temperature: 0,
+  maxTokens: 512,
 } as const
 
-export const FLAGGER_INSTRUCTION_EXTRACTOR_MAX_TOKENS = 512
-
-export const FLAGGER_ANNOTATOR_MODEL = {
+export const FLAGGER_DEFAULT_ANNOTATOR_MODEL = {
   provider: "amazon-bedrock",
   model: "minimax.minimax-m2.5",
   temperature: 0.2,
+  maxTokens: 2048,
 } as const
 
-export const FLAGGER_ANNOTATOR_MAX_TOKENS = 2048
+export const FLAGGER_INSPECTED_AGENT_VERBATIM_MAX_CHARS = 6_000
+
+export const FLAGGER_INSPECTED_AGENT_SIMILARITY_MAX_HAMMING = 6
+
+export const FLAGGER_INSPECTED_AGENT_INDEX_MAX_ENTRIES = 16
 
 export const FLAGGER_DRAFT_DEFAULTS = {
   passed: false,

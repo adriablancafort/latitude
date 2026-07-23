@@ -1,13 +1,15 @@
-import { context, ProxyTracerProvider, propagation, type TracerProvider, trace } from "@opentelemetry/api"
+import { context, ProxyTracerProvider, propagation, type Tracer, type TracerProvider, trace } from "@opentelemetry/api"
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks"
 import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from "@opentelemetry/core"
 import { resourceFromAttributes } from "@opentelemetry/resources"
 import { NodeTracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace-node"
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions"
+import { SCOPE_LATITUDE } from "../constants/scope.ts"
 import { warnProjectSlugDeprecated } from "./_deprecation.ts"
 import { registerLatitudeInstrumentations } from "./instrumentations.ts"
 import { LatitudeSpanProcessor } from "./processor.ts"
-import type { InitLatitudeOptions, LatitudeOptions } from "./types.ts"
+import { latitudeAttributesFromContext, withLatitudeAttributes } from "./tracer.ts"
+import type { ContextOptions, InitLatitudeOptions, LatitudeOptions } from "./types.ts"
 
 const SERVICE_NAME = process.env.npm_package_name || "unknown"
 const DETECT_PROBE = "@latitude-data/telemetry-detect"
@@ -72,7 +74,7 @@ export class Latitude {
   private readonly ownsProvider: boolean
 
   constructor(options: LatitudeOptions) {
-    const { apiKey, project, projectSlug, instrumentations = {}, tracerProvider, ...processorOptionsRaw } = options
+    const { apiKey, project, projectSlug, instrumentations = [], tracerProvider, ...processorOptionsRaw } = options
 
     if (!apiKey || apiKey.trim() === "") {
       throw new Error("[Latitude] apiKey is required and cannot be empty")
@@ -147,11 +149,14 @@ export class Latitude {
       this.provider = latitudeProvider
     }
 
-    this.ready = registerLatitudeInstrumentations({
-      instrumentations,
-      tracerProvider: this.provider,
-    }).catch((err) => {
-      console.warn("[Latitude] Failed to register instrumentations:", err)
+    this.ready = Promise.resolve().then(() =>
+      registerLatitudeInstrumentations({
+        instrumentations,
+        tracerProvider: this.provider,
+      }),
+    )
+    void this.ready.catch((err) => {
+      console.error("[Latitude] Failed to register instrumentations:", err)
     })
 
     if (!shutdownHandlersRegistered) {
@@ -177,6 +182,14 @@ export class Latitude {
     }
 
     await this.latitudeProcessor.forceFlush()
+  }
+
+  getTracer(scope: string, context?: ContextOptions): Tracer {
+    const tracerName =
+      scope === SCOPE_LATITUDE || scope.startsWith(`${SCOPE_LATITUDE}.`) ? scope : `${SCOPE_LATITUDE}.${scope}`
+    const tracer = this.provider.getTracer(tracerName)
+    if (context === undefined) return tracer
+    return withLatitudeAttributes(tracer, latitudeAttributesFromContext(context))
   }
 
   private async handleShutdown(): Promise<void> {

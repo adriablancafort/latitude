@@ -4,9 +4,40 @@ import type { Client } from "@temporalio/client"
 import { Connection, WorkflowExecutionAlreadyStartedError } from "@temporalio/client"
 import { Cause, Effect } from "effect"
 import { describe, expect, it, vi } from "vitest"
-import { createTemporalClientEffect, createWorkflowStarter, TemporalConnectionError } from "./client.ts"
+import {
+  createTemporalClientEffect,
+  createWorkflowStarter,
+  resolveWorkflowFailureReason,
+  TemporalConnectionError,
+} from "./client.ts"
 
 silenceLoggerInTests()
+
+describe("resolveWorkflowFailureReason", () => {
+  it("unwraps Temporal's wrapper chain to the innermost activity failure message", () => {
+    // Mirrors WorkflowFailedError -> ActivityFailure -> ApplicationFailure.
+    const applicationFailure = new Error(
+      'Cannot generate an evaluation for signal "X": at least 1 of its traces must be annotated by a human first.',
+    )
+    const activityFailure = new Error("Activity task failed", { cause: applicationFailure })
+    const workflowFailure = new Error("Workflow execution failed", { cause: activityFailure })
+
+    expect(resolveWorkflowFailureReason(workflowFailure)).toBe(
+      'Cannot generate an evaluation for signal "X": at least 1 of its traces must be annotated by a human first.',
+    )
+  })
+
+  it("keeps the last meaningful message when the innermost error has none", () => {
+    const inner = new Error("", { cause: undefined })
+    const outer = new Error("the real reason", { cause: inner })
+
+    expect(resolveWorkflowFailureReason(outer)).toBe("the real reason")
+  })
+
+  it("returns null for a non-error value", () => {
+    expect(resolveWorkflowFailureReason(undefined)).toBeNull()
+  })
+})
 
 describe("createTemporalClientEffect", () => {
   it("maps connection failures to TemporalConnectionError", async () => {
@@ -93,7 +124,7 @@ describe("createWorkflowStarter", () => {
     const exit = await Effect.runPromise(
       Effect.exit(
         starter.start(
-          "issueDiscoveryWorkflow",
+          "signalDiscoveryWorkflow",
           {
             organizationId: "org-1",
             projectId: "proj-1",
@@ -112,14 +143,14 @@ describe("createWorkflowStarter", () => {
         expect(errOpt.value).toBeInstanceOf(WorkflowAlreadyStartedError)
         expect(errOpt.value).toMatchObject({
           _tag: "WorkflowAlreadyStartedError",
-          workflow: "issueDiscoveryWorkflow",
+          workflow: "signalDiscoveryWorkflow",
           workflowId: "issue-discovery:org-1:proj-1:score-1",
         })
       }
     }
     expect(start).toHaveBeenCalledTimes(1)
     expect(start).toHaveBeenCalledWith(
-      "issueDiscoveryWorkflow",
+      "signalDiscoveryWorkflow",
       expect.objectContaining({
         workflowId: "issue-discovery:org-1:proj-1:score-1",
         workflowIdConflictPolicy: "FAIL",
@@ -178,6 +209,41 @@ describe("createWorkflowStarter", () => {
     )
   })
 
+  it("passes startDelayMs through to Temporal startDelay", async () => {
+    const start = vi.fn(async () => ({ firstExecutionRunId: "run-abc" }))
+    const client = {
+      workflow: {
+        start,
+      },
+    } as unknown as Client
+
+    const starter = createWorkflowStarter(client, {
+      address: "127.0.0.1:7233",
+      namespace: "default",
+      taskQueue: "workflows",
+    })
+
+    await expect(
+      Effect.runPromise(
+        starter.start(
+          "signalDiscoveryWorkflow",
+          {
+            organizationId: "org-1",
+            projectId: "proj-1",
+            scoreId: "score-1",
+          },
+          { workflowId: "issue-discovery:org-1:proj-1:score-1", startDelayMs: 12_000 },
+        ),
+      ),
+    ).resolves.toBeUndefined()
+    expect(start).toHaveBeenCalledWith(
+      "signalDiscoveryWorkflow",
+      expect.objectContaining({
+        startDelay: 12_000,
+      }),
+    )
+  })
+
   it("resolves when the start call opens a fresh execution", async () => {
     const start = vi.fn(async () => ({ firstExecutionRunId: "run-abc" }))
     const client = {
@@ -195,7 +261,7 @@ describe("createWorkflowStarter", () => {
     await expect(
       Effect.runPromise(
         starter.start(
-          "issueDiscoveryWorkflow",
+          "signalDiscoveryWorkflow",
           {
             organizationId: "org-1",
             projectId: "proj-1",
@@ -207,7 +273,7 @@ describe("createWorkflowStarter", () => {
     ).resolves.toBeUndefined()
     expect(start).toHaveBeenCalledTimes(1)
     expect(start).toHaveBeenCalledWith(
-      "issueDiscoveryWorkflow",
+      "signalDiscoveryWorkflow",
       expect.objectContaining({
         workflowIdConflictPolicy: "FAIL",
         workflowIdReusePolicy: "ALLOW_DUPLICATE",

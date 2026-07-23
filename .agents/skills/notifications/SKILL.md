@@ -56,14 +56,14 @@ Producers compute everything; consumers act idempotently. See dev-doc for detail
 
 A new group adds a new user-visible preferences toggle and (optionally) a new project-level gate.
 
-1. Add the group to `NOTIFICATION_GROUPS` and `NOTIFICATION_GROUP_META` in `packages/domain/shared/src/notification-preferences.ts`. `notificationPreferencesSchema` is built from `NOTIFICATION_GROUPS` and auto-extends.
+1. Add the group to `NOTIFICATION_GROUPS` and `NOTIFICATION_GROUP_META` in `packages/domain/shared/src/notification-preferences.ts` (groups today: `incidents`, `wrapped_reports`, `custom_messages`, `personal`). `notificationPreferencesSchema` is built from `NOTIFICATION_GROUPS` and auto-extends. Set `slackRoutable` on the meta: non-routable groups (e.g. `personal` — single-recipient kinds) are hidden from the Slack routes settings, rejected by the route-config server fns, and skipped by the worker's Slack fan-out; the Slack renderer registry still needs a (stub) entry because it is exhaustive.
 2. The user-prefs settings page (`apps/web/src/routes/_authenticated/settings/account.tsx`) iterates `NOTIFICATION_GROUPS` to render toggles — the new group appears **automatically** with its label/description from the meta.
 3. Add at least one kind to the new group (use the "Adding a new kind" steps).
 4. **Project-level gate (optional)** — only if the new group should be opt-out-able per project:
    - Add a slot to `notificationsSettingSchema` in `packages/domain/shared/src/settings.ts`.
    - Define the inner shape (per-kind, per-target, simple boolean — whatever's useful at the project level).
    - Add a helper next to `isIncidentNotificationEnabled` and call it from the new producer use case before fan-out.
-   - Update the API `ProjectSettingsSchema` in `apps/api/src/routes/projects.ts` and regenerate openapi/mcp:
+   - Update the API `ProjectSettingsSchema` in `packages/operations/src/operations/projects.ts` and regenerate openapi/mcp:
      ```sh
      pnpm --filter @app/api openapi:emit
      pnpm --filter @app/api mcp:emit
@@ -86,7 +86,7 @@ Source events, the producer step, the in-app feed, and the kind registry are all
 
 ## Embedding server-rendered images in emails
 
-Pattern lives in `apps/api/src/routes/charts/incident-trend.ts` — useful when a new kind wants a richer email visual than HTML/CSS can produce.
+Pattern lives in `apps/web/src/routes/api/notifications/$nid/incident-trend[.]png.ts` — useful when a new kind wants a richer email visual than HTML/CSS can produce.
 
 1. **URL**: build at render time from a stable id (notification id). The `buildChartUrl` helper in `@domain/email` embeds the id as a path param. No signing today — the CUID is unguessable and the chart payload is project-internal trend data. If you're embedding more sensitive data (PII, credentials, content the recipient shouldn't see), HMAC-sign the id first; the chart route's TODO points at the contained change.
 2. **Render**: TanStack Start file route under `apps/web/src/routes/api/` (project convention for machine-facing routes in `apps/web` — see `api/health.ts`, `api/auth/…`). Use `satori` (JSX → SVG) + `@resvg/resvg-js` (SVG → PNG). Already in `apps/web`'s deps because the wrapped OG card uses the same pipeline. Keeping all PNG-rendering routes in `apps/web` keeps `apps/api` strictly to the authenticated public + MCP surface.

@@ -4,15 +4,9 @@ import { useQueryClient } from "@tanstack/react-query"
 import { ArrowRightIcon, CheckIcon, Loader2Icon, TelescopeIcon, XIcon } from "lucide-react"
 import { useMemo, useRef, useState } from "react"
 import { useApiKeysCollection } from "../../../../../domains/api-keys/api-keys.collection.ts"
-import type { ProjectRecord } from "../../../../../domains/projects/projects.functions.ts"
+import { projectScopeData, projectScopeKey, useProjectScope } from "../../../../../domains/projects/project-scope.tsx"
 import { countTracesByProject } from "../../../../../domains/traces/traces.functions.ts"
-import type { StackChoice } from "./onboarding/steps/stack-step.tsx"
 import { TelemetryInstructions } from "./onboarding/steps/telemetry-instructions.tsx"
-
-/** Map the project's persisted onboarding type to the telemetry-step stack variant. */
-function stackChoiceFromOnboardingType(onboardingType: ProjectRecord["settings"]["onboardingType"]): StackChoice {
-  return onboardingType === "code-agents" ? "coding-agent-machine" : "production-agent"
-}
 
 /**
  * Empty state for a project that has never received a trace. Keeps the surface
@@ -26,21 +20,32 @@ function stackChoiceFromOnboardingType(onboardingType: ProjectRecord["settings"]
  * and just needs to retarget it); otherwise it frames a first-time setup.
  */
 export function TracesEmptyOnboarding({
-  project,
+  projectId,
+  projectSlug,
   orgHasConnectedProjects,
+  apiKeyToken,
 }: {
-  readonly project: ProjectRecord
+  readonly projectId: string
+  readonly projectSlug: string
   readonly orgHasConnectedProjects: boolean
+  /**
+   * Explicit API-key token to display (sandbox passes its `lat_sandbox_` key).
+   * When omitted, the card reads the live org's default key from the collection.
+   */
+  readonly apiKeyToken?: string | null
 }) {
   const queryClient = useQueryClient()
-  const stackChoice = stackChoiceFromOnboardingType(project.settings.onboardingType)
+  // When mounted under a sandbox scope, the poll + cache invalidation target the
+  // sandbox org (not the session's live org), so the empty state correctly waits
+  // for the *sandbox's* first trace and transitions when it lands.
+  const scope = useProjectScope()
 
   const [traceReceived, setTraceReceived] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
   const pollTimeoutRef = useRef<number | undefined>(undefined)
   const transitionTimeoutRef = useRef<number | undefined>(undefined)
-  const projectIdRef = useRef(project.id)
-  projectIdRef.current = project.id
+  const projectIdRef = useRef(projectId)
+  projectIdRef.current = projectId
 
   // Poll for the first trace (same cadence as the onboarding flow). Once a
   // trace lands, flash a confirmation, then invalidate the projects + traces
@@ -62,14 +67,18 @@ export function TracesEmptyOnboarding({
     const poll = async () => {
       if (cancelled) return
       try {
-        const count = await countTracesByProject({ data: { projectId: projectIdRef.current } })
+        const count = await countTracesByProject({
+          data: { ...projectScopeData(scope), projectId: projectIdRef.current },
+        })
         if (cancelled) return
         if (count > 0) {
           setTraceReceived(true)
           transitionTimeoutRef.current = window.setTimeout(() => {
             if (cancelled) return
-            void queryClient.invalidateQueries({ queryKey: ["projects"] })
-            void queryClient.invalidateQueries({ queryKey: ["traces-count"] })
+            void queryClient.invalidateQueries({
+              queryKey: scope.kind === "sandbox" ? ["sandbox-projects", scope.orgId] : ["projects"],
+            })
+            void queryClient.invalidateQueries({ queryKey: [...projectScopeKey(scope), "traces-count"] })
           }, 1500)
           return
         }
@@ -106,18 +115,14 @@ export function TracesEmptyOnboarding({
       {/* Layer 3: the actual centered content. */}
       <div className="absolute inset-0 flex items-center justify-center overflow-y-auto p-8">
         <ConnectCard
-          project={project}
+          projectSlug={projectSlug}
           orgHasConnectedProjects={orgHasConnectedProjects}
           traceReceived={traceReceived}
           onOpenSetup={() => setSetupOpen(true)}
+          apiKeyToken={apiKeyToken}
         />
       </div>
-      <TracesSetupSheet
-        open={setupOpen}
-        onClose={() => setSetupOpen(false)}
-        stackChoice={stackChoice}
-        projectSlug={project.slug}
-      />
+      <TracesSetupSheet open={setupOpen} onClose={() => setSetupOpen(false)} projectSlug={projectSlug} />
     </div>
   )
 }
@@ -171,21 +176,29 @@ function TracesSkeletonBackdrop() {
 }
 
 function ConnectCard({
-  project,
+  projectSlug,
   orgHasConnectedProjects,
   traceReceived,
   onOpenSetup,
+  apiKeyToken,
 }: {
-  readonly project: ProjectRecord
+  readonly projectSlug: string
   readonly orgHasConnectedProjects: boolean
   readonly traceReceived: boolean
   readonly onOpenSetup: () => void
+  readonly apiKeyToken?: string | null | undefined
 }) {
+  const scope = useProjectScope()
   const { data: apiKeysList } = useApiKeysCollection()
   const defaultApiKeyToken = useMemo(() => {
+    // An explicit token (sandbox passes its own `lat_sandbox_` key) wins. The
+    // live keys collection is parent-scoped, so never show it under a sandbox
+    // scope — that would route dev traffic to production.
+    if (apiKeyToken !== undefined) return apiKeyToken
+    if (scope) return null
     const keys = apiKeysList ?? []
     return keys.find((k) => k.name === DEFAULT_API_KEY_NAME)?.token ?? null
-  }, [apiKeysList])
+  }, [apiKeysList, scope, apiKeyToken])
 
   const headline = orgHasConnectedProjects ? "Send traces to this project" : "Waiting for your first trace"
   const subcopy = orgHasConnectedProjects
@@ -209,7 +222,7 @@ function ConnectCard({
       <div className="flex flex-col items-start gap-2">
         <div className="flex flex-row items-center gap-2">
           <Text.H6 color="foregroundMuted">Project slug</Text.H6>
-          <CopyableText value={project.slug} size="sm" ellipsis tooltip="Copy project slug" />
+          <CopyableText value={projectSlug} size="sm" ellipsis tooltip="Copy project slug" />
         </div>
         <div className="flex flex-row items-center gap-2">
           <Text.H6 color="foregroundMuted">API key</Text.H6>
@@ -248,12 +261,10 @@ function TraceWaitingIndicator({ traceReceived }: { readonly traceReceived: bool
 function TracesSetupSheet({
   open,
   onClose,
-  stackChoice,
   projectSlug,
 }: {
   readonly open: boolean
   readonly onClose: () => void
-  readonly stackChoice: StackChoice
   readonly projectSlug: string
 }) {
   return (
@@ -266,7 +277,7 @@ function TracesSetupSheet({
           </Button>
         </div>
         <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-6">
-          <TelemetryInstructions stackChoice={stackChoice} projectSlug={projectSlug} />
+          <TelemetryInstructions projectSlug={projectSlug} />
         </div>
       </div>
     </Sheet>

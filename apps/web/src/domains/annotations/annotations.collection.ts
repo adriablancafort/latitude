@@ -71,7 +71,7 @@ export function useAnnotationsByTrace({
       listAnnotationsByTrace({
         data: { projectId, traceId, limit, offset, draftMode: effectiveDraftMode },
       }),
-    enabled,
+    enabled: enabled && projectId.length > 0 && traceId.length > 0,
   })
 }
 
@@ -178,6 +178,7 @@ export function useCreateAnnotation() {
     mutationFn: (input: CreateAnnotationInput) => createAnnotation({ data: input }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["annotations"] })
+      void queryClient.invalidateQueries({ queryKey: ["scores"] })
     },
   })
 }
@@ -189,6 +190,7 @@ export function useUpdateAnnotation() {
     mutationFn: (input: UpdateAnnotationInput) => updateAnnotation({ data: input }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["annotations"] })
+      void queryClient.invalidateQueries({ queryKey: ["scores"] })
     },
   })
 }
@@ -200,6 +202,7 @@ export function useDeleteAnnotation() {
     mutationFn: (input: DeleteAnnotationInput) => deleteAnnotation({ data: input }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["annotations"] })
+      void queryClient.invalidateQueries({ queryKey: ["scores"] })
     },
   })
 }
@@ -245,6 +248,7 @@ export function useApproveSystemAnnotation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["annotations"] })
+      void queryClient.invalidateQueries({ queryKey: ["scores"] })
     },
   })
 }
@@ -284,6 +288,7 @@ export function useRejectSystemAnnotation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["annotations"] })
+      void queryClient.invalidateQueries({ queryKey: ["scores"] })
     },
   })
 }

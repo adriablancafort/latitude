@@ -1,4 +1,4 @@
-import { Context, type Effect } from "effect"
+import { Context, Effect } from "effect"
 import type { QueuePublishError, QueueSubscribeError, WorkflowAlreadyStartedError } from "./errors.ts"
 import type { TopicRegistry as TR } from "./topic-registry.ts"
 import type { WorkflowRegistry as WR } from "./workflow-registry.ts"
@@ -37,7 +37,7 @@ export interface WorkflowStarterShape {
   readonly start: <W extends WorkflowName>(
     workflow: W,
     input: WorkflowInput<W>,
-    options: { readonly workflowId: string },
+    options: { readonly workflowId: string; readonly startDelayMs?: number },
   ) => Effect.Effect<void, WorkflowAlreadyStartedError>
   readonly signalWithStart: <W extends WorkflowName>(
     workflow: W,
@@ -65,11 +65,27 @@ export type WorkflowExecutionStatus =
   | "paused"
   | "unknown"
 
+// Statuses a workflow can never leave — the execution is done and will not
+// advance further. `running` / `paused` / `continued-as-new` are still live,
+// and `unknown` is treated as not-terminal (conservative: don't assume done).
+const TERMINAL_WORKFLOW_STATUSES = new Set<WorkflowExecutionStatus>([
+  "completed",
+  "failed",
+  "canceled",
+  "terminated",
+  "timed-out",
+])
+
+/** Whether a workflow execution has reached a final state (won't progress). */
+export const isTerminalWorkflowStatus = (status: WorkflowExecutionStatus): boolean =>
+  TERMINAL_WORKFLOW_STATUSES.has(status)
+
 export type WorkflowDescription = {
   readonly status: WorkflowExecutionStatus
   readonly runId: string
   readonly startTime: Date
   readonly closeTime: Date | null
+  readonly failure: string | null
 }
 
 export interface WorkflowQuerierShape {
@@ -80,6 +96,18 @@ export interface WorkflowQuerierShape {
 export class WorkflowQuerier extends Context.Service<WorkflowQuerier, WorkflowQuerierShape>()(
   "@domain/queue/WorkflowQuerier",
 ) {}
+
+/**
+ * Whether the workflow with `workflowId` is still live — it exists and hasn't
+ * reached a terminal status. A missing workflow (never durably started, or
+ * already GC'd) counts as not alive.
+ */
+export const isWorkflowAliveUseCase = (workflowId: string): Effect.Effect<boolean, never, WorkflowQuerier> =>
+  Effect.gen(function* () {
+    const querier = yield* WorkflowQuerier
+    const description = yield* querier.describe(workflowId)
+    return description !== null && !isTerminalWorkflowStatus(description.status)
+  })
 
 export interface PublishOptions {
   readonly dedupeKey?: string
@@ -184,14 +212,37 @@ export class QueuePublisher extends Context.Service<QueuePublisher, QueuePublish
   "@domain/queue/QueuePublisher",
 ) {}
 
-export interface SubscribeOptions {
+/** Attempt accounting for a terminally-failed job, passed to {@link FinalFailureHandlers}. */
+export interface FinalFailureContext {
+  readonly attemptsMade: number
+  readonly attemptsConfigured: number
+}
+
+/**
+ * Per-task hooks that run once a job has exhausted its BullMQ attempts (the
+ * terminal failure, not every failed attempt). Best-effort: they run outside
+ * the job lifecycle, so a hook that throws is logged, not retried. Use for
+ * accounting that must survive retry exhaustion (e.g. incrementing a failure
+ * counter). The hook Effect must be self-contained — it runs against the
+ * consumer's base context, so provide its own layers.
+ */
+export type FinalFailureHandlers<T extends QueueName> = {
+  [K in TaskName<T>]?: (
+    payload: TopicRegistry[T][K],
+    error: Error,
+    context: FinalFailureContext,
+  ) => Effect.Effect<void, unknown>
+}
+
+export interface SubscribeOptions<T extends QueueName = QueueName> {
   readonly concurrency?: number
+  readonly onFinalFailure?: FinalFailureHandlers<T>
 }
 
 export interface QueueConsumer {
   readonly start: () => Effect.Effect<void, QueueSubscribeError>
   readonly stop: () => Effect.Effect<void>
-  readonly subscribe: <T extends QueueName>(queue: T, handlers: TaskHandlers<T>, options?: SubscribeOptions) => void
+  readonly subscribe: <T extends QueueName>(queue: T, handlers: TaskHandlers<T>, options?: SubscribeOptions<T>) => void
 }
 
 export { QueueClientError, QueuePublishError, QueueSubscribeError, WorkflowAlreadyStartedError } from "./errors.ts"

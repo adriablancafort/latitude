@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import type { OtlpEvent, OtlpKeyValue } from "../types.ts"
 import { resolveAttributes } from "./index.ts"
 import { resolvePerformance } from "./performance.ts"
+import { resolveStatusCode } from "./status.ts"
 import { resolveToolExecution } from "./tool-execution.ts"
+import { resolveUsage } from "./usage.ts"
 import { first, fromFloat, fromInt, fromString, fromStringArray } from "./utils.ts"
 
 function strAttr(key: string, value: string): OtlpKeyValue {
@@ -144,6 +146,33 @@ describe("resolveAttributes", () => {
       expect(result.provider).toBe("openai")
     })
 
+    it("resolves from OpenInference llm.provider (DSPy, no llm.system)", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("llm.provider", "openai")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.provider).toBe("openai")
+    })
+
+    it("resolves from OpenInference LangChain metadata (ls_provider)", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("metadata", JSON.stringify({ ls_provider: "openai", ls_model_name: "gpt-5.5" })),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.provider).toBe("openai")
+    })
+
+    it("case-folds non-canonical provider casing", () => {
+      const cases: [string, string, string][] = [
+        ["gen_ai.system", "Google", "google"],
+        ["llm.system", "OpenAI", "openai"],
+        ["llm.provider", "Anthropic", "anthropic"],
+      ]
+      for (const [key, input, expected] of cases) {
+        const attrs: OtlpKeyValue[] = [strAttr(key, input)]
+        const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+        expect(result.provider).toBe(expected)
+      }
+    })
+
     it("resolves from Vercel ai.model.provider and strips suffix", () => {
       const attrs: OtlpKeyValue[] = [strAttr("ai.model.provider", "openai.chat")]
       const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
@@ -157,9 +186,24 @@ describe("resolveAttributes", () => {
         ["gen_ai.system", "vertexai", "google-vertex"],
         ["gen_ai.system", "mistralai", "mistral"],
         ["gen_ai.system", "mistral_ai", "mistral"],
+        ["gen_ai.system", "workersai.chat", "cloudflare-workers-ai"],
         ["ai.model.provider", "google.vertex.chat", "google-vertex"],
         ["ai.model.provider", "anthropic.messages", "anthropic"],
         ["ai.model.provider", "google.generative-ai", "google"],
+        ["ai.model.provider", "workersai.chat", "cloudflare-workers-ai"],
+        // Vercel AI SDK v7 (@ai-sdk/otel) OTel GenAI well-known provider names
+        ["gen_ai.provider.name", "gcp.vertex_ai", "google-vertex"],
+        ["gen_ai.provider.name", "gcp.gemini", "google"],
+        ["gen_ai.provider.name", "aws.bedrock", "amazon-bedrock"],
+        ["gen_ai.provider.name", "azure.ai.openai", "azure"],
+        ["gen_ai.provider.name", "azure.ai.inference", "azure"],
+        ["gen_ai.provider.name", "mistral_ai", "mistral"],
+        ["gen_ai.provider.name", "x_ai", "xai"],
+        // Google ADK (OpenInference) reports the Vertex agent provider name
+        ["llm.provider", "gcp.vertex.agent", "google-vertex"],
+        // v7 also passes these through unchanged (already canonical)
+        ["gen_ai.provider.name", "openai", "openai"],
+        ["gen_ai.provider.name", "anthropic", "anthropic"],
       ]
 
       for (const [key, input, expected] of cases) {
@@ -201,6 +245,79 @@ describe("resolveAttributes", () => {
     })
   })
 
+  describe("agent name resolution", () => {
+    it("resolves from OTEL gen_ai.agent.name", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("gen_ai.agent.name", "npc_actor")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("npc_actor")
+    })
+
+    it("resolves from OpenAI Agents openai.agents.name", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("openai.agents.name", "researcher")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("researcher")
+    })
+
+    it("resolves from Claude Code subagent.name", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("subagent.name", "Explore")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("Explore")
+    })
+
+    it("resolves from Claude Code subagent.type", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("subagent.type", "general-purpose")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("general-purpose")
+    })
+
+    it("resolves from OpenClaw openclaw.subagent.label", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("openclaw.subagent.label", "planner")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("planner")
+    })
+
+    it("resolves from OpenClaw openclaw.agent.name", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("openclaw.agent.name", "main-agent")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("main-agent")
+    })
+
+    it("resolves from Latitude latitude.capture.name", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("latitude.capture.name", "capture-agent")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("capture-agent")
+    })
+
+    it("resolves the name half of Claude Code subagent.id as a last resort", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("subagent.id", "Explore:ab6332237989040a9")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("Explore")
+    })
+
+    it("prefers subagent.type over the id-embedded subagent.id name", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("subagent.id", "Explore:ab6332237989040a9"),
+        strAttr("subagent.type", "general-purpose"),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("general-purpose")
+    })
+
+    it("prefers gen_ai.agent.name over lower-ranked candidates", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("subagent.type", "general-purpose"),
+        strAttr("gen_ai.agent.name", "npc_actor"),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.agentName).toBe("npc_actor")
+    })
+
+    it("defaults to empty string when no candidate present", () => {
+      const result = resolveAttributes({ spanAttrs: [], statusCode: "unset" })
+      expect(result.agentName).toBe("")
+    })
+  })
+
   describe("response model resolution", () => {
     it("resolves from gen_ai.response.model", () => {
       const attrs: OtlpKeyValue[] = [strAttr("gen_ai.response.model", "gpt-4o-2024-05-13")]
@@ -222,6 +339,22 @@ describe("resolveAttributes", () => {
       expect(result.operation).toBe("chat")
     })
 
+    it("maps GenAI operation names emitted by Vercel AI SDK v7 (@ai-sdk/otel)", () => {
+      const cases: [string, string][] = [
+        ["invoke_agent", "invoke_agent"],
+        ["chat", "chat"],
+        ["execute_tool", "execute_tool"],
+        ["embeddings", "embeddings"],
+        ["rerank", "reranker"], // normalized to our Operation literal
+      ]
+
+      for (const [name, expected] of cases) {
+        const attrs: OtlpKeyValue[] = [strAttr("gen_ai.operation.name", name)]
+        const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+        expect(result.operation).toBe(expected)
+      }
+    })
+
     it("maps OpenInference span kinds to operation names", () => {
       const cases: [string, string][] = [
         ["LLM", "chat"],
@@ -241,6 +374,30 @@ describe("resolveAttributes", () => {
       }
     })
 
+    it("maps OpenClaw diagnostics-otel run/tool spans by name (scope `openclaw`)", () => {
+      expect(
+        resolveAttributes({ spanAttrs: [], statusCode: "unset", spanName: "openclaw.run", scopeName: "openclaw" })
+          .operation,
+      ).toBe("invoke_agent")
+      expect(
+        resolveAttributes({
+          spanAttrs: [strAttr("gen_ai.tool.name", "bash")],
+          statusCode: "unset",
+          spanName: "openclaw.tool.execution",
+          scopeName: "openclaw",
+        }).operation,
+      ).toBe("execute_tool")
+      // model.call keeps its gen_ai.operation.name (not overridden by the scope map).
+      expect(
+        resolveAttributes({
+          spanAttrs: [strAttr("gen_ai.operation.name", "chat")],
+          statusCode: "unset",
+          spanName: "openclaw.model.call",
+          scopeName: "openclaw",
+        }).operation,
+      ).toBe("chat")
+    })
+
     it("maps OpenLLMetry request types", () => {
       const cases: [string, string][] = [
         ["chat", "chat"],
@@ -256,14 +413,18 @@ describe("resolveAttributes", () => {
       }
     })
 
-    it("maps Vercel operation IDs", () => {
+    it("maps Vercel operation IDs (nested wrappers → agent_step, leaves → chat)", () => {
       const cases: [string, string][] = [
-        ["ai.generateText", "chat"],
+        ["ai.generateText", "agent_step"],
+        ["ai.streamText", "agent_step"],
+        ["ai.generateObject", "agent_step"],
+        ["ai.streamObject", "agent_step"],
         ["ai.generateText.doGenerate", "chat"],
-        ["ai.streamText", "chat"],
         ["ai.streamText.doStream", "chat"],
-        ["ai.generateObject", "chat"],
+        ["ai.generateObject.doGenerate", "chat"],
+        ["ai.streamObject.doStream", "chat"],
         ["ai.embed", "embeddings"],
+        ["ai.embed.doEmbed", "embeddings"],
         ["ai.toolCall", "execute_tool"],
       ]
 
@@ -272,6 +433,42 @@ describe("resolveAttributes", () => {
         const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
         expect(result.operation).toBe(expected)
       }
+    })
+
+    it("maps a trace-root Vercel wrapper (no parent) → invoke_agent", () => {
+      const wrappers = ["ai.generateText", "ai.streamText", "ai.generateObject", "ai.streamObject"]
+      for (const opId of wrappers) {
+        const attrs: OtlpKeyValue[] = [strAttr("ai.operationId", opId)]
+        const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset", hasParent: false })
+        expect(result.operation).toBe("invoke_agent")
+      }
+    })
+
+    it("maps Latitude openai-agents bridge span kinds", () => {
+      const cases: [string, string][] = [
+        ["agents.function", "execute_tool"],
+        ["agents.agent", "invoke_agent"],
+        ["agents.trace", "invoke_agent"],
+        ["agents.handoff", "invoke_agent"],
+        ["agents.guardrail", "guardrail"],
+      ]
+
+      for (const [kind, expected] of cases) {
+        const attrs: OtlpKeyValue[] = [strAttr("latitude.span.kind", kind)]
+        const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+        expect(result.operation).toBe(expected)
+      }
+    })
+
+    it("prefers gen_ai.operation.name over latitude.span.kind on the bridge LLM span", () => {
+      // The bridge's generation/response spans carry both attributes; the
+      // standard GenAI op must win so they resolve to `chat`, not the wrapper kind.
+      const attrs: OtlpKeyValue[] = [
+        strAttr("gen_ai.operation.name", "chat"),
+        strAttr("latitude.span.kind", "agents.generation"),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.operation).toBe("chat")
     })
   })
 
@@ -396,6 +593,19 @@ describe("resolveAttributes", () => {
       const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
       expect(result.costTotalMicrocents).toBe(0)
     })
+
+    it("estimates cost for Google ADK gcp.vertex.agent provider after alias", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("llm.provider", "gcp.vertex.agent"),
+        strAttr("llm.model_name", "gemini-2.5-flash"),
+        intAttr("gen_ai.usage.input_tokens", 100),
+        intAttr("gen_ai.usage.output_tokens", 50),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.provider).toBe("google-vertex")
+      expect(result.costIsEstimated).toBe(true)
+      expect(result.costTotalMicrocents).toBeGreaterThan(0)
+    })
   })
 
   describe("response metadata", () => {
@@ -431,6 +641,30 @@ describe("resolveAttributes", () => {
         expect(result.finishReasons).toEqual([expected])
       }
     })
+
+    it("resolves OpenInference singular llm.finish_reason", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("llm.finish_reason", "tool_calls")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.finishReasons).toEqual(["tool_calls"])
+    })
+  })
+
+  describe("metadata resolution", () => {
+    it("resolves OpenRouter Broadcast trace metadata", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("trace.metadata.environment", "staging"),
+        intAttr("trace.metadata.retry_count", 2),
+        boolAttr("trace.metadata.beta", true),
+        kvlistAttr("trace.metadata.request", { route: "chat", step: 3 }),
+      ]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.metadata).toEqual({
+        environment: "staging",
+        retry_count: "2",
+        beta: "true",
+        request: JSON.stringify({ route: "chat", step: 3 }),
+      })
+    })
   })
 
   describe("session ID resolution", () => {
@@ -444,6 +678,18 @@ describe("resolveAttributes", () => {
       const attrs: OtlpKeyValue[] = [strAttr("session.id", "sess-456")]
       const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
       expect(result.sessionId).toBe("sess-456")
+    })
+
+    it("resolves from Eve eve.session.id", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("eve.session.id", "eve-sess-789")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.sessionId).toBe("eve-sess-789")
+    })
+
+    it("falls back to Eve eve.turn.id when no session id is present", () => {
+      const attrs: OtlpKeyValue[] = [strAttr("eve.turn.id", "eve-turn-1")]
+      const result = resolveAttributes({ spanAttrs: attrs, statusCode: "unset" })
+      expect(result.sessionId).toBe("eve-turn-1")
     })
   })
 
@@ -786,6 +1032,20 @@ describe("resolveToolExecution", () => {
     })
   })
 
+  describe("Latitude openai-agents TS bridge convention", () => {
+    it("extracts from openai.agents.function.* attributes", () => {
+      const attrs: OtlpKeyValue[] = [
+        strAttr("openai.agents.function.name", "get_weather"),
+        strAttr("openai.agents.function.input", '{"city":"Barcelona"}'),
+        strAttr("openai.agents.function.output", "The weather in Barcelona is sunny and 22°C."),
+      ]
+      const result = resolveToolExecution(attrs, "execute_tool")
+      expect(result.toolName).toBe("get_weather")
+      expect(result.toolInput).toBe('{"city":"Barcelona"}')
+      expect(result.toolOutput).toBe("The weather in Barcelona is sunny and 22°C.")
+    })
+  })
+
   describe("defaults", () => {
     it("returns empty strings when no matching attributes are present", () => {
       const result = resolveToolExecution([], "execute_tool")
@@ -794,5 +1054,85 @@ describe("resolveToolExecution", () => {
       expect(result.toolInput).toBe("")
       expect(result.toolOutput).toBe("")
     })
+  })
+})
+
+describe("resolveUsage — embedded message usage (OpenClaw)", () => {
+  // OpenClaw buries usage + provider cost in the assistant message JSON instead
+  // of flat gen_ai.usage.* attrs. Tokens are additive (input excludes cache).
+  const outputMessages = (usage: unknown) =>
+    strAttr("openclaw.content.output_messages", JSON.stringify([{ role: "assistant", content: [], usage }]))
+
+  it("reads additive tokens + provider cost (not estimated), folding cache into input", () => {
+    const u = resolveUsage({
+      attrs: [
+        outputMessages({
+          input: 951,
+          output: 127,
+          cacheRead: 20864,
+          cacheWrite: 0,
+          reasoningTokens: 0,
+          totalTokens: 21942,
+          cost: { input: 0.004755, output: 0.00381, cacheRead: 0.010432, cacheWrite: 0, total: 0.018997 },
+        }),
+      ],
+      provider: "openai",
+      model: "gpt-5.5",
+    })
+    expect(u.tokensInput).toBe(951) // additive — not reduced by cache
+    expect(u.tokensOutput).toBe(127)
+    expect(u.tokensCacheRead).toBe(20864)
+    expect(u.tokensCacheCreate).toBe(0)
+    expect(u.tokensReasoning).toBe(0)
+    expect(u.costInputMicrocents).toBe(1_518_700) // (0.004755 + 0.010432) * 1e8
+    expect(u.costOutputMicrocents).toBe(381_000)
+    expect(u.costTotalMicrocents).toBe(1_899_700)
+    expect(u.costIsEstimated).toBe(false)
+  })
+
+  it("falls back to flat gen_ai.usage.* attrs when there is no embedded usage", () => {
+    const u = resolveUsage({
+      attrs: [intAttr("gen_ai.usage.input_tokens", 100), intAttr("gen_ai.usage.output_tokens", 20)],
+      provider: "openai",
+      model: "gpt-5.5",
+    })
+    expect(u.tokensInput).toBe(100)
+    expect(u.tokensOutput).toBe(20)
+  })
+
+  it("ignores output_messages that carry no usage object", () => {
+    const u = resolveUsage({
+      attrs: [strAttr("openclaw.content.output_messages", JSON.stringify([{ role: "assistant", content: [] }]))],
+      provider: "openai",
+      model: "gpt-5.5",
+    })
+    expect(u.tokensInput).toBe(0)
+    expect(u.tokensOutput).toBe(0)
+  })
+})
+
+describe("resolveStatusCode", () => {
+  it("passes the OTel status through for non-OpenClaw scopes", () => {
+    expect(resolveStatusCode([], "unset", "openinference")).toBe("unset")
+    expect(resolveStatusCode([], "ok", "openinference")).toBe("ok")
+    expect(resolveStatusCode([], "error", "openinference")).toBe("error")
+  })
+
+  it("treats unset OpenClaw spans as ok (success is signalled out-of-band, not via OTel status)", () => {
+    expect(resolveStatusCode([], "unset", "openclaw")).toBe("ok")
+    expect(resolveStatusCode([strAttr("openclaw.outcome", "completed")], "unset", "openclaw")).toBe("ok")
+  })
+
+  it("keeps OpenClaw spans the plugin explicitly marked as error", () => {
+    expect(resolveStatusCode([], "error", "openclaw")).toBe("error")
+  })
+
+  it("marks an OpenClaw span as error when its outcome is not a success value", () => {
+    expect(resolveStatusCode([strAttr("openclaw.outcome", "error")], "unset", "openclaw")).toBe("error")
+    expect(resolveStatusCode([strAttr("openclaw.outcome", "abandoned")], "unset", "openclaw")).toBe("error")
+  })
+
+  it("lets a failing outcome override an OTel ok status", () => {
+    expect(resolveStatusCode([strAttr("openclaw.outcome", "abandoned")], "ok", "openclaw")).toBe("error")
   })
 })

@@ -2,6 +2,7 @@
 
 export type {
   CustomMessagePayload,
+  DestinationQuarantinedPayload,
   IncidentBreach,
   IncidentClosedPayload,
   IncidentEventPayload,
@@ -13,10 +14,14 @@ export type {
   IncidentTrendMarker,
   Notification,
   NotificationKind,
+  SignalAssignedPayload,
+  SignalDiscoveredPayload,
+  SignalRegressedPayload,
   WrappedReportPayload,
 } from "./entities/notification.ts"
 export {
   customMessagePayloadSchema,
+  destinationQuarantinedPayloadSchema,
   groupOf,
   incidentBreachSchema,
   incidentClosedPayloadSchema,
@@ -32,6 +37,9 @@ export {
   notificationKindSchema,
   notificationSchema,
   payloadSchemaFor,
+  signalAssignedPayloadSchema,
+  signalDiscoveredPayloadSchema,
+  signalRegressedPayloadSchema,
   wrappedReportPayloadSchema,
 } from "./entities/notification.ts"
 export { shouldSendEmail } from "./entities/notification-preferences.ts"
@@ -86,6 +94,13 @@ export type {
 } from "./use-cases/mark-notification-seen.ts"
 export { markNotificationSeenUseCase } from "./use-cases/mark-notification-seen.ts"
 export type {
+  DestinationQuarantinedNotificationRequest,
+  RequestDestinationQuarantinedNotificationsError,
+  RequestDestinationQuarantinedNotificationsInput,
+  RequestDestinationQuarantinedNotificationsResult,
+} from "./use-cases/request-destination-quarantined-notifications.ts"
+export { requestDestinationQuarantinedNotificationsUseCase } from "./use-cases/request-destination-quarantined-notifications.ts"
+export type {
   IncidentNotificationKind,
   IncidentNotificationRequest,
   IncidentTransition,
@@ -94,6 +109,27 @@ export type {
   RequestIncidentNotificationsResult,
 } from "./use-cases/request-incident-notifications.ts"
 export { requestIncidentNotificationsUseCase } from "./use-cases/request-incident-notifications.ts"
+export type {
+  RequestSignalAssignedNotificationsError,
+  RequestSignalAssignedNotificationsInput,
+  RequestSignalAssignedNotificationsResult,
+  SignalAssignedNotificationRequest,
+} from "./use-cases/request-signal-assigned-notifications.ts"
+export { requestSignalAssignedNotificationsUseCase } from "./use-cases/request-signal-assigned-notifications.ts"
+export type {
+  RequestSignalDiscoveredNotificationsError,
+  RequestSignalDiscoveredNotificationsInput,
+  RequestSignalDiscoveredNotificationsResult,
+  SignalDiscoveredNotificationRequest,
+} from "./use-cases/request-signal-discovered-notifications.ts"
+export { requestSignalDiscoveredNotificationsUseCase } from "./use-cases/request-signal-discovered-notifications.ts"
+export type {
+  RequestSignalRegressedNotificationsError,
+  RequestSignalRegressedNotificationsInput,
+  RequestSignalRegressedNotificationsResult,
+  SignalRegressedNotificationRequest,
+} from "./use-cases/request-signal-regressed-notifications.ts"
+export { requestSignalRegressedNotificationsUseCase } from "./use-cases/request-signal-regressed-notifications.ts"
 export type {
   RequestWrappedReportNotificationsError,
   RequestWrappedReportNotificationsInput,

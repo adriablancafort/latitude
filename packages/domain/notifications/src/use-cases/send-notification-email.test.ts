@@ -58,6 +58,7 @@ function setup(
           settings: null,
           firstTraceAt: null,
           deletedAt: null,
+          linkedProjectId: null,
           lastEditedAt: new Date("2026-05-01T00:00:00Z"),
           createdAt: new Date("2026-05-01T00:00:00Z"),
           updatedAt: new Date("2026-05-01T00:00:00Z"),
@@ -71,16 +72,21 @@ function setup(
     metadata: null,
     settings: null,
     parentOrgId: opts.sandbox ? OrganizationId(cuid("parent")) : null,
+    expiresAt: null,
     createdAt: new Date("2026-05-01T00:00:00Z"),
     updatedAt: new Date("2026-05-01T00:00:00Z"),
   }
   const organizationRepo = OrganizationRepository.of({
     findById: (id) =>
       id === orgId ? Effect.succeed(organization) : Effect.fail(new NotFoundError({ entity: "Organization", id })),
+    findByIdForUpdate: (id) =>
+      id === orgId ? Effect.succeed(organization) : Effect.fail(new NotFoundError({ entity: "Organization", id })),
     listByUserId: () => Effect.die("not used"),
     save: () => Effect.die("not used"),
     delete: () => Effect.die("not used"),
+    deleteIfExpiredUnclaimed: () => Effect.die("not used"),
     countBySlug: () => Effect.die("not used"),
+    listExpiredUnclaimed: () => Effect.die("not used"),
   })
 
   const projectRepo = ProjectRepository.of({
@@ -145,7 +151,7 @@ const makeStoredNotification = (params: {
   kind: "incident.opened",
   idempotencyKey: `incident.opened:${cuid("ai")}`,
   projectId: params.projectId ?? null,
-  payload: { incidentKind: "issue.new", alertIncidentId: cuid("ai") },
+  payload: { incidentKind: "signal.discovered", alertIncidentId: cuid("ai") },
   createdAt: new Date(),
   seenAt: null,
   emailedAt: null,

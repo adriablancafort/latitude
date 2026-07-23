@@ -14,6 +14,8 @@ latitude-lock.json
 .idea
 .vscode
 .opencode
+.artifacts
+.pi
 
 # Docs autoupdate (generated in CI / local runs)
 scripts/docs-autoupdate/.pr-body.md
@@ -148,3 +150,6 @@ workflow-test-output.txt
 # Better auth schema reference. Used to track schema drift between our custom
 # schema and better auth's default schema.
 packages/platform/db-postgres/better-auth.schema.reference.ts
+__pycache__/
+.conductor/
+.vercel

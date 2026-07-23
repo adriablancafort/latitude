@@ -1,6 +1,8 @@
 import { PRO_PLAN_CONFIG, SELF_SERVE_PLAN_SLUGS } from "@domain/billing"
+import { stashSignupAttribution } from "@domain/marketing"
 import type { QueuePublisherShape, WorkflowQuerierShape, WorkflowStarterShape } from "@domain/queue"
 import { generateId, OrganizationId, type StorageDiskPort } from "@domain/shared"
+import { isSsoEnforcedForEmailUseCase } from "@domain/sso"
 import { createRedisClient, createRedisConnection, RedisCacheStoreLive, type RedisClient } from "@platform/cache-redis"
 import { type ClickHouseClient, createClickhouseClient } from "@platform/db-clickhouse"
 import {
@@ -10,7 +12,9 @@ import {
   invalidateEffectivePlanCache,
   type PostgresClient,
   SqlClientLive,
+  SsoProviderRepositoryLive,
   type StripePlanConfig,
+  withPostgres,
 } from "@platform/db-postgres"
 import { parseEnv, parseEnvOptional } from "@platform/env"
 import { createBullMqQueuePublisher, loadBullMqConfig } from "@platform/queue-bullmq"
@@ -25,6 +29,8 @@ import { withTracing } from "@repo/observability"
 import { mcp } from "better-auth/plugins"
 import { tanstackStartCookies } from "better-auth/tanstack-start"
 import { Effect } from "effect"
+import { parseSignupAttributionCookie } from "../lib/analytics/signup-attribution-cookie.ts"
+import { createMagicLinkConfirmationUrl } from "../lib/auth/magic-link.ts"
 
 let postgresClientInstance: PostgresClient | undefined
 let adminPostgresClientInstance: PostgresClient | undefined
@@ -194,10 +200,19 @@ export const getBetterAuth = () => {
       ...(stripeSecretKey ? { stripeSecretKey } : {}),
       ...(stripeWebhookSecret ? { stripeWebhookSecret } : {}),
       ...(selfServePlans.length > 0 ? { subscriptionPlans: selfServePlans } : {}),
+      // Pre-auth lookup (no org context yet) → admin client. See the
+      // `session.create.before` hook in `createBetterAuth` for where this
+      // blocks magic-link/social sign-ins on enforced SSO domains.
+      isSsoEnforcedForEmail: async (email) =>
+        await Effect.runPromise(
+          isSsoEnforcedForEmailUseCase({ email }).pipe(
+            withPostgres(SsoProviderRepositoryLive, getAdminPostgresClient()),
+            withTracing,
+          ),
+        ),
       extraPlugins: [
-        tanstackStartCookies(),
         // OAuth2/OIDC authorization server for MCP clients (Claude Code,
-        // Cursor, …). Issues opaque random access + refresh tokens that the
+        // Cursor, …). Signals opaque random access + refresh tokens that the
         // API resource server validates via `@platform/oauth-token-auth`.
         // The consent page binds the issued token to a specific organization;
         // until that route ships, the default BA consent UI renders and
@@ -211,6 +226,11 @@ export const getBetterAuth = () => {
             // same value so consent redirects use the same login URL.
             loginPage: `${webUrl}/login`,
             consentPage: `${webUrl}/auth/consent`,
+            // Pi's MCP harness omits `scope` in its authorization request.
+            // Better Auth only returns refresh tokens when the granted scopes
+            // include `offline_access`, so keep that in the AS default rather
+            // than advertising it as a protected-resource requirement.
+            defaultScope: "openid offline_access",
             requirePKCE: true,
             // RFC 7591 dynamic client registration. MCP clients (Claude Code,
             // Cursor, ...) hit `POST /api/auth/mcp/register` before any user
@@ -227,7 +247,27 @@ export const getBetterAuth = () => {
             allowDynamicClientRegistration: true,
           },
         }),
+        // Cookie integration MUST be the last plugin in the array. Better Auth
+        // only forwards `Set-Cookie` headers into the TanStack Start cookie
+        // store for plugins whose `hooks.after` run *before* it; any plugin
+        // placed after this one could set cookies that never reach the
+        // framework (BA logs a warning when it isn't last).
+        tanstackStartCookies(),
       ],
+      onBeforeUserCreate: async (user, request) => {
+        const attribution = parseSignupAttributionCookie(request?.headers.get("cookie"))
+        if (!attribution) return
+        try {
+          await Effect.runPromise(
+            stashSignupAttribution({ email: user.email, attribution }).pipe(
+              Effect.provide(RedisCacheStoreLive(getRedisClient())),
+              withTracing,
+            ),
+          )
+        } catch {
+          // Never block account creation on attribution.
+        }
+      },
       onUserCreated: async (user) => {
         await Effect.runPromise(
           outboxWriter
@@ -268,7 +308,7 @@ export const getBetterAuth = () => {
               organizationId: "system",
               payload: {
                 email,
-                magicLinkUrl: url,
+                magicLinkUrl: createMagicLinkConfirmationUrl({ verificationUrl: url, webUrl }),
                 organizationId: "system",
               },
             })

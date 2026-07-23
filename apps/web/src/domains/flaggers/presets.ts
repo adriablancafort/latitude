@@ -18,10 +18,12 @@ export const FLAGGER_USE_CASE_PRESETS = [
       "frustration",
       "refusal",
       "forgetting",
+      "incompletion",
       "tool-call-errors",
       "empty-response",
       "jailbreaking",
       "nsfw",
+      "pii-leakage",
     ],
   },
   {
@@ -31,31 +33,51 @@ export const FLAGGER_USE_CASE_PRESETS = [
     enabledSlugs: [
       "laziness",
       "trashing",
+      "bluffing",
+      "incompletion",
       "tool-call-errors",
       "empty-response",
       "refusal",
       "forgetting",
       "output-schema-validation",
       "frustration",
+      "low-cache-hit-rate",
     ],
   },
   {
     id: "sales-agent",
     label: "Sales agent",
     description: "Lead qualification and buyer-facing assistants where tone and follow-through matter.",
-    enabledSlugs: ["frustration", "refusal", "forgetting", "empty-response", "jailbreaking", "nsfw"],
+    enabledSlugs: ["frustration", "refusal", "forgetting", "incompletion", "empty-response", "jailbreaking", "nsfw"],
   },
   {
     id: "tool-workflow-agent",
     label: "Tool workflow agent",
     description: "Agents that coordinate tools, APIs, and structured workflows.",
-    enabledSlugs: ["tool-call-errors", "trashing", "output-schema-validation", "empty-response", "laziness"],
+    enabledSlugs: [
+      "tool-call-errors",
+      "trashing",
+      "bluffing",
+      "incompletion",
+      "output-schema-validation",
+      "empty-response",
+      "laziness",
+      "low-cache-hit-rate",
+    ],
   },
   {
     id: "knowledge-base-agent",
     label: "Knowledge-base agent",
     description: "RAG and documentation assistants that need to preserve context and answer directly.",
-    enabledSlugs: ["forgetting", "refusal", "empty-response", "frustration", "laziness"],
+    enabledSlugs: [
+      "forgetting",
+      "refusal",
+      "incompletion",
+      "empty-response",
+      "frustration",
+      "laziness",
+      "low-cache-hit-rate",
+    ],
   },
   {
     id: "structured-extraction-agent",
@@ -67,7 +89,7 @@ export const FLAGGER_USE_CASE_PRESETS = [
     id: "safety-agent",
     label: "Safety agent",
     description: "Moderation and policy-sensitive assistants exposed to adversarial or unsafe inputs.",
-    enabledSlugs: ["nsfw", "jailbreaking", "refusal", "frustration", "empty-response"],
+    enabledSlugs: ["nsfw", "jailbreaking", "refusal", "frustration", "empty-response", "pii-leakage"],
   },
 ] as const satisfies ReadonlyArray<FlaggerUseCasePreset>
 
@@ -86,6 +108,12 @@ export const FLAGGER_GROUPS = [
     slugs: ["empty-response", "tool-call-errors", "output-schema-validation"],
   },
   {
+    id: "cost-efficiency",
+    label: "Cost & efficiency",
+    description: "Free deterministic checks for token waste and broken caching.",
+    slugs: ["low-cache-hit-rate"],
+  },
+  {
     id: "user-signals",
     label: "User-side signals",
     description: "LLM-based detection of risky or unhappy user behavior.",
@@ -95,7 +123,7 @@ export const FLAGGER_GROUPS = [
     id: "agent-behavior",
     label: "Agent behavior",
     description: "LLM-based detection of failure modes in the agent's own output.",
-    slugs: ["refusal", "laziness", "forgetting", "trashing"],
+    slugs: ["refusal", "laziness", "forgetting", "incompletion", "trashing", "bluffing", "pii-leakage"],
   },
 ] as const satisfies ReadonlyArray<FlaggerGroup>
 
@@ -114,6 +142,7 @@ const ONBOARDING_GROUP_ORDER: ReadonlyArray<(typeof FLAGGER_GROUPS)[number]["id"
   "user-signals",
   "agent-behavior",
   "response-validity",
+  "cost-efficiency",
 ]
 
 export const FLAGGER_ONBOARDING_ORDER: ReadonlyArray<FlaggerPresetSlug> = ONBOARDING_GROUP_ORDER.flatMap(

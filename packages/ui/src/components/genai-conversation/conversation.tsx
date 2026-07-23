@@ -4,7 +4,7 @@ import { type ReactNode, type Ref, type RefObject, useCallback, useMemo, useRef 
 import type { GenAIMessage } from "rosetta-ai"
 import { ScrollNavigator, type ScrollNavigatorHandle } from "../scroll-navigator/scroll-navigator.tsx"
 import { Tooltip } from "../tooltip/tooltip.tsx"
-import { Message, type ToolCallActions } from "./message.tsx"
+import { Message, type SubagentToolCalls, type ToolCallActions } from "./message.tsx"
 import type { ToolCallResult } from "./part.tsx"
 import { getKnownField } from "./parts/helpers.tsx"
 import { SelectionActionPopover } from "./selection-action-popover.tsx"
@@ -16,14 +16,33 @@ import {
   TextSelectionProvider,
 } from "./text-selection.tsx"
 
-function SemanticRegionFrame({ children }: { readonly children: ReactNode }) {
+const DEFAULT_REGION_LABEL = "Related to your search"
+const DEFAULT_REGION_TOOLTIP: ReactNode =
+  "AI flagged these messages as related to your search by meaning, not just exact words."
+
+/**
+ * Frames a contiguous run of messages as a highlighted region with a small
+ * corner label. Defaults to the semantic-search copy, but `label`/`tooltip`
+ * let other features (e.g. issue occurrence examples) reuse the same treatment.
+ */
+function SemanticRegionFrame({
+  children,
+  label = DEFAULT_REGION_LABEL,
+  tooltip = DEFAULT_REGION_TOOLTIP,
+}: {
+  readonly children: ReactNode
+  readonly label?: ReactNode
+  readonly tooltip?: ReactNode
+}) {
   return (
     <div className="relative flex min-w-0 flex-col gap-6 rounded-lg bg-primary/3 px-4 py-6 ring-1 ring-primary/30 dark:bg-primary/6">
       <div className="absolute -top-3 right-3 z-10 inline-flex h-6 items-center gap-1.5 rounded bg-primary px-2 text-xs font-medium text-primary-foreground">
-        <span className="leading-none">Related to your search</span>
-        <Tooltip trigger={<Icon icon={InfoIcon} size="sm" aria-label="Explain related search match" />}>
-          AI flagged these messages as related to your search by meaning, not just exact words.
-        </Tooltip>
+        <span className="leading-none">{label}</span>
+        {tooltip ? (
+          <Tooltip trigger={<Icon icon={InfoIcon} size="sm" aria-label="Explain highlighted region" />}>
+            {tooltip}
+          </Tooltip>
+        ) : null}
       </div>
       {children}
     </div>
@@ -86,7 +105,26 @@ function normalizeMessage(message: GenAIMessage): GenAIMessage {
     return { ...message, parts: [{ type: "text" as const, content }] }
   }
 
-  return message
+  return { ...message, parts: [] }
+}
+
+function hasSelectionInContainer(container: HTMLElement | null): boolean {
+  const selection = window.getSelection()
+  if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) return false
+  if (!selection.toString().trim()) return false
+
+  for (let i = 0; i < selection.rangeCount; i++) {
+    const range = selection.getRangeAt(i)
+    if (
+      container.contains(range.startContainer) ||
+      container.contains(range.endContainer) ||
+      container.contains(range.commonAncestorContainer)
+    ) {
+      return true
+    }
+  }
+
+  return false
 }
 
 export function Conversation({
@@ -99,6 +137,8 @@ export function Conversation({
   nextLabel,
   messageActions,
   toolCallActions,
+  subagentToolCalls,
+  failedToolCallIds,
   onTextSelect,
   onSelectionDismiss,
   clearSelectionRef,
@@ -107,6 +147,7 @@ export function Conversation({
   onAnnotationClick,
   messageAnnotationSlot,
   messageTrailingSlot,
+  regionLabel,
 }: {
   readonly messages: readonly (GenAIMessage | null)[]
   readonly enableNavigator?: boolean
@@ -127,6 +168,10 @@ export function Conversation({
   readonly messageActions?: ReadonlyMap<number, () => void>
   /** Map of toolCallId → action, renders a navigate button inside each ToolCallBlock. */
   readonly toolCallActions?: ToolCallActions
+  /** Map of toolCallId → subagent decoration, marks tool calls that spawned a subagent. */
+  readonly subagentToolCalls?: SubagentToolCalls | undefined
+  /** Tool calls whose execution span errored — renders them as failed even if the part claims success. */
+  readonly failedToolCallIds?: ReadonlySet<string> | undefined
   /** Called when the user selects text within a message part. Emits the canonical anchor and popover position. */
   readonly onTextSelect?:
     | ((anchor: TextSelectionAnchor, position: { x: number; y: number }, passed: boolean | null) => void)
@@ -145,6 +190,8 @@ export function Conversation({
   readonly messageAnnotationSlot?: ((messageIndex: number, role: string) => ReactNode) | undefined
   /** Renders a full-width slot below each message (e.g. semantic moment markers). Receives the original messageIndex and role. */
   readonly messageTrailingSlot?: ((messageIndex: number, role: string) => ReactNode) | undefined
+  /** Overrides the corner label/tooltip on `search-semantic-region` frames (defaults to the search copy). */
+  readonly regionLabel?: { readonly label: ReactNode; readonly tooltip?: ReactNode } | undefined
 }) {
   const internalNavItemRefs = useRef<(HTMLDivElement | null)[]>([])
   // If the parent provides navItemRefsRef it owns the ScrollNavigator; use their ref directly.
@@ -154,7 +201,7 @@ export function Conversation({
 
   const handleContainerClick = useCallback(
     (e: React.MouseEvent) => {
-      if (!onAnnotationClick) return
+      if (!onAnnotationClick || hasSelectionInContainer(containerRef.current)) return
       const target = (e.target as HTMLElement).closest<HTMLElement>("[data-annotation-id]")
       if (!target) return
 
@@ -290,6 +337,8 @@ export function Conversation({
                     toolResults={message.role === "assistant" ? resultMap : undefined}
                     {...(onNavigate ? { onNavigate } : {})}
                     {...(toolCallActions ? { toolCallActions } : {})}
+                    {...(subagentToolCalls ? { subagentToolCalls } : {})}
+                    {...(failedToolCallIds ? { failedToolCallIds } : {})}
                   />
                   {annotationSlot && <div className="mt-3">{annotationSlot}</div>}
                 </div>
@@ -301,7 +350,14 @@ export function Conversation({
 
         if (group.kind === "semantic") {
           const firstIndex = group.items[0]?.index ?? groupIdx
-          return [<SemanticRegionFrame key={`semantic-${firstIndex}`}>{rendered}</SemanticRegionFrame>]
+          return [
+            <SemanticRegionFrame
+              key={`semantic-${firstIndex}`}
+              {...(regionLabel ? { label: regionLabel.label, tooltip: regionLabel.tooltip ?? null } : {})}
+            >
+              {rendered}
+            </SemanticRegionFrame>,
+          ]
         }
         return rendered
       })}

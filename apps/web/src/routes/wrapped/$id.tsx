@@ -1,10 +1,10 @@
 import type { ReportVersion, WrappedReportRecord, WrappedReportType } from "@domain/spans"
 import { createFileRoute, notFound } from "@tanstack/react-router"
 import { getWrappedPageData } from "../../domains/wrapped/wrapped.functions.ts"
-import { WEB_BASE_URL } from "../../lib/auth-config.ts"
 import { TITLE_FOR_KIND } from "./-components/claude-code/v1/personality-copy.ts"
 import { WrappedReportV1 } from "./-components/claude-code/v1/WrappedReportV1.tsx"
 import { WrappedReportV2 } from "./-components/claude-code/v2/WrappedReportV2.tsx"
+import { WrappedReportV3 } from "./-components/claude-code/v3/WrappedReportV3.tsx"
 
 /**
  * Public Wrapped report. The CUID `$id` is the access token for *seeing
@@ -26,6 +26,7 @@ export const Route = createFileRoute("/wrapped/$id")({
     if (!result.found) throw notFound()
     return {
       record: result.record,
+      webBaseUrl: result.webBaseUrl,
       isMember: result.isMember,
       loggedIn: result.loggedIn,
       leaderboard: result.leaderboard,
@@ -40,13 +41,14 @@ export const Route = createFileRoute("/wrapped/$id")({
         ],
       }
     }
-    const { record } = loaderData
+    const { record, webBaseUrl } = loaderData
     const archetype = TITLE_FOR_KIND[record.report.personality.kind] ?? "The Wrapped"
     const title = `${record.ownerName}'s Claude Code Wrapped`
     const description = `${record.ownerName} is ${archetype} this week. See the full Wrapped.`
     // og:image must be an absolute URL — crawlers (Slack, Twitter, etc.)
-    // fetch it without a page-relative base, so a relative path 404s.
-    const ogImage = `${WEB_BASE_URL}/wrapped/${params.id}/og/png`
+    // fetch it without a page-relative base, so a relative path 404s. The base
+    // is the runtime LAT_WEB_URL the loader resolved, not a build-time bake.
+    const ogImage = `${webBaseUrl}/wrapped/${params.id}/og/png`
     return {
       meta: [
         { title },
@@ -73,7 +75,7 @@ export const Route = createFileRoute("/wrapped/$id")({
  * with their frozen renderer.
  */
 const RENDERER_BY_TYPE_VERSION = {
-  claude_code: { 1: WrappedReportV1, 2: WrappedReportV2 },
+  claude_code: { 1: WrappedReportV1, 2: WrappedReportV2, 3: WrappedReportV3 },
 } as const satisfies Record<
   WrappedReportType,
   Record<ReportVersion, (props: { record: WrappedReportRecord; isMember: boolean }) => React.ReactNode>

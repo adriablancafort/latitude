@@ -1,49 +1,46 @@
-import {
-  ALERT_INCIDENT_SOURCE_TYPES,
-  type AlertIncident,
-  type AlertIncidentKind,
-  AlertIncidentRepository,
-  type AlertSeverity,
-} from "@domain/alerts"
-import { IssueRepository, type IssueWithLifecycle } from "@domain/issues"
-import { formatHumanReadableAlert } from "@domain/monitors"
+import { type AlertSeverity, type Incident, IncidentRepository } from "@domain/incidents"
+import { formatHumanReadableRule } from "@domain/monitors"
 import { type IncidentMonitorInfo, IncidentMonitorReader } from "@domain/notifications"
-import { SavedSearchRepository } from "@domain/saved-searches"
-import { IssueId, OrganizationId, ProjectId, SavedSearchId } from "@domain/shared"
 import {
-  AlertIncidentRepositoryLive,
-  IncidentMonitorReaderLive,
-  IssueRepositoryLive,
-  SavedSearchRepositoryLive,
-  withPostgres,
-} from "@platform/db-postgres"
+  type IncidentNotificationKey,
+  type IncidentSourceType,
+  incidentSourceTypeSchema,
+  ProjectId,
+  SignalId,
+} from "@domain/shared"
+import { SignalRepository, type SignalWithLifecycle } from "@domain/signals"
+import { IncidentMonitorReaderLive, IncidentRepositoryLive, SignalRepositoryLive } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import { z } from "zod"
-import { requireSession } from "../../server/auth.ts"
 import { getPostgresClient } from "../../server/clients.ts"
+import { resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 
-const listProjectAlertIncidentsInRangeInputSchema = z.object({
+export const listProjectAlertIncidentsInRangeInputSchema = z.object({
   projectId: z.string(),
   fromIso: z.iso.datetime(),
   toIso: z.iso.datetime(),
-  sourceType: z.enum(ALERT_INCIDENT_SOURCE_TYPES).optional(),
+  // TODO: remove once old browser bundles (pre-June-2026 issues→signals rename) are fully cycled out
+  sourceType: z.preprocess((v) => (v === "issue" ? "signal" : v), incidentSourceTypeSchema).optional(),
   sourceId: z.string().min(1).optional(),
 })
 
 export interface AlertIncidentRecord {
   readonly id: string
   readonly projectId: string
-  readonly kind: AlertIncidentKind
+  readonly kind: IncidentNotificationKey
   readonly severity: AlertSeverity
-  readonly sourceType: AlertIncident["sourceType"]
-  readonly sourceId: string
+  readonly sourceType: IncidentSourceType
+  readonly sourceId: string | null
   readonly startedAt: string
   readonly endedAt: string | null
   /** Resolved name of the issue tied to the incident; `null` if not found (e.g., deleted). */
-  readonly issueName: string | null
-  /** Resolved name of the saved search tied to the incident (the source); `null` on issue rows or when deleted. */
+  readonly signalName: string | null
+  /** Resolved slug of the issue tied to the incident, for the deep link; `null` if not found. */
+  readonly signalSlug: string | null
+  /** Resolved name of the saved search tied to the monitor, when available. */
   readonly savedSearchName: string | null
   /** Owning monitor name + slug for the attribution line + deep link; `null` on legacy or issue rows. */
   readonly monitorName: string | null
@@ -52,50 +49,64 @@ export interface AlertIncidentRecord {
   readonly conditionSummary: string | null
 }
 
+const notificationKeyForIncident = (incident: Incident): IncidentNotificationKey => {
+  if (incident.sourceType === "signal") return "signal.escalating"
+  return incident.condition?.trigger === "escalating"
+    ? "monitor.escalating"
+    : incident.condition?.trigger === "threshold"
+      ? "monitor.threshold"
+      : "monitor.match"
+}
+
 const toRecord = (
-  incident: AlertIncident,
-  issue: IssueWithLifecycle | undefined,
+  incident: Incident,
+  issue: SignalWithLifecycle | undefined,
   savedSearchName: string | undefined,
   monitor: IncidentMonitorInfo | undefined,
-): AlertIncidentRecord => ({
-  id: incident.id,
-  projectId: incident.projectId,
-  kind: incident.kind,
-  severity: incident.severity,
-  sourceType: incident.sourceType,
-  sourceId: incident.sourceId,
-  startedAt: incident.startedAt.toISOString(),
-  endedAt: incident.endedAt?.toISOString() ?? null,
-  issueName: issue?.name ?? null,
-  savedSearchName: savedSearchName ?? null,
-  monitorName: monitor?.name ?? null,
-  monitorSlug: monitor?.slug ?? null,
-  conditionSummary: incident.condition
-    ? formatHumanReadableAlert({ kind: incident.kind, condition: incident.condition })
-    : null,
-})
+): AlertIncidentRecord => {
+  const kind = notificationKeyForIncident(incident)
+  return {
+    id: incident.id,
+    projectId: incident.projectId,
+    kind,
+    severity: incident.severity,
+    sourceType: incident.sourceType,
+    sourceId: incident.sourceId,
+    startedAt: incident.startedAt.toISOString(),
+    endedAt: incident.endedAt?.toISOString() ?? null,
+    signalName: issue?.name ?? null,
+    signalSlug: issue?.slug ?? null,
+    savedSearchName: savedSearchName ?? null,
+    monitorName: monitor?.name ?? null,
+    monitorSlug: monitor?.slug ?? null,
+    conditionSummary: incident.condition
+      ? formatHumanReadableRule({
+          trigger: kind.split(".")[1] as "threshold" | "escalating",
+          condition: incident.condition,
+        })
+      : null,
+  }
+}
 
 /**
  * Returns incidents for the project whose lifetime overlaps `[fromIso, toIso]`,
  * enriched with the issue's name/uuid so the histogram tooltip can show a human label
- * without a follow-up request per incident. Issue lookup is best-effort — incidents
- * whose source issue has been deleted still come back, with `issueName: null`.
+ * without a follow-up request per incident. Signal lookup is best-effort — incidents
+ * whose source issue has been deleted still come back, with `signalName: null`.
  */
 export const listProjectAlertIncidentsInRange = createServerFn({
   method: "GET",
 })
   .inputValidator(listProjectAlertIncidentsInRangeInputSchema)
-  .handler(async ({ data }): Promise<{ readonly items: readonly AlertIncidentRecord[] }> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<{ readonly items: readonly AlertIncidentRecord[] }> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
     const pgClient = getPostgresClient()
 
     const items = await Effect.runPromise(
       Effect.gen(function* () {
-        const incidentRepo = yield* AlertIncidentRepository
-        const issueRepo = yield* IssueRepository
-        const savedSearchRepo = yield* SavedSearchRepository
+        const incidentRepo = yield* IncidentRepository
+        const signalRepo = yield* SignalRepository
         const monitorReader = yield* IncidentMonitorReader
 
         const incidents = yield* incidentRepo.listByProjectId({
@@ -107,54 +118,34 @@ export const listProjectAlertIncidentsInRange = createServerFn({
           ...(data.sourceId ? { sourceId: data.sourceId } : {}),
         })
 
-        const issueIds = Array.from(
-          new Set(incidents.filter((i) => i.sourceType === "issue").map((i) => i.sourceId)),
-        ).map(IssueId)
+        const signalIds = Array.from(
+          new Set(incidents.flatMap((i) => (i.sourceType === "signal" ? [i.sourceId] : []))),
+        ).map(SignalId)
 
         const issues =
-          issueIds.length > 0
-            ? yield* issueRepo.findByIds({ projectId, issueIds })
-            : ([] as readonly IssueWithLifecycle[])
-        const issueById = new Map(issues.map((issue) => [issue.id, issue] as const))
+          signalIds.length > 0
+            ? yield* signalRepo.findByIds({ projectId, signalIds })
+            : ([] as readonly SignalWithLifecycle[])
+        const signalById = new Map(issues.map((issue) => [issue.id, issue] as const))
 
-        // Saved-search names are the source label for `savedSearch.*` rows (mirrors the issue name).
-        const savedSearchIds = Array.from(
-          new Set(incidents.filter((i) => i.sourceType === "savedSearch").map((i) => i.sourceId)),
-        )
         const savedSearchNameById = new Map<string, string>()
-        for (const id of savedSearchIds) {
-          const found = yield* savedSearchRepo.findById(SavedSearchId(id)).pipe(
-            Effect.map((s) => s.name),
-            Effect.catchTag("SavedSearchNotFoundError", () => Effect.succeed(null)),
-          )
-          if (found !== null) savedSearchNameById.set(id, found)
-        }
-
-        const monitorAlertIds = Array.from(
-          new Set(incidents.filter((i) => i.monitorAlertId !== null).map((i) => i.monitorAlertId as string)),
-        )
-        const monitorByAlertId = new Map<string, IncidentMonitorInfo>()
-        for (const alertId of monitorAlertIds) {
-          const info = yield* monitorReader.findByAlertId(alertId)
-          if (info) monitorByAlertId.set(alertId, info)
+        const monitorById = new Map<string, IncidentMonitorInfo>()
+        for (const monitorId of new Set(incidents.flatMap((i) => (i.sourceType === "monitor" ? [i.sourceId] : [])))) {
+          const info = yield* monitorReader.findByMonitorId(monitorId)
+          if (info) monitorById.set(monitorId, info)
         }
 
         return incidents.map((incident) =>
           toRecord(
             incident,
-            issueById.get(IssueId(incident.sourceId)),
+            incident.sourceType === "signal" ? signalById.get(SignalId(incident.sourceId)) : undefined,
             savedSearchNameById.get(incident.sourceId),
-            incident.monitorAlertId ? monitorByAlertId.get(incident.monitorAlertId) : undefined,
+            incident.sourceType === "monitor" ? monitorById.get(incident.sourceId) : undefined,
           ),
         )
       }).pipe(
-        withPostgres(
-          Layer.mergeAll(
-            AlertIncidentRepositoryLive,
-            IssueRepositoryLive,
-            SavedSearchRepositoryLive,
-            IncidentMonitorReaderLive,
-          ),
+        withScopedPostgres(
+          Layer.mergeAll(IncidentRepositoryLive, SignalRepositoryLive, IncidentMonitorReaderLive),
           pgClient,
           orgId,
         ),

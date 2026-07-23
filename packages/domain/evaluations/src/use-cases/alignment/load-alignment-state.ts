@@ -1,22 +1,23 @@
-import { BadRequestError, EvaluationId, IssueId, ProjectId } from "@domain/shared"
+import { BadRequestError, EvaluationId, ProjectId, SignalId } from "@domain/shared"
 import { Effect } from "effect"
 import type { LoadedEvaluationAlignmentState } from "../../alignment/types.ts"
+import { emptyEvaluationAlignment } from "../../entities/evaluation.ts"
 import { isDeletedEvaluation } from "../../helpers.ts"
-import { EvaluationIssueRepository } from "../../ports/evaluation-issue-repository.ts"
 import { EvaluationRepository } from "../../ports/evaluation-repository.ts"
+import { EvaluationSignalRepository } from "../../ports/evaluation-signal-repository.ts"
 
 export const loadAlignmentStateUseCase = Effect.fn("evaluations.loadAlignmentState")(function* (input: {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string
 }) {
   yield* Effect.annotateCurrentSpan("evaluation.id", input.evaluationId)
   yield* Effect.annotateCurrentSpan("evaluation.projectId", input.projectId)
-  yield* Effect.annotateCurrentSpan("evaluation.issueId", input.issueId)
+  yield* Effect.annotateCurrentSpan("evaluation.signalId", input.signalId)
 
   const evaluationRepository = yield* EvaluationRepository
-  const issueRepository = yield* EvaluationIssueRepository
+  const signalRepository = yield* EvaluationSignalRepository
   const evaluation = yield* evaluationRepository
     .findById(EvaluationId(input.evaluationId))
     .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(null)))
@@ -33,27 +34,30 @@ export const loadAlignmentStateUseCase = Effect.fn("evaluations.loadAlignmentSta
     })
   }
 
-  if (evaluation.projectId !== ProjectId(input.projectId) || evaluation.issueId !== IssueId(input.issueId)) {
+  if (evaluation.projectId !== ProjectId(input.projectId) || evaluation.signalId !== SignalId(input.signalId)) {
     return yield* new BadRequestError({
       message: `Evaluation ${evaluation.id} does not match the requested issue or project`,
     })
   }
 
-  const issue = yield* issueRepository.findById(IssueId(input.issueId))
+  const issue = yield* signalRepository.findById(SignalId(input.signalId))
 
+  // An unaligned judge (alignment accrues as annotations land) has no matrix yet: present an empty
+  // one keyed on the live script hash so the refresh path rebuilds from scratch.
+  const evaluationHash = evaluation.alignment?.evaluationHash ?? evaluation.scriptHash ?? ""
   return {
     evaluationId: evaluation.id,
-    issueId: evaluation.issueId,
-    issueName: issue.name,
-    issueDescription: issue.description,
+    signalId: evaluation.signalId,
+    signalName: issue.name,
+    signalDescription: issue.description,
     name: evaluation.name,
     description: evaluation.description,
-    alignedAt: evaluation.alignedAt.toISOString(),
+    alignedAt: (evaluation.alignedAt ?? evaluation.updatedAt).toISOString(),
     draft: {
       script: evaluation.script,
-      evaluationHash: evaluation.alignment.evaluationHash,
+      evaluationHash,
       trigger: evaluation.trigger,
     },
-    confusionMatrix: evaluation.alignment.confusionMatrix,
+    confusionMatrix: evaluation.alignment?.confusionMatrix ?? emptyEvaluationAlignment(evaluationHash).confusionMatrix,
   } satisfies LoadedEvaluationAlignmentState
 })

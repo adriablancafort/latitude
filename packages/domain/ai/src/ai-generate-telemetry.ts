@@ -5,7 +5,7 @@
  * Human-facing catalog of each feature (purpose, tags, call sites): `dev-docs/ai-generation-features.md`.
  */
 export const AI_GENERATE_TELEMETRY_TAGS = {
-  issueDetails: ["issue:details"],
+  signalDetails: ["issue:details"],
   annotationEnrichPublication: ["annotation:enrichment"],
   flaggerClassify: ["flagger:classify"],
   // The LLM call that summarizes the flagged agent's system prompt into a bounded
@@ -19,11 +19,19 @@ export const AI_GENERATE_TELEMETRY_TAGS = {
   evaluationJudgeLive: ["eval:execute", "live"],
   evaluationJudgeAlignment: ["eval:execute", "alignment"],
   evaluationJudgeOptimization: ["eval:execute", "optimization"],
+  signalGeneration: ["signal:generation"],
   evaluationProposeOptimization: ["gepa:propose"],
+  // First taxonomy-naming LLM call: proposes candidate topic themes for a cluster.
+  taxonomyProposeThemes: ["taxonomy:propose-themes"],
+  // Second taxonomy-naming LLM call: collapses the candidates into one cluster name + description.
+  taxonomyNameCluster: ["taxonomy:name-cluster"],
+  // Facet extraction: compiles a facet's instructions into a one-sentence answer per session.
+  facetExtract: ["taxonomy:facet-extract"],
+  momentClassifier: ["conversation-intelligence:moment-classifier"],
 } as const satisfies Record<string, readonly string[]>
 
 export const AI_GENERATE_TELEMETRY_SPAN_NAMES = {
-  issueDetails: "issue.details",
+  signalDetails: "issue.details",
   annotationEnrichPublication: "annotation.enrich.publication",
   flaggerClassify: "flagger.classify",
   flaggerExtractInstructions: "flagger.extract-instructions",
@@ -31,7 +39,12 @@ export const AI_GENERATE_TELEMETRY_SPAN_NAMES = {
   evaluationJudgeLive: "evaluation.judge.live",
   evaluationJudgeAlignment: "evaluation.judge.alignment",
   evaluationJudgeOptimization: "evaluation.judge.optimization",
+  signalGeneration: "signal.generation",
   evaluationProposeOptimization: "evaluation.propose.optimization",
+  taxonomyProposeThemes: "taxonomy.propose-themes",
+  taxonomyNameCluster: "taxonomy.name-cluster",
+  facetExtract: "taxonomy.facet-extract",
+  momentClassifier: "conversation-intelligence.moment-classifier",
 } as const satisfies Record<string, string>
 
 export type ProjectScopedAiIds = {

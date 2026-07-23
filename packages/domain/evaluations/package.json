@@ -25,10 +25,13 @@
     "@domain/models": "workspace:*",
     "@domain/optimizations": "workspace:*",
     "@domain/queue": "workspace:*",
+    "@domain/sandbox": "workspace:*",
     "@domain/scores": "workspace:*",
     "@domain/shared": "workspace:*",
     "@domain/spans": "workspace:*",
+    "@repo/utils": "workspace:*",
     "effect": "catalog:",
+    "js-tiktoken": "catalog:",
     "zod": "catalog:"
   }
 }

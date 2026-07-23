@@ -1,5 +1,32 @@
 {
   "$schema": "https://mintlify.com/schema.json",
+  "redirects": [
+    { "source": "/issues/:slug*", "destination": "/signals/:slug*" },
+    {
+      "source": "/more/data-destinations",
+      "destination": "/more/data-destinations/overview"
+    },
+    {
+      "source": "/more/sandbox",
+      "destination": "/observability/features/sandbox"
+    },
+    {
+      "source": "/more/agent-dispatch-cursor",
+      "destination": "/agent-dispatch/cursor"
+    },
+    {
+      "source": "/more/agent-dispatch-claude-code",
+      "destination": "/agent-dispatch/claude-code"
+    },
+    {
+      "source": "/more/agent-dispatch-linear",
+      "destination": "/agent-dispatch/linear"
+    },
+    {
+      "source": "/more/agent-dispatch-webhooks",
+      "destination": "/agent-dispatch/webhooks"
+    }
+  ],
   "theme": "mint",
   "name": "Latitude Docs",
   "favicon": "/favicon.svg",
@@ -63,19 +90,15 @@
         "group": "Overview",
         "pages": [
           "getting-started/introduction",
-          "getting-started/how-to-use-latitude"
+          "getting-started/how-to-use-latitude",
+          "getting-started/self-healing-agents"
         ]
       },
       {
         "group": "Getting Started",
         "pages": [
-          "telemetry/start-tracing"
-        ]
-      },
-      {
-        "group": "Observability",
-        "pages": [
           "telemetry/start-tracing",
+          "telemetry/memory",
           {
             "group": "SDKs",
             "pages": [
@@ -89,31 +112,75 @@
             "pages": [
               "telemetry/providers/openai",
               "telemetry/providers/anthropic",
+              "telemetry/providers/gemini",
               "telemetry/providers/azure",
               "telemetry/providers/amazon-bedrock",
               "telemetry/providers/google-ai-platform",
               "telemetry/providers/vertex-ai",
+              "telemetry/providers/groq",
+              "telemetry/providers/mistral",
+              "telemetry/providers/ollama",
               "telemetry/providers/cohere",
-              "telemetry/providers/together-ai"
+              "telemetry/providers/together-ai",
+              "telemetry/providers/replicate",
+              "telemetry/providers/sagemaker",
+              "telemetry/providers/watsonx",
+              "telemetry/providers/aleph-alpha",
+              "telemetry/providers/transformers"
             ]
           },
           {
             "group": "Frameworks",
             "pages": [
               "telemetry/frameworks/vercel-ai-sdk",
+              "telemetry/frameworks/vercel-ai-sdk-v7",
+              "telemetry/frameworks/cloudflare-think",
               "telemetry/frameworks/openai-agents",
+              "telemetry/frameworks/google-adk",
               "telemetry/frameworks/langchain",
               "telemetry/frameworks/llamaindex",
+              "telemetry/frameworks/crewai",
+              "telemetry/frameworks/haystack",
+              "telemetry/frameworks/litellm",
+              "telemetry/frameworks/dspy",
+              "telemetry/frameworks/pydantic-ai",
               "telemetry/frameworks/mastra",
-              "telemetry/frameworks/strands"
+              "telemetry/frameworks/eve",
+              "telemetry/frameworks/flue",
+              "telemetry/frameworks/strands",
+              "telemetry/frameworks/livekit",
+              "telemetry/frameworks/elevenlabs"
             ]
           },
           {
             "group": "Agent harnesses",
             "pages": [
               "telemetry/claude-code",
+              "telemetry/hermes",
               "telemetry/openclaw",
-              "telemetry/pi-coding-agent"
+              "telemetry/pi-coding-agent",
+              "telemetry/prime-intellect"
+            ]
+          }
+        ]
+      },
+      {
+        "group": "Observe",
+        "pages": [
+          "observability/overview",
+          "observability/sessions",
+          "observability/users",
+          "observability/tools",
+          "observability/memory",
+          "observability/traces",
+          "observability/spans",
+          "observability/tool-calls",
+          {
+            "group": "Search",
+            "pages": [
+              "search/overview",
+              "search/saved-searches",
+              "search/guides/search-and-review-effectively"
             ]
           },
           {
@@ -127,43 +194,33 @@
               "observability/features/percentile-cohorts",
               "observability/features/releases-versioning",
               "observability/features/sampling",
-              "observability/sessions",
               "observability/features/tags",
               "observability/features/token-cost-tracking",
               "observability/features/trace-ids",
               "observability/features/trace-urls",
-              "observability/traces",
-              "observability/features/user-tracking"
+              "observability/features/user-tracking",
+              "observability/features/sandbox"
             ]
           },
           {
             "group": "Guides",
             "pages": [
-              "observability/guides/group-traces-by-project"
+              "observability/guides/group-traces-by-project",
+              "observability/guides/build-a-dashboard"
             ]
           }
         ]
       },
       {
-        "group": "Search",
+        "group": "Understand",
         "pages": [
-          "search/overview",
-          "search/saved-searches",
+          "signals/overview",
+          "signals/create",
+          "signals/management",
+          "search/behaviours",
+          "experiments/overview",
           {
-            "group": "Guides",
-            "pages": [
-              "search/guides/search-and-review-effectively"
-            ]
-          }
-        ]
-      },
-      {
-        "group": "Issues",
-        "pages": [
-          "issues/overview",
-          "issues/management",
-          {
-            "group": "Signals",
+            "group": "Annotations",
             "pages": [
               "annotations/overview",
               "annotations/inline-annotations",
@@ -176,6 +233,8 @@
             "group": "Evaluations",
             "pages": [
               "evaluations/overview",
+              "evaluations/detection-methods",
+              "evaluations/custom-scripts",
               "evaluations/triggers",
               "evaluations/alignment"
             ]
@@ -186,6 +245,38 @@
               "annotations/guides/annotate-effectively"
             ]
           }
+        ]
+      },
+      {
+        "group": "Refine",
+        "pages": [
+          "monitors/overview",
+          {
+            "group": "Agent dispatch",
+            "pages": [
+              "agent-dispatch/overview",
+              {
+                "group": "Integrations",
+                "pages": [
+                  "agent-dispatch/cursor",
+                  "agent-dispatch/claude-code",
+                  "agent-dispatch/linear",
+                  "agent-dispatch/webhooks"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Datasets",
+            "pages": [
+              "datasets/overview",
+              "datasets/add-traces",
+              "datasets/expected-output",
+              "datasets/custom-columns",
+              "datasets/edit-rows"
+            ]
+          },
+          "test-and-fix/regression-testing"
         ]
       },
       {
@@ -204,10 +295,36 @@
         ]
       },
       {
+        "group": "Deployment",
+        "pages": [
+          "deployment/overview",
+          "deployment/single-host",
+          "deployment/cluster",
+          "deployment/configuration"
+        ]
+      },
+      {
+        "group": "Development",
+        "pages": [
+          "development/setup",
+          "development/contributing"
+        ]
+      },
+      {
         "group": "More",
         "pages": [
           "getting-started/concepts",
           "getting-started/mcp",
+          "getting-started/cli",
+          "getting-started/skills",
+          "more/slack",
+          {
+            "group": "Data destinations",
+            "pages": [
+              "more/data-destinations/overview",
+              "more/data-destinations/posthog"
+            ]
+          },
           "more/api-reference"
         ]
       }
@@ -222,6 +339,10 @@
   "integrations": {
     "gtm": {
       "tagId": "GTM-5NWGV24H"
+    },
+    "posthog": {
+      "apiKey": "phc_BWYPiCdzp7A2mGD3PsrXamcxmemNNctkLYMNDHmmYJJb",
+      "sessionRecording": true
     }
   }
 }

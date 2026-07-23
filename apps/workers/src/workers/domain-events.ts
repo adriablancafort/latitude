@@ -1,8 +1,8 @@
 import { BILLING_OVERAGE_SYNC_THROTTLE_MS, buildBillingOverageDedupeKey } from "@domain/billing"
 import type { DomainEvent, EventEnvelope, EventPayloads } from "@domain/events"
-import { ESCALATION_CHECK_THROTTLE_MS, ISSUE_REFRESH_THROTTLE_MS } from "@domain/issues"
 import type { QueueConsumer, QueuePublisherShape } from "@domain/queue"
 import { SCORE_PUBLICATION_DEBOUNCE } from "@domain/scores"
+import { ESCALATION_CHECK_THROTTLE_MS, SIGNAL_REFRESH_THROTTLE_MS } from "@domain/signals"
 import { TRACE_END_DEBOUNCE_MS } from "@domain/spans"
 import { isPostHogTracked } from "@platform/analytics-posthog"
 import { EventEnvelopeSchema } from "@platform/queue-bullmq"
@@ -22,6 +22,17 @@ type EventHandlerMap = {
 }
 
 type EventHandlerFn = (e: DomainEvent) => Effect.Effect<void, unknown>
+
+// TODO(signals): remove once the outbox + domain-events queue have fully drained of legacy
+// `Issue*` event names (post-deploy). Bridges in-flight rows written before the rename so they
+// still dispatch instead of dead-lettering on UnhandledEventError.
+const EVENT_NAME_ALIASES: Record<string, keyof EventPayloads> = {
+  IssueCreated: "SignalCreated",
+  IssueEscalated: "SignalEscalated",
+  IssueAssigneeChanged: "SignalAssigneeChanged",
+  IssueEscalationEnded: "SignalEscalationEnded",
+  ScoreAssignedToIssue: "ScoreAssignedToSignal",
+}
 
 export const createDomainEventsWorker = ({
   consumer,
@@ -44,9 +55,6 @@ export const createDomainEventsWorker = ({
         pub.publish("annotation-scores", "publishHumanAnnotation", payload, {
           dedupeKey: `annotation-scores:publish-human:${payload.scoreId}`,
           debounceMs: SCORE_PUBLICATION_DEBOUNCE,
-        }),
-        pub.publish("annotation-scores", "markReviewStarted", payload, {
-          dedupeKey: `annotation-scores:mark-review-started:${payload.scoreId}`,
         }),
       ],
       { concurrency: "unbounded" },
@@ -98,9 +106,13 @@ export const createDomainEventsWorker = ({
                   traceId,
                 }),
                 debounceMs: TRACE_END_DEBOUNCE_MS,
+                attempts: 10,
+                backoff: { type: "exponential", delayMs: 1_000 },
               },
             ),
           ),
+          // Session-level work (signals:match, session analysis) is published downstream via the
+          // trace-end → session-end chain, not here.
           // Not gated on `isSandbox`: first-trace detection is onboarding/marketing
           // telemetry, not LLM work. Outbound marketing/notification suppression for
           // sandbox orgs is AGE-113's concern (handled downstream), not this PR's.
@@ -160,40 +172,98 @@ export const createDomainEventsWorker = ({
     // free. Once activity stops, the hourly `sweepEscalating` cron takes
     // over (see `apps/workers/src/server.ts`) — that's what guarantees the
     // dwell / 24h backstop / 72h timeout exits actually fire when no more
-    // `ScoreAssignedToIssue` events arrive.
-    ScoreAssignedToIssue: (event) =>
+    // `ScoreAssignedToSignal` events arrive.
+    ScoreAssignedToSignal: (event) =>
       Effect.all(
         [
           pub.publish("issues", "refresh", event.payload, {
-            dedupeKey: `issues:refresh:${event.payload.issueId}`,
-            throttleMs: ISSUE_REFRESH_THROTTLE_MS,
+            dedupeKey: `issues:refresh:${event.payload.signalId}`,
+            throttleMs: SIGNAL_REFRESH_THROTTLE_MS,
           }),
           pub.publish("issues", "checkEscalation", event.payload, {
-            dedupeKey: `issues:check-escalation:${event.payload.issueId}`,
+            dedupeKey: `issues:check-escalation:${event.payload.signalId}`,
             throttleMs: ESCALATION_CHECK_THROTTLE_MS,
           }),
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid),
 
-    IssueCreated: (event) =>
-      pub.publish("alert-incidents", "issue-created", event.payload, {
-        dedupeKey: `alert-incidents:issue.new:${event.payload.issueId}`,
+    SignalCreated: (event) =>
+      Effect.all(
+        [
+          pub.publish(
+            "notifications",
+            "request-signal-discovered-notifications",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+              signalId: event.payload.signalId,
+              discoveredAt: event.payload.createdAt,
+            },
+            {
+              dedupeKey: `notifications:request-signal-discovered:${event.payload.signalId}`,
+            },
+          ),
+          pub.publish(
+            "agent-dispatch",
+            "request",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+              signalId: event.payload.signalId,
+              source: "signal",
+            },
+            {
+              dedupeKey: `agent-dispatch:request-signal:${event.payload.signalId}`,
+            },
+          ),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.asVoid),
+
+    SignalEscalated: (event) =>
+      pub.publish("alert-incidents", "signal-escalated", event.payload, {
+        dedupeKey: `alert-incidents:signal.escalating:${event.payload.signalId}:${event.payload.escalatedAt}`,
       }),
 
-    IssueRegressed: (event) =>
-      pub.publish("alert-incidents", "issue-regressed", event.payload, {
-        dedupeKey: `alert-incidents:issue.regressed:${event.payload.issueId}:${event.payload.triggerScoreId}`,
-      }),
+    SignalRegressed: (event) =>
+      Effect.all(
+        [
+          pub.publish(
+            "notifications",
+            "request-signal-regressed-notifications",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+              signalId: event.payload.signalId,
+              regressedAt: event.payload.regressedAt,
+              triggerScoreId: event.payload.triggerScoreId,
+            },
+            {
+              dedupeKey: `notifications:request-signal-regressed:${event.payload.signalId}:${event.payload.triggerScoreId}`,
+            },
+          ),
+          pub.publish(
+            "agent-dispatch",
+            "request",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+              signalId: event.payload.signalId,
+              source: "signal",
+              trigger: "signal.regressed",
+            },
+            {
+              dedupeKey: `agent-dispatch:request-signal-regressed:${event.payload.signalId}:${event.payload.triggerScoreId}`,
+            },
+          ),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.asVoid),
 
-    IssueEscalated: (event) =>
-      pub.publish("alert-incidents", "issue-escalated", event.payload, {
-        dedupeKey: `alert-incidents:issue.escalating:${event.payload.issueId}:${event.payload.escalatedAt}`,
-      }),
-
-    IssueEscalationEnded: (event) =>
-      pub.publish("alert-incidents", "issue-escalation-ended", event.payload, {
-        dedupeKey: `alert-incidents:issue.escalation-ended:${event.payload.issueId}:${event.payload.endedAt}`,
+    SignalEscalationEnded: (event) =>
+      pub.publish("alert-incidents", "signal-escalation-ended", event.payload, {
+        dedupeKey: `alert-incidents:signal.escalation-ended:${event.payload.signalId}:${event.payload.endedAt}`,
       }),
 
     SavedSearchDeleted: (event) =>
@@ -212,18 +282,57 @@ export const createDomainEventsWorker = ({
       ),
 
     IncidentCreated: (event) =>
-      pub.publish(
-        "notifications",
-        "request-incident-notifications",
-        {
-          organizationId: event.payload.organizationId,
-          alertIncidentId: event.payload.alertIncidentId,
-          transition: "created",
-        },
-        {
-          dedupeKey: `notifications:request-incident-created:${event.payload.alertIncidentId}`,
-        },
-      ),
+      Effect.all(
+        [
+          pub.publish(
+            "notifications",
+            "request-incident-notifications",
+            {
+              organizationId: event.payload.organizationId,
+              alertIncidentId: event.payload.alertIncidentId,
+              transition: "created",
+            },
+            {
+              dedupeKey: `notifications:request-incident-created:${event.payload.alertIncidentId}`,
+            },
+          ),
+          pub.publish(
+            "agent-dispatch",
+            "request",
+            {
+              organizationId: event.payload.organizationId,
+              alertIncidentId: event.payload.alertIncidentId,
+              source: "incident",
+            },
+            {
+              dedupeKey: `agent-dispatch:request-incident:${event.payload.alertIncidentId}`,
+            },
+          ),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.asVoid),
+
+    SignalAssigneeChanged: (event) =>
+      // Cleared assignments and self-assignments never notify; the producer
+      // use case re-checks both (the rule's testable home). `assignedAt`
+      // discriminates assignment events so a later re-assignment republishes
+      // while outbox redelivery of the same event coalesces.
+      event.payload.assigneeId === null || event.payload.assigneeId === event.payload.actorUserId
+        ? Effect.void
+        : pub.publish(
+            "notifications",
+            "request-signal-assigned-notifications",
+            {
+              organizationId: event.payload.organizationId,
+              signalId: event.payload.signalId,
+              assigneeId: event.payload.assigneeId,
+              actorUserId: event.payload.actorUserId,
+              assignedAt: event.payload.assignedAt,
+            },
+            {
+              dedupeKey: `notifications:request-signal-assigned:${event.payload.signalId}:${event.payload.assignedAt}`,
+            },
+          ),
 
     IncidentClosed: (event) =>
       // Manual lifecycle closes (the user resolved or ignored the issue) close
@@ -246,7 +355,7 @@ export const createDomainEventsWorker = ({
           ),
 
     AnnotationDeleted: (event) => {
-      const { organizationId, projectId, scoreId, issueId, draftedAt, feedback, source, createdAt } = event.payload
+      const { organizationId, projectId, scoreId, signalId, draftedAt, feedback, source, createdAt } = event.payload
 
       return Effect.all(
         [
@@ -263,7 +372,7 @@ export const createDomainEventsWorker = ({
               organizationId,
               projectId,
               scoreId,
-              issueId,
+              signalId,
               draftedAt,
               feedback,
               source,
@@ -282,6 +391,19 @@ export const createDomainEventsWorker = ({
     // fanned out individually on FirstTraceReceived). PostHog fan-out is
     // applied automatically below because both events are on the whitelist.
     OrganizationCreated: () => Effect.void,
+
+    // No longer seeds a per-org demo on claim (C1 cutover); the demo is the shared
+    // showcase, which `claimOrganizationUseCase` opts the org into via `wantsShowcase`.
+    OrganizationClaimed: () => Effect.void,
+
+    ClaimEmailRequested: (event) =>
+      hash(event.payload.claimUrl).pipe(
+        Effect.flatMap((claimHash) =>
+          pub.publish("organization-claim-email", "send", event.payload, {
+            dedupeKey: `emails:organization-claim:${claimHash}`,
+          }),
+        ),
+      ),
 
     ProjectCreated: (event) =>
       pub.publish("projects", "provision", event.payload, {
@@ -363,19 +485,38 @@ export const createDomainEventsWorker = ({
     DatasetCreated: () => Effect.void,
     EvaluationCreated: () => Effect.void,
     EvaluationAligned: () => Effect.void,
-    AnnotationQueueItemCompleted: () => Effect.void,
+    // Detector-health degradation is audit-only for now: the outbox row is
+    // the durable surfacing until a notification kind lands with the signals
+    // rollout (specs/sandbox-runtime.md P1-2).
+    EvaluationDetectorDegraded: () => Effect.void,
     ProjectDeleted: (event) =>
-      pub.publish(
-        "notifications",
-        "delete-by-project",
-        {
-          organizationId: event.payload.organizationId,
-          projectId: event.payload.projectId,
-        },
-        {
-          dedupeKey: `notifications:delete-by-project:${event.payload.projectId}`,
-        },
-      ),
+      Effect.all(
+        [
+          pub.publish(
+            "notifications",
+            "delete-by-project",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+            },
+            {
+              dedupeKey: `notifications:delete-by-project:${event.payload.projectId}`,
+            },
+          ),
+          pub.publish(
+            "destinations",
+            "delete-by-project",
+            {
+              organizationId: event.payload.organizationId,
+              projectId: event.payload.projectId,
+            },
+            {
+              dedupeKey: `destinations:delete-by-project:${event.payload.projectId}`,
+            },
+          ),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.asVoid),
     FlaggerToggled: () => Effect.void,
     SavedSearchCreated: () => Effect.void,
     // Impersonation events are audit-only — their value is being
@@ -389,7 +530,6 @@ export const createDomainEventsWorker = ({
     AdminUserEmailChanged: () => Effect.void,
     AdminUserSessionsRevoked: () => Effect.void,
     AdminUserSessionRevoked: () => Effect.void,
-    AdminDemoProjectSeeded: () => Effect.void,
   }
 
   consumer.subscribe("domain-events", {
@@ -402,7 +542,7 @@ export const createDomainEventsWorker = ({
 
       const envelope = parsed.data as EventEnvelope<DomainEvent>
       const { event } = envelope
-      const name = event.name as keyof EventPayloads
+      const name = (EVENT_NAME_ALIASES[event.name] ?? event.name) as keyof EventPayloads
 
       const maybeHandler = handlers[name]
 

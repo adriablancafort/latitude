@@ -1,18 +1,17 @@
 import {
-  AnnotationQueueId,
-  AnnotationQueueItemId,
   ApiKeyId,
   DatasetId,
   DatasetVersionId,
   EvaluationId,
-  IssueId,
   MembershipId,
   OrganizationId,
   ProjectId,
   ScoreId,
+  SignalId,
   SimulationId,
   UserId,
 } from "./id.ts"
+import { LATITUDE_TELEMETRY_PROJECT_SLUGS } from "./telemetry-projects.ts"
 
 // ---------------------------------------------------------------------------
 // Organization, users, project, API key
@@ -47,17 +46,6 @@ export const SEED_MEMBER_5_USER_ID = UserId("ov2an3fp4db0177upoaog2i1")
 export const SEED_MEMBER_5_EMAIL = "eli@acme.com"
 export const SEED_MEMBER_5_MEMBERSHIP_ID = MembershipId("amc2xugd6ew7fo7mbsjps262")
 
-/** Owner, admin, and five members — seven users for queues that need a large assignee list. */
-export const SEED_MANUAL_QUEUE_ASSIGNEES = [
-  SEED_OWNER_USER_ID,
-  SEED_ADMIN_USER_ID,
-  SEED_MEMBER_1_USER_ID,
-  SEED_MEMBER_2_USER_ID,
-  SEED_MEMBER_3_USER_ID,
-  SEED_MEMBER_4_USER_ID,
-  SEED_MEMBER_5_USER_ID,
-] as const
-
 // ---------------------------------------------------------------------------
 // Datasets
 // ---------------------------------------------------------------------------
@@ -70,39 +58,39 @@ export const SEED_DATASET_ID = DatasetId("m8k2p4r6t0v1w3x5y7z9a1b3")
 export const SEED_DATASET_VERSION_ID = DatasetVersionId("v1a2b3c4d5e6f7g8h9i0j1k2")
 
 // ---------------------------------------------------------------------------
-// Issues and evaluations
+// Signals and evaluations
 // ---------------------------------------------------------------------------
 
-/** Issue 1: mature warranty fabrication lifecycle. */
-export const SEED_ISSUE_ID = IssueId("dds0rt8sqgpuku4u4wabze9r")
-export const SEED_ISSUE_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+/** Signal 1: mature warranty fabrication lifecycle. */
+export const SEED_SIGNAL_ID = SignalId("dds0rt8sqgpuku4u4wabze9r")
+export const SEED_SIGNAL_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 
-/** Issue 2: mature dangerous-combination lifecycle. */
-export const SEED_COMBINATION_ISSUE_ID = IssueId("c1o2m3b4i5n6a7t8i9o0n1s2")
-export const SEED_COMBINATION_ISSUE_UUID = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
+/** Signal 2: mature dangerous-combination lifecycle. */
+export const SEED_COMBINATION_SIGNAL_ID = SignalId("c1o2m3b4i5n6a7t8i9o0n1s2")
+export const SEED_COMBINATION_SIGNAL_UUID = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
 
-/** Issue 3: generate-ready logistics / service guarantees issue. */
-export const SEED_GENERATE_ISSUE_ID = IssueId("g1e2n3e4r5a6t7e8i9s0s1u2")
-export const SEED_GENERATE_ISSUE_UUID = "c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f"
+/** Signal 3: generate-ready logistics / service guarantees issue. */
+export const SEED_GENERATE_SIGNAL_ID = SignalId("g1e2n3e4r5a6t7e8i9s0s1u2")
+export const SEED_GENERATE_SIGNAL_UUID = "c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f"
 
-/** Issue 4: resolved returns-policy drift issue. */
-export const SEED_RETURNS_ISSUE_ID = IssueId("r1e2t3u4r5n6p7o8l9i0c1y2")
-export const SEED_RETURNS_ISSUE_UUID = "d4e5f6a7-b8c9-4d1e-9f2a-3b4c5d6e7f80"
+/** Signal 4: resolved returns-policy drift issue. */
+export const SEED_RETURNS_SIGNAL_ID = SignalId("r1e2t3u4r5n6p7o8l9i0c1y2")
+export const SEED_RETURNS_SIGNAL_UUID = "d4e5f6a7-b8c9-4d1e-9f2a-3b4c5d6e7f80"
 
-/** Issue 5: ignored courtesy-credit issue. */
-export const SEED_BILLING_ISSUE_ID = IssueId("b1i2l3l4i5n6g7c8r9e0d1t2")
-export const SEED_BILLING_ISSUE_UUID = "e5f6a7b8-c9d1-4e2f-8a3b-4c5d6e7f8091"
+/** Signal 5: ignored courtesy-credit issue. */
+export const SEED_BILLING_SIGNAL_ID = SignalId("b1i2l3l4i5n6g7c8r9e0d1t2")
+export const SEED_BILLING_SIGNAL_UUID = "e5f6a7b8-c9d1-4e2f-8a3b-4c5d6e7f8091"
 
-/** Issue 6: active account-recovery issue. */
-export const SEED_ACCESS_ISSUE_ID = IssueId("a1c2c3o4u5n6t7r8e9c0o1v2")
-export const SEED_ACCESS_ISSUE_UUID = "f6a7b8c9-d1e2-4f3a-9b4c-5d6e7f8091a2"
-/** Issue 7: historical installation-certification issue. */
-export const SEED_INSTALLATION_ISSUE_ID = IssueId("i1n2s3t4a5l6l7c8e9r0t1f2")
-export const SEED_INSTALLATION_ISSUE_UUID = "0a7b8c9d-e1f2-4a3b-8c4d-5e6f7091a2b3"
+/** Signal 6: active account-recovery issue. */
+export const SEED_ACCESS_SIGNAL_ID = SignalId("a1c2c3o4u5n6t7r8e9c0o1v2")
+export const SEED_ACCESS_SIGNAL_UUID = "f6a7b8c9-d1e2-4f3a-9b4c-5d6e7f8091a2"
+/** Signal 7: historical installation-certification issue. */
+export const SEED_INSTALLATION_SIGNAL_ID = SignalId("i1n2s3t4a5l6l7c8e9r0t1f2")
+export const SEED_INSTALLATION_SIGNAL_UUID = "0a7b8c9d-e1f2-4a3b-8c4d-5e6f7091a2b3"
 
-/** Issue 8: active issue seeded from flagger-authored annotations. */
-export const SEED_FLAGGER_ISSUE_ID = IssueId("f1l2a3g4g5e6r7e8m9p0t1y2")
-export const SEED_FLAGGER_ISSUE_UUID = "1b8c9d0e-f1a2-4b3c-9d4e-5f6071a2b3c4"
+/** Signal 8: active issue seeded from flagger-authored annotations. */
+export const SEED_FLAGGER_SIGNAL_ID = SignalId("f1l2a3g4g5e6r7e8m9p0t1y2")
+export const SEED_FLAGGER_SIGNAL_UUID = "1b8c9d0e-f1a2-4b3c-9d4e-5f6071a2b3c4"
 
 function fixedSeedEntityId(prefix: string, index: number): string {
   return `${prefix}${index.toString().padStart(3, "0")}${"x".repeat(24 - prefix.length - 3)}`
@@ -113,20 +101,22 @@ function fixedSeedUuid(index: number): string {
 }
 
 /** Additional long-tail issue IDs used to exercise pagination, infinite scroll, and denoising. */
-export const SEED_EXTRA_ISSUE_IDS: readonly IssueId[] = Array.from({ length: 128 }, (_, i) =>
-  IssueId(fixedSeedEntityId("xi", i)),
+export const SEED_EXTRA_SIGNAL_IDS: readonly SignalId[] = Array.from({ length: 128 }, (_, i) =>
+  SignalId(fixedSeedEntityId("xi", i)),
 )
-export const SEED_EXTRA_ISSUE_UUIDS: readonly string[] = Array.from({ length: 128 }, (_, i) => fixedSeedUuid(0x500 + i))
+export const SEED_EXTRA_SIGNAL_UUIDS: readonly string[] = Array.from({ length: 128 }, (_, i) =>
+  fixedSeedUuid(0x500 + i),
+)
 
-/** Issue 1 active monitor. */
+/** Signal 1 active monitor. */
 export const SEED_EVALUATION_ID = EvaluationId("y0zr3gtsous6knd2qwdj1dit")
-/** Issue 1 archived historical monitor. */
+/** Signal 1 archived historical monitor. */
 export const SEED_EVALUATION_ARCHIVED_ID = EvaluationId("hphb8g6uwzx68pfh9hzormqn")
-/** Issue 2 active monitor. */
+/** Signal 2 active monitor. */
 export const SEED_COMBINATION_EVALUATION_ID = EvaluationId("c1o2m3b4e5v6a7l8u9a0t1e2")
-/** Issue 4 active monitor retained after the issue resolved. */
+/** Signal 4 active monitor retained after the issue resolved. */
 export const SEED_RETURNS_EVALUATION_ID = EvaluationId("r1e2t3u4r5n6e7v8a9l0u1a2")
-/** Issue 6 active monitor. */
+/** Signal 6 active monitor. */
 export const SEED_ACCESS_EVALUATION_ID = EvaluationId("a1c2c3e4s5s6e7v8a9l0u1a2")
 
 export const SEED_WARRANTY_EVALUATION_HASH = "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00"
@@ -134,31 +124,8 @@ export const SEED_WARRANTY_ARCHIVED_EVALUATION_HASH = "bb11cc22dd33ee44ff55aa66b
 export const SEED_COMBINATION_EVALUATION_HASH = "cc11dd22ee33ff44aa55bb66cc77dd88ee99ff00"
 export const SEED_RETURNS_EVALUATION_HASH = "dd11ee22ff33aa44bb55cc66dd77ee88ff99aa00"
 export const SEED_ACCESS_EVALUATION_HASH = "ee11ff22aa33bb44cc55dd66ee77ff88aa99bb00"
-
-// ---------------------------------------------------------------------------
-// Queues
-// ---------------------------------------------------------------------------
-
-export const SEED_ANNOTATION_QUEUE_WARRANTY_ID = AnnotationQueueId("q1w2e3r4t5y6u7i8o9p0a1s2")
-export const SEED_ANNOTATION_QUEUE_COMBINATION_ID = AnnotationQueueId("m1a2n3u4a5l6c7o8m9b0q1u2")
-export const SEED_ANNOTATION_QUEUE_LOGISTICS_ID = AnnotationQueueId("l1o2g3i4s5t6i7c8s9q0u1e2")
-export const SEED_ANNOTATION_QUEUE_SYSTEM_ID = AnnotationQueueId("aq2icpkri3o99sw0u24hy50w")
-export const SEED_ANNOTATION_QUEUE_LIVE_ID = AnnotationQueueId("hikmfvizwaptzothgqtllelw")
-
-export const SEED_ANNOTATION_QUEUE_ITEM_WARRANTY_PENDING_ID = AnnotationQueueItemId("w1a2r3n4t5y6p7e8n9d0i1n2")
-export const SEED_ANNOTATION_QUEUE_ITEM_WARRANTY_COMPLETED_A_ID = AnnotationQueueItemId("w1a2r3c4o5m6p7l8e9t0a1a2")
-export const SEED_ANNOTATION_QUEUE_ITEM_WARRANTY_COMPLETED_B_ID = AnnotationQueueItemId("w1a2r3c4o5m6p7l8e9t0b1b2")
-
-export const SEED_ANNOTATION_QUEUE_ITEM_COMBINATION_PENDING_ID = AnnotationQueueItemId("c1o2m3b4p5e6n7d8i9n0g1a2")
-export const SEED_ANNOTATION_QUEUE_ITEM_COMBINATION_COMPLETED_A_ID = AnnotationQueueItemId("c1o2m3b4c5o6m7p8a9a0a1a2")
-export const SEED_ANNOTATION_QUEUE_ITEM_COMBINATION_COMPLETED_B_ID = AnnotationQueueItemId("c1o2m3b4c5o6m7p8b9b0b1b2")
-
-export const SEED_ANNOTATION_QUEUE_ITEM_LOGISTICS_PENDING_ID = AnnotationQueueItemId("l1o2g3i4p5e6n7d8i9n0g1a2")
-export const SEED_ANNOTATION_QUEUE_ITEM_LOGISTICS_COMPLETED_A_ID = AnnotationQueueItemId("l1o2g3i4c5o6m7p8a9a0a1a2")
-export const SEED_ANNOTATION_QUEUE_ITEM_LOGISTICS_COMPLETED_B_ID = AnnotationQueueItemId("l1o2g3i4c5o6m7p8b9b0b1b2")
-
-export const SEED_ANNOTATION_QUEUE_ITEM_SYSTEM_PENDING_ID = AnnotationQueueItemId("s1y2s3t4e5m6p7e8n9d0i1n2")
-export const SEED_ANNOTATION_QUEUE_ITEM_LIVE_PENDING_ID = AnnotationQueueItemId("l1i2v3e4p5e6n7d8i9n0g1a2")
+export const SEED_GROUNDING_EVALUATION_HASH = "ff11aa22bb33cc44dd55ee66ff77aa88bb99cc00"
+export const SEED_RECALL_EVALUATION_HASH = "ab12cd34ef56ab78cd90ef12ab34cd56ef78ab90"
 
 // ---------------------------------------------------------------------------
 // Simulations
@@ -228,15 +195,15 @@ function fixedSpanHex(prefix: string, index: number): string {
   return `${prefix}${index.toString(16).padStart(6, "0")}${"0".repeat(8)}`
 }
 
-export function seedIssueOccurrenceTraceId(index: number): string {
+export function seedSignalOccurrenceTraceId(index: number): string {
   return fixedTraceHex("ef", index)
 }
 
-export function seedIssueOccurrenceSpanId(index: number): string {
+export function seedSignalOccurrenceSpanId(index: number): string {
   return fixedSpanHex("ef", index)
 }
 
-/** 48 annotation trace IDs (Issue 1: 0-15, Issue 2: 16-37, Issue 3: 38-47). */
+/** 48 annotation trace IDs (Signal 1: 0-15, Signal 2: 16-37, Signal 3: 38-47). */
 export const SEED_ANNOTATION_TRACE_IDS: readonly string[] = Array.from({ length: 48 }, (_, i) => fixedTraceHex("af", i))
 export const SEED_ANNOTATION_SPAN_IDS: readonly string[] = Array.from({ length: 48 }, (_, i) => fixedSpanHex("af", i))
 
@@ -294,10 +261,6 @@ export const SEED_COMBINATION_SIMULATION_SPAN_IDS: readonly string[] = Array.fro
 export const SEED_ANNOTATION_DEMO_TRACE_ID = "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
 export const SEED_ANNOTATION_DEMO_SPAN_ID = "b0b0b0b0b0b0b0b0"
 
-/** Kitchen Sink queue for testing all annotation features. */
-export const SEED_ANNOTATION_QUEUE_KITCHEN_SINK_ID = AnnotationQueueId("ksink0demo0queue0000000x")
-export const SEED_ANNOTATION_QUEUE_ITEM_KITCHEN_SINK_ID = AnnotationQueueItemId("ksink0demo0item00000000x")
-
 /** 12 annotation score IDs for the demo trace (see PRD for provenance/anchor distribution). */
 export const SEED_UI_POLISH_SCORE_IDS = {
   humanDraft1: ScoreId("uip01humandraft1xxxxxxxx"),
@@ -324,16 +287,55 @@ export const SEED_OWNER_EMAIL = "owner@acme.com"
 export const SEED_ADMIN_EMAIL = "admin@acme.com"
 export const SEED_PROJECT_NAME = "Support Agent"
 export const SEED_PROJECT_SLUG = "default-project"
+
+// QA fixture: a project whose traces are ALL older than the 30-day default window, so it has
+// `first_trace_at` set but zero recent spans — the exact shape that used to trip the "Waiting for
+// your first trace" onboarding. Seed it (`pnpm seed`) and open `/projects/old-traces-qa`.
+export const SEED_OLD_TRACES_QA_PROJECT_ID = ProjectId("oldtracesqaproject000001")
+export const SEED_OLD_TRACES_QA_PROJECT_NAME = "Old traces (QA)"
+export const SEED_OLD_TRACES_QA_PROJECT_SLUG = "old-traces-qa"
+export const SEED_OLD_TRACES_QA_FROM_DAYS_AGO = 45
+export const SEED_OLD_TRACES_QA_TO_DAYS_AGO = 31
 export const SEED_API_KEY_TOKEN = "lat_seed_default_api_key_token"
 
-// Dogfood project — receives LLM telemetry spans emitted by Latitude's own
-// system annotator + enrichment LLM calls, and the product-feedback
-// annotations written by `@platform/latitude-api`. Kept in the same org so the
-// shared API key token works for both. Matches the default
-// `LAT_LATITUDE_TELEMETRY_PROJECT_SLUG` value in `.env.example`.
-export const SEED_LATITUDE_TELEMETRY_PROJECT_ID = ProjectId("rvknrpb3afjbcb7gzw3wlbvf")
-export const SEED_LATITUDE_TELEMETRY_PROJECT_NAME = "Latitude Telemetry"
-export const SEED_LATITUDE_TELEMETRY_PROJECT_SLUG = "latitude-telemetry"
+// Dogfood projects — one per internal AI feature, mirroring
+// `LATITUDE_TELEMETRY_PROJECT_SLUGS`. Each receives the LLM generations that
+// feature exports (and, for flaggers / annotation-enrichment, the product-feedback
+// annotations written back by `@platform/latitude-api`). All live in the seed org
+// so the shared API key token authenticates every one. Slugs come from the shared
+// constant so routing and seed never drift; IDs/names are seed-only.
+export const SEED_LATITUDE_SIGNAL_DISCOVERY_PROJECT_ID = ProjectId("issudiscov01afjbcb7gzwla")
+export const SEED_LATITUDE_SIGNAL_DISCOVERY_PROJECT_NAME = "Latitude Signal Discovery"
+export const SEED_LATITUDE_SIGNAL_DISCOVERY_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.signalDiscovery
+
+export const SEED_LATITUDE_ANNOTATION_ENRICHMENT_PROJECT_ID = ProjectId("annoenrich02afjbcb7gzwlb")
+export const SEED_LATITUDE_ANNOTATION_ENRICHMENT_PROJECT_NAME = "Latitude Annotation Enrichment"
+export const SEED_LATITUDE_ANNOTATION_ENRICHMENT_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.annotationEnrichment
+
+export const SEED_LATITUDE_FLAGGERS_PROJECT_ID = ProjectId("flagrsproj03afjbcb7gzwlc")
+export const SEED_LATITUDE_FLAGGERS_PROJECT_NAME = "Latitude Flaggers"
+export const SEED_LATITUDE_FLAGGERS_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.flaggers
+
+export const SEED_LATITUDE_EVALUATIONS_PROJECT_ID = ProjectId("evaluation04afjbcb7gzwld")
+export const SEED_LATITUDE_EVALUATIONS_PROJECT_NAME = "Latitude Evaluations"
+export const SEED_LATITUDE_EVALUATIONS_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.evaluations
+
+export const SEED_LATITUDE_OPTIMIZATIONS_PROJECT_ID = ProjectId("optimizatn05afjbcb7gzwle")
+export const SEED_LATITUDE_OPTIMIZATIONS_PROJECT_NAME = "Latitude Optimizations"
+export const SEED_LATITUDE_OPTIMIZATIONS_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.optimizations
+
+export const SEED_LATITUDE_TAXONOMY_PROJECT_ID = ProjectId("taxonomypr06afjbcb7gzwlf")
+export const SEED_LATITUDE_TAXONOMY_PROJECT_NAME = "Latitude Taxonomy"
+export const SEED_LATITUDE_TAXONOMY_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.taxonomy
+
+export const SEED_LATITUDE_SIGNAL_GENERATION_PROJECT_ID = ProjectId("signalgen008afjbcb7gzwlh")
+export const SEED_LATITUDE_SIGNAL_GENERATION_PROJECT_NAME = "Latitude Signal Generation"
+export const SEED_LATITUDE_SIGNAL_GENERATION_PROJECT_SLUG = LATITUDE_TELEMETRY_PROJECT_SLUGS.signalGeneration
+
+export const SEED_LATITUDE_CONVERSATION_INTELLIGENCE_PROJECT_ID = ProjectId("convintel009afjbcb7gzwli")
+export const SEED_LATITUDE_CONVERSATION_INTELLIGENCE_PROJECT_NAME = "Latitude Conversation Intelligence"
+export const SEED_LATITUDE_CONVERSATION_INTELLIGENCE_PROJECT_SLUG =
+  LATITUDE_TELEMETRY_PROJECT_SLUGS.conversationIntelligence
 
 // ---------------------------------------------------------------------------
 // Test Mode — second org (empty-sandbox state) and Acme sandboxes
@@ -371,6 +373,13 @@ export const SEED_ACME_SANDBOX_ACTIVE_SLUG = "acme-dev-sandbox"
 export const SEED_ACME_SANDBOX_ACTIVE_ATTRS_ID = "acmesbx1act0attrs00000a1"
 /** Sandbox project under the active sandbox, linked to `SEED_PROJECT_ID`. */
 export const SEED_ACME_SANDBOX_ACTIVE_PROJECT_ID = ProjectId("acmesbx1act0proj000000a1")
+/**
+ * Default API key for the active sandbox org. Carries the `lat_sandbox_` prefix
+ * so seeded sandboxes can ingest locally and so the prefix is exercised in dev,
+ * mirroring how `createSandbox` mints one for real sandboxes.
+ */
+export const SEED_ACME_SANDBOX_ACTIVE_API_KEY_ID = ApiKeyId("acmesbx1act0apikey0000a1")
+export const SEED_ACME_SANDBOX_ACTIVE_API_KEY_TOKEN = "lat_sandbox_seed_default_api_key_token"
 
 /**
  * Acme sandbox #2 — `archived`. Idle past the 7-day threshold; surfaces the

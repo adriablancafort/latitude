@@ -1,6 +1,7 @@
 import { AI, type AIShape, type GenerateResult } from "@domain/ai"
 import {
   ChSqlClient,
+  CustomBehaviorId,
   OrganizationId,
   ProjectId,
   SessionId,
@@ -19,10 +20,12 @@ import { TaxonomyClusterRepository } from "../ports/taxonomy-cluster-repository.
 import { TaxonomyLineageRepository } from "../ports/taxonomy-lineage-repository.ts"
 import { TaxonomyObservationRepository } from "../ports/taxonomy-observation-repository.ts"
 import { TaxonomyRunRepository } from "../ports/taxonomy-run-repository.ts"
+import { TaxonomyViewAssignmentRepository } from "../ports/taxonomy-view-assignment-repository.ts"
 import { createFakeTaxonomyClusterRepository } from "../testing/fake-taxonomy-cluster-repository.ts"
 import { createFakeTaxonomyLineageRepository } from "../testing/fake-taxonomy-lineage-repository.ts"
 import { createFakeTaxonomyObservationRepository } from "../testing/fake-taxonomy-observation-repository.ts"
 import { createFakeTaxonomyRunRepository } from "../testing/fake-taxonomy-run-repository.ts"
+import { createFakeTaxonomyViewAssignmentRepository } from "../testing/fake-taxonomy-view-assignment-repository.ts"
 import { getLastRunUseCase, getTaxonomyAnalyticsUseCase } from "./analytics.ts"
 import { getClusterDetailsUseCase } from "./get-details.ts"
 import { listClustersUseCase } from "./list-clusters.ts"
@@ -84,6 +87,7 @@ const makeCluster = (overrides: Partial<TaxonomyCluster> = {}): TaxonomyCluster 
   id: TaxonomyClusterId("k".repeat(24)),
   organizationId,
   projectId,
+  customBehaviorId: null,
   dimension: "topic",
   parentClusterId: null,
   depth: 0,
@@ -315,6 +319,60 @@ describe("listProjectBehavioursUseCase", () => {
     expect(result.topics[1]?.subtreeObservationCount).toBe(3)
   })
 
+  it("unwraps the single englobing root and surfaces its depth-1 children as top-level rows", async () => {
+    const rootId = TaxonomyClusterId("a".repeat(24))
+    const firstChildId = TaxonomyClusterId("b".repeat(24))
+    const secondChildId = TaxonomyClusterId("c".repeat(24))
+    const clusters = createFakeTaxonomyClusterRepository([
+      makeCluster({ id: rootId, observationCount: 0 }),
+      makeCluster({ id: firstChildId, parentClusterId: rootId, depth: 1, path: `${rootId}/`, observationCount: 4 }),
+      makeCluster({ id: secondChildId, parentClusterId: rootId, depth: 1, path: `${rootId}/`, observationCount: 3 }),
+    ])
+    const observations = createFakeTaxonomyObservationRepository([
+      makeObservation(1, firstChildId),
+      makeObservation(2, firstChildId),
+      makeObservation(3, firstChildId),
+      makeObservation(4, firstChildId),
+      makeObservation(5, secondChildId),
+      makeObservation(6, secondChildId),
+      makeObservation(7, secondChildId),
+    ])
+
+    const result = await Effect.runPromise(
+      listProjectBehavioursUseCase({ organizationId, projectId, now }).pipe(
+        Effect.provide(Layer.succeed(TaxonomyClusterRepository, clusters.repository)),
+        Effect.provide(Layer.succeed(TaxonomyObservationRepository, observations.repository)),
+        Effect.provide(Layer.succeed(SqlClient, createFakeSqlClient())),
+        Effect.provide(Layer.succeed(ChSqlClient, createFakeChSqlClient())),
+      ),
+    )
+
+    // The all-encompassing root is dropped; the table opens on its children.
+    expect(result.topics.map((topic) => topic.cluster.id)).toEqual([firstChildId, secondChildId])
+    expect(result.topics.every((topic) => topic.cluster.id !== rootId)).toBe(true)
+  })
+
+  it("keeps a single childless root (tiny corpus collapsed to one leaf)", async () => {
+    const onlyRootId = TaxonomyClusterId("a".repeat(24))
+    const clusters = createFakeTaxonomyClusterRepository([makeCluster({ id: onlyRootId, observationCount: 3 })])
+    const observations = createFakeTaxonomyObservationRepository([
+      makeObservation(1, onlyRootId),
+      makeObservation(2, onlyRootId),
+      makeObservation(3, onlyRootId),
+    ])
+
+    const result = await Effect.runPromise(
+      listProjectBehavioursUseCase({ organizationId, projectId, now }).pipe(
+        Effect.provide(Layer.succeed(TaxonomyClusterRepository, clusters.repository)),
+        Effect.provide(Layer.succeed(TaxonomyObservationRepository, observations.repository)),
+        Effect.provide(Layer.succeed(SqlClient, createFakeSqlClient())),
+        Effect.provide(Layer.succeed(ChSqlClient, createFakeChSqlClient())),
+      ),
+    )
+
+    expect(result.topics.map((topic) => topic.cluster.id)).toEqual([onlyRootId])
+  })
+
   it("hides roots without a displayable name", async () => {
     const pendingRootId = TaxonomyClusterId("u".repeat(24))
     const clusters = createFakeTaxonomyClusterRepository([
@@ -484,6 +542,10 @@ describe("analytics read use-cases", () => {
         startedAt: now,
         completedAt: now,
         observationsScanned: 2,
+        observationsAvailable: 2,
+        observationsSampled: 2,
+        sampleStrategy: "day_stratified_hash_round_robin",
+        sampleCap: 1_500,
         noiseScanned: 2,
         clustersBorn: 1,
         clustersMerged: 0,
@@ -528,5 +590,104 @@ describe("analytics read use-cases", () => {
 
     expect(result.run?.id).toBe(runId)
     expect(result.lineage.map((row) => row.transitionType)).toEqual(["birth"])
+  })
+})
+
+describe("listProjectBehavioursUseCase (custom behavior scope)", () => {
+  const behaviorId = CustomBehaviorId("c".repeat(24))
+  const globalId = TaxonomyClusterId("g".repeat(24))
+  const scopedA = TaxonomyClusterId("1".repeat(24))
+  const scopedB = TaxonomyClusterId("2".repeat(24))
+
+  // One repo holding both a global cluster and a behavior's scoped clusters, so
+  // each read must isolate its own slice.
+  const seededClusters = () =>
+    createFakeTaxonomyClusterRepository([
+      makeCluster({ id: globalId, name: "Global topic", observationCount: 4 }),
+      makeCluster({ id: scopedA, name: "Scoped A", customBehaviorId: behaviorId, observationCount: 0 }),
+      makeCluster({ id: scopedB, name: "Scoped B", customBehaviorId: behaviorId, observationCount: 0 }),
+    ])
+
+  it("reads counts from the assignment slice, marks trend steady, and excludes global clusters", async () => {
+    const clusters = seededClusters()
+    // Global observation counts must NOT be the source for a scoped read; seed
+    // the global cluster with observations to prove they are ignored here.
+    const observations = createFakeTaxonomyObservationRepository([makeObservation(1, globalId)])
+    const assignments = createFakeTaxonomyViewAssignmentRepository(
+      {},
+      {
+        getClusterAssignmentCounts: () =>
+          Effect.succeed([
+            { clusterId: scopedA, count: 5 },
+            { clusterId: scopedB, count: 3 },
+          ]),
+      },
+    )
+
+    const result = await Effect.runPromise(
+      listProjectBehavioursUseCase({ organizationId, projectId, now, customBehaviorId: behaviorId }).pipe(
+        Effect.provide(Layer.succeed(TaxonomyClusterRepository, clusters.repository)),
+        Effect.provide(Layer.succeed(TaxonomyObservationRepository, observations.repository)),
+        Effect.provide(Layer.succeed(TaxonomyViewAssignmentRepository, assignments.repository)),
+        Effect.provide(Layer.succeed(SqlClient, createFakeSqlClient())),
+        Effect.provide(Layer.succeed(ChSqlClient, createFakeChSqlClient())),
+      ),
+    )
+
+    expect(result.topics.map((topic) => topic.cluster.id)).toEqual([scopedA, scopedB])
+    expect(result.topics.map((topic) => topic.subtreeObservationCount)).toEqual([5, 3])
+    expect(result.topics.every((topic) => topic.trend.status === "steady")).toBe(true)
+  })
+
+  it("derives per-cluster trend from the windowed assignment slice (not steady)", async () => {
+    const clusters = seededClusters()
+    const observations = createFakeTaxonomyObservationRepository([])
+    const assignments = createFakeTaxonomyViewAssignmentRepository(
+      {},
+      {
+        getClusterAssignmentCounts: () =>
+          Effect.succeed([
+            { clusterId: scopedA, count: 10 },
+            { clusterId: scopedB, count: 6 },
+          ]),
+        // A spiking scoped cluster and a cooling one — proves the scoped branch
+        // now reads a real start_time-windowed trend instead of hardcoding steady.
+        getClusterTrendCounts: () =>
+          Effect.succeed([
+            { clusterId: scopedA, currentCount: 10, baselineCount: 7, baselineDays: 7 },
+            { clusterId: scopedB, currentCount: 1, baselineCount: 28, baselineDays: 7 },
+          ]),
+      },
+    )
+
+    const result = await Effect.runPromise(
+      listProjectBehavioursUseCase({ organizationId, projectId, now, customBehaviorId: behaviorId }).pipe(
+        Effect.provide(Layer.succeed(TaxonomyClusterRepository, clusters.repository)),
+        Effect.provide(Layer.succeed(TaxonomyObservationRepository, observations.repository)),
+        Effect.provide(Layer.succeed(TaxonomyViewAssignmentRepository, assignments.repository)),
+        Effect.provide(Layer.succeed(SqlClient, createFakeSqlClient())),
+        Effect.provide(Layer.succeed(ChSqlClient, createFakeChSqlClient())),
+      ),
+    )
+
+    const trendById = new Map(result.topics.map((topic) => [topic.cluster.id, topic.trend.status] as const))
+    expect(trendById.get(scopedA)).toBe("spike")
+    expect(trendById.get(scopedB)).toBe("cooling")
+  })
+
+  it("the global read ignores custom-behavior clusters entirely", async () => {
+    const clusters = seededClusters()
+    const observations = createFakeTaxonomyObservationRepository([makeObservation(1, globalId)])
+
+    const result = await Effect.runPromise(
+      listProjectBehavioursUseCase({ organizationId, projectId, now }).pipe(
+        Effect.provide(Layer.succeed(TaxonomyClusterRepository, clusters.repository)),
+        Effect.provide(Layer.succeed(TaxonomyObservationRepository, observations.repository)),
+        Effect.provide(Layer.succeed(SqlClient, createFakeSqlClient())),
+        Effect.provide(Layer.succeed(ChSqlClient, createFakeChSqlClient())),
+      ),
+    )
+
+    expect(result.topics.map((topic) => topic.cluster.id)).toEqual([globalId])
   })
 })

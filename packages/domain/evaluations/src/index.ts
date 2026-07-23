@@ -1,4 +1,4 @@
-export { generateBaselinePromptText } from "./alignment/baseline-prompt.ts"
+export { generateBaselinePromptText, generateJudgePromptText } from "./alignment/baseline-prompt.ts"
 export type {
   BaselineEvaluationExampleResult,
   BaselineEvaluationResult,
@@ -9,6 +9,15 @@ export type {
   LoadedEvaluationAlignmentState,
   PersistEvaluationAlignmentResult,
 } from "./alignment/types.ts"
+export { compileSettingsToScript } from "./codegen/compile-settings-to-script.ts"
+export {
+  EVALUATION_CONVERSATION_PLACEHOLDER,
+  wrapPromptAsEvaluationScript,
+} from "./codegen/judge-script-template.ts"
+export {
+  validateAndHashEvaluationScript,
+  validateEvaluationScriptCompiles,
+} from "./codegen/validate-evaluation-script.ts"
 export {
   ALIGNMENT_CURATED_DATASET_MAX_ROWS,
   ALIGNMENT_CURATED_DATASET_MIN_ROWS,
@@ -47,8 +56,8 @@ export {
 } from "./errors.ts"
 export {
   addConfusionMatrixObservation,
-  applyIssueIgnoreToEvaluation,
-  applyIssueResolutionToEvaluation,
+  applySignalIgnoreToEvaluation,
+  applySignalResolutionToEvaluation,
   archiveEvaluation,
   buildLiveEvaluationExecutePublication,
   buildLiveEvaluationExecuteScopeDedupeKey,
@@ -99,10 +108,6 @@ export {
   type ListNegativeEvaluationAlignmentExamplesInput,
 } from "./ports/evaluation-alignment-examples-repository.ts"
 export {
-  type EvaluationIssue,
-  EvaluationIssueRepository,
-} from "./ports/evaluation-issue-repository.ts"
-export {
   type EvaluationListLifecycle,
   type EvaluationListOptions,
   type EvaluationListPage,
@@ -110,6 +115,10 @@ export {
   type EvaluationRepositoryShape,
   evaluationListLifecycleSchema,
 } from "./ports/evaluation-repository.ts"
+export {
+  type EvaluationSignal,
+  EvaluationSignalRepository,
+} from "./ports/evaluation-signal-repository.ts"
 export {
   LiveEvaluationQueuePublisher,
   type LiveEvaluationQueuePublisherShape,
@@ -124,30 +133,28 @@ export {
   type EvaluationOptimizationJudgeTelemetryScope,
 } from "./runtime/ai-telemetry.ts"
 export {
-  EVALUATION_CONVERSATION_PLACEHOLDER,
-  EVALUATION_SCRIPT_RUNTIME_MODEL,
+  EVALUATION_DEFAULT_SCRIPT_RUNTIME_MODEL,
+  EVALUATION_SCRIPT_GENERATION_SYSTEM_PROMPT,
   EVALUATION_SCRIPT_RUNTIME_SYSTEM_PROMPT,
   type EvaluationConversationMessage,
   type EvaluationExecutionResult,
   type EvaluationExecutionResultPayload,
-  type EvaluationIssueContext,
   type EvaluationScriptExecution,
-  type EvaluationScriptSchema,
-  type ExecuteEvaluationScriptWithAIError,
+  type EvaluationSignalContext,
   estimateEvaluationScriptCostMicrocents,
   evaluationExecutionResultPayloadSchema,
   evaluationExecutionResultSchema,
-  evaluationIssueContextSchema,
-  evaluationRuntimeZod,
-  executeEvaluationScript,
-  executeEvaluationScriptWithAI,
-  extractPromptFromEvaluationScript,
-  formatEvaluationConversationForPrompt,
+  evaluationSignalContextSchema,
   toEvaluationConversationMessages,
   toEvaluationExecutionResult,
-  validateEvaluationScript,
-  wrapPromptAsEvaluationScript,
 } from "./runtime/evaluation-execution.ts"
+export { loadScriptSessionContext } from "./runtime/load-session-context.ts"
+export { executeEvaluationScriptSandboxed } from "./runtime/sandbox-execution.ts"
+export {
+  buildSignalPreviewResultKey,
+  SIGNAL_PREVIEW_RESULT_TTL_SECONDS,
+  type SignalPreviewResult,
+} from "./runtime/signal-preview-result.ts"
 export { collectAlignmentExamplesUseCase } from "./use-cases/alignment/collect-alignment-examples.ts"
 export { evaluateBaselineDraftUseCase } from "./use-cases/alignment/evaluate-baseline-draft.ts"
 export { evaluateDraftAgainstExamplesUseCase } from "./use-cases/alignment/evaluate-draft-against-examples.ts"
@@ -160,12 +167,18 @@ export {
 } from "./use-cases/alignment/load-alignment-state-or-inactive.ts"
 export { persistAlignmentResultUseCase } from "./use-cases/alignment/persist-alignment-result.ts"
 export {
-  deriveIssueAlignmentState,
-  type GetIssueAlignmentStateError,
-  type GetIssueAlignmentStateInput,
-  getIssueAlignmentStateUseCase,
-  type IssueAlignmentState,
-} from "./use-cases/get-issue-alignment-state.ts"
+  type CreateEvaluationError,
+  type CreateEvaluationInput,
+  type CreateEvaluationResult,
+  createEvaluationUseCase,
+} from "./use-cases/create-evaluation.ts"
+export {
+  deriveSignalAlignmentState,
+  type GetSignalAlignmentStateError,
+  type GetSignalAlignmentStateInput,
+  getSignalAlignmentStateUseCase,
+  type SignalAlignmentState,
+} from "./use-cases/get-signal-alignment-state.ts"
 export {
   buildLiveTraceEndEvaluationSelectionKey,
   buildTraceEndEvaluationSelectionInputs,
@@ -173,16 +186,14 @@ export {
 export {
   type ExecuteLiveEvaluationError,
   executeLiveEvaluationUseCase,
-  type LiveEvaluationConversationInput,
   type LiveEvaluationExecutionInput,
   type LiveEvaluationExecutionResult,
-  type LiveEvaluationIssueContext,
   type LiveEvaluationResultPayload,
-  liveEvaluationConversationInputSchema,
+  type LiveEvaluationSignalContext,
   liveEvaluationExecutionInputSchema,
   liveEvaluationExecutionResultSchema,
-  liveEvaluationIssueContextSchema,
   liveEvaluationResultPayloadSchema,
+  liveEvaluationSignalContextSchema,
 } from "./use-cases/live/execute-live-evaluation.ts"
 export { listAllActiveEvaluations } from "./use-cases/live/list-all-active-evaluations.ts"
 export { orchestrateTraceEndLiveEvaluationExecutesUseCase } from "./use-cases/live/orchestrate-trace-end-live-evaluation-executes.ts"
@@ -202,13 +213,21 @@ export {
   runLiveEvaluationUseCase,
 } from "./use-cases/live/run-live-evaluation.ts"
 export {
-  type MonitorIssueError,
-  type MonitorIssueInput,
-  monitorIssueUseCase,
-} from "./use-cases/monitor-issue.ts"
+  type MonitorSignalError,
+  type MonitorSignalInput,
+  monitorSignalUseCase,
+} from "./use-cases/monitor-signal.ts"
 export { evaluateOptimizationCandidate } from "./use-cases/optimization/evaluate-optimization-candidate.ts"
 export {
-  type UnmonitorIssueError,
-  type UnmonitorIssueInput,
-  unmonitorIssueUseCase,
-} from "./use-cases/unmonitor-issue.ts"
+  type PreviewEvaluationError,
+  type PreviewEvaluationInput,
+  type PreviewEvaluationResult,
+  type PreviewEvaluationRow,
+  type PreviewSessionSummary,
+  previewEvaluationUseCase,
+} from "./use-cases/preview-evaluation.ts"
+export {
+  type UnmonitorSignalError,
+  type UnmonitorSignalInput,
+  unmonitorSignalUseCase,
+} from "./use-cases/unmonitor-signal.ts"

@@ -3,15 +3,17 @@
   "workspaces": {
     ".": {
       "ignore": [
+        ".agents/skills/**/scripts/**",
         "scripts/taxonomy/*.ts"
       ]
     },
     "apps/api": {
-      "entry": [
-        "src/openapi/pagination.ts"
-      ],
       "project": [
         "src/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "quickjs-emscripten",
+        "voyageai"
       ]
     },
     "apps/ingest": {
@@ -24,7 +26,9 @@
         "src/**/*.ts"
       ],
       "ignoreDependencies": [
-        "@temporalio/worker"
+        "@temporalio/worker",
+        "quickjs-emscripten",
+        "voyageai"
       ]
     },
     "apps/workflows": {
@@ -37,6 +41,7 @@
       ],
       "ignoreDependencies": [
         "@temporalio/worker",
+        "quickjs-emscripten",
         "voyageai"
       ]
     },
@@ -44,15 +49,24 @@
       "entry": [
         "src/router.tsx",
         "src/start.ts",
-        "src/routes/**/*.tsx",
-        "src/domains/sandbox/sandbox-lifecycle.functions.ts"
+        "src/routes/**/*.tsx"
       ],
       "project": ["src/**/*.ts", "src/**/*.tsx"],
-      "ignore": [
-        "src/domains/feature-flags/feature-flags.collection.ts"
-      ],
       "ignoreDependencies": [
-        "@temporalio/client"
+        "@temporalio/client",
+        "quickjs-emscripten",
+        "voyageai"
+      ]
+    },
+    "apps/design-system": {
+      "entry": [
+        "src/routes/**/*.tsx"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/operations": {
+      "project": [
+        "src/**/*.ts"
       ]
     },
     "infra": {
@@ -66,8 +80,15 @@
       "project": [
         "src/**/*.ts",
         "src/**/*.tsx"
+      ]
+    },
+    "packages/domain/taxonomy": {
+      "project": [
+        "src/**/*.ts"
       ],
-      "ignoreDependencies": []
+      "ignore": [
+        "src/calibration/**"
+      ]
     },
     "packages/domain/*": {
       "project": [
@@ -95,18 +116,15 @@
     },
     "packages/sdk/typescript": {
       "entry": [],
-      "project": [],
-      "ignoreBinaries": []
+      "project": []
     },
-    "examples/sdks/typescript": {
+    "packages/sdk/typescript/examples": {
       "entry": [
         "src/**/*.ts"
       ],
       "project": [
         "src/**/*.ts"
-      ],
-      "ignoreBinaries": [],
-      "ignoreDependencies": []
+      ]
     },
     "packages/ui": {
       "project": [
@@ -125,20 +143,18 @@
     },
     "packages/telemetry/typescript": {
       "entry": [
-        "examples/**/*.ts"
+        "examples/*.ts"
       ],
       "project": [
         "src/**/*.ts",
-        "examples/**/*.ts"
+        "examples/*.ts"
       ],
       "ignore": [
         "src/constants/**/*.ts"
       ],
       "ignoreDependencies": [
         "@sentry/node",
-        "dd-trace",
-        "langchain",
-        "together-ai"
+        "dd-trace"
       ]
     },
     "packages/telemetry/pi": {
@@ -166,7 +182,8 @@
   },
   "ignoreBinaries": [
     "tmuxinator",
-    "pulumi"
+    "pulumi",
+    "packages/cli/target/release/latitude"
   ],
   "ignoreDependencies": [
     "@pulumi/awsx",

@@ -66,15 +66,15 @@ describe("AdminFeatureFlagRepositoryLive", () => {
         const repo = yield* AdminFeatureFlagRepository
         yield* repo.enableForOrganization({
           organizationId: ORG_ID,
-          identifier: "slack",
+          identifier: "sso",
           enabledByAdminUserId: ADMIN_USER_ID,
         })
         return yield* repo.list()
       }),
     )
 
-    const slack = result.find((flag) => flag.identifier === "slack")
-    expect(slack?.enabledOrganizations).toEqual([{ id: ORG_ID, name: "Acme", slug: "acme" }])
+    const sso = result.find((flag) => flag.identifier === "sso")
+    expect(sso?.enabledOrganizations).toEqual([{ id: ORG_ID, name: "Acme", slug: "acme" }])
   })
 
   it("splits flags into enabled and available for an organization", async () => {
@@ -83,15 +83,15 @@ describe("AdminFeatureFlagRepositoryLive", () => {
         const repo = yield* AdminFeatureFlagRepository
         yield* repo.enableForOrganization({
           organizationId: ORG_ID,
-          identifier: "slack",
+          identifier: "sso",
           enabledByAdminUserId: ADMIN_USER_ID,
         })
         return yield* repo.listForOrganization(ORG_ID)
       }),
     )
 
-    expect(result.enabled.map((flag) => flag.identifier)).toEqual(["slack"])
-    expect(result.available.map((flag) => flag.identifier)).not.toContain("slack")
+    expect(result.enabled.map((flag) => flag.identifier)).toEqual(["sso"])
+    expect(result.available.map((flag) => flag.identifier)).not.toContain("sso")
     expect(result.enabled.length + result.available.length).toBe(FEATURE_FLAG_IDS.length)
   })
 
@@ -99,15 +99,15 @@ describe("AdminFeatureFlagRepositoryLive", () => {
     const result = await runWithLive(
       Effect.gen(function* () {
         const repo = yield* AdminFeatureFlagRepository
-        yield* repo.enableForAll("slack")
+        yield* repo.enableForAll("sso")
         const owner = yield* repo.listForOrganization(ORG_ID)
         const other = yield* repo.listForOrganization(OTHER_ORG_ID)
         return { owner, other }
       }),
     )
 
-    expect(result.owner.enabled.map((flag) => flag.identifier)).toContain("slack")
-    expect(result.other.enabled.map((flag) => flag.identifier)).toContain("slack")
+    expect(result.owner.enabled.map((flag) => flag.identifier)).toContain("sso")
+    expect(result.other.enabled.map((flag) => flag.identifier)).toContain("sso")
   })
 
   it("returns NotFoundError for missing organizations", async () => {
@@ -127,10 +127,10 @@ describe("AdminFeatureFlagRepositoryLive", () => {
         const repo = yield* AdminFeatureFlagRepository
         yield* repo.enableForOrganization({
           organizationId: ORG_ID,
-          identifier: "slack",
+          identifier: "sso",
           enabledByAdminUserId: ADMIN_USER_ID,
         })
-        return yield* repo.findEligibilityForFlag("slack")
+        return yield* repo.findEligibilityForFlag("sso")
       }),
     )
 
@@ -142,8 +142,8 @@ describe("AdminFeatureFlagRepositoryLive", () => {
     const result = await runWithLive(
       Effect.gen(function* () {
         const repo = yield* AdminFeatureFlagRepository
-        yield* repo.enableForAll("slack")
-        return yield* repo.findEligibilityForFlag("slack")
+        yield* repo.enableForAll("sso")
+        return yield* repo.findEligibilityForFlag("sso")
       }),
     )
 
@@ -155,7 +155,7 @@ describe("AdminFeatureFlagRepositoryLive", () => {
     const result = await runWithLive(
       Effect.gen(function* () {
         const repo = yield* AdminFeatureFlagRepository
-        return yield* repo.findEligibilityForFlag("slack")
+        return yield* repo.findEligibilityForFlag("sso")
       }),
     )
 
@@ -167,18 +167,18 @@ describe("AdminFeatureFlagRepositoryLive", () => {
     const result = await runWithLive(
       Effect.gen(function* () {
         const repo = yield* AdminFeatureFlagRepository
-        yield* repo.enableForAll("slack")
+        yield* repo.enableForAll("sso")
         const afterEnable = yield* repo.list()
-        yield* repo.disableForAll("slack")
+        yield* repo.disableForAll("sso")
         const afterDisable = yield* repo.list()
         return { afterEnable, afterDisable }
       }),
     )
 
-    const enabledSlack = result.afterEnable.find((flag) => flag.identifier === "slack")
-    const disabledSlack = result.afterDisable.find((flag) => flag.identifier === "slack")
-    expect(enabledSlack?.enabledForAll).toBe(true)
-    expect(disabledSlack?.enabledForAll).toBe(false)
+    const enabledSso = result.afterEnable.find((flag) => flag.identifier === "sso")
+    const disabledSso = result.afterDisable.find((flag) => flag.identifier === "sso")
+    expect(enabledSso?.enabledForAll).toBe(true)
+    expect(disabledSso?.enabledForAll).toBe(false)
   })
 
   it("per-org enable is idempotent; disable for a missing row is a silent no-op", async () => {
@@ -187,12 +187,12 @@ describe("AdminFeatureFlagRepositoryLive", () => {
         const repo = yield* AdminFeatureFlagRepository
         yield* repo.enableForOrganization({
           organizationId: ORG_ID,
-          identifier: "slack",
+          identifier: "sso",
           enabledByAdminUserId: ADMIN_USER_ID,
         })
         yield* repo.enableForOrganization({
           organizationId: ORG_ID,
-          identifier: "slack",
+          identifier: "sso",
           enabledByAdminUserId: ADMIN_USER_ID,
         })
       }),
@@ -205,7 +205,7 @@ describe("AdminFeatureFlagRepositoryLive", () => {
       runWithLive(
         Effect.gen(function* () {
           const repo = yield* AdminFeatureFlagRepository
-          yield* repo.disableForOrganization({ organizationId: OTHER_ORG_ID, identifier: "slack" })
+          yield* repo.disableForOrganization({ organizationId: OTHER_ORG_ID, identifier: "sso" })
         }),
       ),
     ).resolves.toBeUndefined()

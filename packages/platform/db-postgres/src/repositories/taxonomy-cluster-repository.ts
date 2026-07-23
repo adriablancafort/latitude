@@ -1,8 +1,14 @@
-import { NotFoundError, RepositoryError, SqlClient, type SqlClientShape, TaxonomyClusterId } from "@domain/shared"
+import { EMBEDDING_DIMENSIONS, resolveEmbeddingConfig } from "@domain/ai"
+import {
+  type CustomBehaviorId,
+  NotFoundError,
+  RepositoryError,
+  SqlClient,
+  type SqlClientShape,
+  TaxonomyClusterId,
+} from "@domain/shared"
 import {
   normalizeTaxonomyCentroid,
-  TAXONOMY_EMBEDDING_DIMENSIONS,
-  TAXONOMY_EMBEDDING_MODEL,
   TAXONOMY_SEARCH_MIN_SCORE,
   TAXONOMY_SEARCH_MIN_VECTOR_SIMILARITY,
   type TaxonomyCluster,
@@ -10,7 +16,7 @@ import {
   TaxonomyDimension,
   taxonomyClusterSchema,
 } from "@domain/taxonomy"
-import { and, asc, desc, eq, getTableColumns, gte, inArray, isNotNull, isNull, like, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, getTableColumns, gte, inArray, isNotNull, isNull, like, ne, or, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { taxonomyClusters } from "../schema/taxonomy-clusters.ts"
@@ -20,6 +26,7 @@ const toDomainCluster = (row: typeof taxonomyClusters.$inferSelect): TaxonomyClu
     id: row.id,
     organizationId: row.organizationId,
     projectId: row.projectId,
+    customBehaviorId: row.customBehaviorId,
     dimension: TaxonomyDimension.Topic,
     parentClusterId: row.parentClusterId,
     depth: row.depth,
@@ -42,11 +49,11 @@ const validateVector = (
   vector: readonly number[],
   operation: string,
 ): Effect.Effect<readonly number[], RepositoryError> => {
-  if (vector.length !== TAXONOMY_EMBEDDING_DIMENSIONS) {
+  if (vector.length !== EMBEDDING_DIMENSIONS) {
     return Effect.fail(
       new RepositoryError({
         operation,
-        cause: new Error(`Expected ${TAXONOMY_EMBEDDING_DIMENSIONS} dimensions, received ${vector.length}`),
+        cause: new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions, received ${vector.length}`),
       }),
     )
   }
@@ -67,30 +74,37 @@ const validateVector = (
 const toVectorLiteral = (vector: readonly number[], operation: string) =>
   validateVector(vector, operation).pipe(Effect.map((validated) => sql.raw(`'[${validated.join(",")}]'::vector`)))
 
-const toCentroidEmbedding = (cluster: TaxonomyCluster): Effect.Effect<readonly number[] | null, RepositoryError> => {
-  if (cluster.centroid.mass <= 0) return Effect.succeed(null)
+const toCentroidEmbedding = (cluster: TaxonomyCluster): Effect.Effect<readonly number[] | null, RepositoryError> =>
+  Effect.gen(function* () {
+    if (cluster.centroid.mass <= 0) return null
 
-  if (cluster.centroid.model !== TAXONOMY_EMBEDDING_MODEL) {
-    return Effect.fail(
-      new RepositoryError({
-        operation: "TaxonomyClusterRepository.save",
-        cause: new Error(`Unsupported centroid model ${cluster.centroid.model}`),
-      }),
+    // The embedding model is a one-time deployment choice (different models
+    // produce incompatible vector spaces, and Latitude never re-embeds), so a
+    // centroid stamped with anything but the configured model is a hard error.
+    const embeddingConfig = yield* resolveEmbeddingConfig().pipe(
+      Effect.mapError((error) => new RepositoryError({ operation: "TaxonomyClusterRepository.save", cause: error })),
     )
-  }
+    if (cluster.centroid.model !== embeddingConfig.model) {
+      return yield* Effect.fail(
+        new RepositoryError({
+          operation: "TaxonomyClusterRepository.save",
+          cause: new Error(`Unsupported centroid model ${cluster.centroid.model}`),
+        }),
+      )
+    }
 
-  const vector = normalizeTaxonomyCentroid(cluster.centroid)
-  if (vector.length === 0) {
-    return Effect.fail(
-      new RepositoryError({
-        operation: "TaxonomyClusterRepository.save",
-        cause: new Error("Positive-mass centroid normalized to an empty vector"),
-      }),
-    )
-  }
+    const vector = normalizeTaxonomyCentroid(cluster.centroid)
+    if (vector.length === 0) {
+      return yield* Effect.fail(
+        new RepositoryError({
+          operation: "TaxonomyClusterRepository.save",
+          cause: new Error("Positive-mass centroid normalized to an empty vector"),
+        }),
+      )
+    }
 
-  return validateVector(vector, "TaxonomyClusterRepository.save")
-}
+    return yield* validateVector(vector, "TaxonomyClusterRepository.save")
+  })
 
 const toInsertRow = (
   cluster: TaxonomyCluster,
@@ -99,6 +113,7 @@ const toInsertRow = (
   id: cluster.id,
   organizationId: cluster.organizationId,
   projectId: cluster.projectId,
+  customBehaviorId: cluster.customBehaviorId,
   parentClusterId: cluster.parentClusterId,
   depth: cluster.depth,
   path: cluster.path,
@@ -116,6 +131,15 @@ const toInsertRow = (
   createdAt: cluster.createdAt,
   updatedAt: cluster.updatedAt,
 })
+
+// Global taxonomy reads and scoped custom-behavior reads share one table.
+// Omit/null scopes to the global tree (custom_behavior_id IS NULL); an id
+// scopes to that behavior's sub-tree. Keeps the global Behaviours page and
+// Topics filter isolated from scoped rows.
+const scopeCondition = (customBehaviorId: CustomBehaviorId | null | undefined) =>
+  customBehaviorId == null
+    ? isNull(taxonomyClusters.customBehaviorId)
+    : eq(taxonomyClusters.customBehaviorId, customBehaviorId)
 
 export const TaxonomyClusterRepositoryLive = Layer.effect(
   TaxonomyClusterRepository,
@@ -154,7 +178,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
           return rows.map(toDomainCluster)
         }),
 
-      listActiveByProject: ({ projectId, parentClusterId }) =>
+      listActiveByProject: ({ projectId, parentClusterId, customBehaviorId }) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           const rows = yield* sqlClient.query((db, organizationId) =>
@@ -166,6 +190,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
                   eq(taxonomyClusters.organizationId, organizationId),
                   eq(taxonomyClusters.projectId, projectId),
                   eq(taxonomyClusters.state, "active"),
+                  scopeCondition(customBehaviorId),
                   ...(parentClusterId === undefined
                     ? []
                     : parentClusterId === null
@@ -178,7 +203,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
           return rows.map(toDomainCluster)
         }),
 
-      listSubtreeIds: ({ projectId, clusterId }) =>
+      listSubtreeIds: ({ projectId, clusterId, customBehaviorId }) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           const rows = yield* sqlClient.query((db, organizationId) =>
@@ -190,6 +215,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
                   eq(taxonomyClusters.organizationId, organizationId),
                   eq(taxonomyClusters.projectId, projectId),
                   eq(taxonomyClusters.state, "active"),
+                  scopeCondition(customBehaviorId),
                   or(eq(taxonomyClusters.id, clusterId), like(taxonomyClusters.path, `%${clusterId}/%`)),
                 ),
               ),
@@ -212,6 +238,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
                   eq(taxonomyClusters.organizationId, organizationId),
                   eq(taxonomyClusters.projectId, projectId),
                   eq(taxonomyClusters.state, "active"),
+                  isNull(taxonomyClusters.customBehaviorId),
                   isNotNull(taxonomyClusters.centroidEmbedding),
                   ...(parentClusterId === undefined
                     ? []
@@ -243,6 +270,7 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
             eq(taxonomyClusters.organizationId, sqlClient.organizationId),
             eq(taxonomyClusters.projectId, projectId),
             eq(taxonomyClusters.state, state ?? "active"),
+            isNull(taxonomyClusters.customBehaviorId),
             isNotNull(taxonomyClusters.centroidEmbedding),
             or(gte(score, TAXONOMY_SEARCH_MIN_SCORE), gte(vectorScore, TAXONOMY_SEARCH_MIN_VECTOR_SIMILARITY)),
           ]
@@ -265,14 +293,17 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
           return rows.map((row) => ({ ...row, clusterId: TaxonomyClusterId(row.clusterId) }))
         }),
 
-      list: ({ projectId, state, sort, limit, offset }) =>
+      list: ({ projectId, state, sort, limit, offset, customBehaviorId }) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           const conditions = [
             eq(taxonomyClusters.organizationId, sqlClient.organizationId),
             eq(taxonomyClusters.projectId, projectId),
+            scopeCondition(customBehaviorId),
           ]
-          if (state) conditions.push(eq(taxonomyClusters.state, state))
+          // `staging` is an internal publish-time state; never surface it from
+          // list-clusters. An explicit `state` filter still narrows further.
+          conditions.push(state ? eq(taxonomyClusters.state, state) : ne(taxonomyClusters.state, "staging"))
 
           const orderBy = (() => {
             switch (sort ?? "observation_count_desc") {
@@ -360,6 +391,62 @@ export const TaxonomyClusterRepositoryLive = Layer.effect(
               .update(taxonomyClusters)
               .set({ state: "deprecated", updatedAt: timestamp })
               .where(and(eq(taxonomyClusters.organizationId, organizationId), eq(taxonomyClusters.id, clusterId))),
+          )
+        }),
+
+      swapActiveTree: ({ supersededClusterIds, stagingClusterIds, timestamp }) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          if (supersededClusterIds.length === 0 && stagingClusterIds.length === 0) return
+          yield* sqlClient.transaction(
+            Effect.gen(function* () {
+              if (supersededClusterIds.length > 0) {
+                yield* sqlClient.query((db, organizationId) =>
+                  db
+                    .update(taxonomyClusters)
+                    .set({ state: "deprecated", updatedAt: timestamp })
+                    .where(
+                      and(
+                        eq(taxonomyClusters.organizationId, organizationId),
+                        inArray(taxonomyClusters.id, supersededClusterIds as TaxonomyClusterId[]),
+                      ),
+                    ),
+                )
+              }
+              if (stagingClusterIds.length > 0) {
+                // Guard on `state = 'staging'` so a retry (rows already active)
+                // matches nothing and never resurrects a deprecated tree.
+                yield* sqlClient.query((db, organizationId) =>
+                  db
+                    .update(taxonomyClusters)
+                    .set({ state: "active", updatedAt: timestamp })
+                    .where(
+                      and(
+                        eq(taxonomyClusters.organizationId, organizationId),
+                        eq(taxonomyClusters.state, "staging"),
+                        inArray(taxonomyClusters.id, stagingClusterIds as TaxonomyClusterId[]),
+                      ),
+                    ),
+                )
+              }
+            }),
+          )
+        }),
+
+      deleteStaging: ({ clusterIds }) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          if (clusterIds.length === 0) return
+          yield* sqlClient.query((db, organizationId) =>
+            db
+              .delete(taxonomyClusters)
+              .where(
+                and(
+                  eq(taxonomyClusters.organizationId, organizationId),
+                  eq(taxonomyClusters.state, "staging"),
+                  inArray(taxonomyClusters.id, clusterIds as TaxonomyClusterId[]),
+                ),
+              ),
           )
         }),
     }

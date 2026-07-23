@@ -1,13 +1,26 @@
 import { createBullBoard } from "@bull-board/api"
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter"
 import { HonoAdapter } from "@bull-board/hono"
-import { ESCALATION_SWEEPER_KEY, ESCALATION_SWEEPER_PATTERN } from "@domain/issues"
+import {
+  DESTINATION_PRUNE_KEY,
+  DESTINATION_PRUNE_PATTERN,
+  DESTINATION_SWEEPER_KEY,
+  DESTINATION_SWEEPER_PATTERN,
+} from "@domain/destinations"
 import { SAVED_SEARCH_MONITORS_SWEEPER_KEY, SAVED_SEARCH_MONITORS_SWEEPER_PATTERN } from "@domain/monitors"
-import { TAXONOMY_GARDENING_CRON_KEY, TAXONOMY_GARDENING_CRON_PATTERN } from "@domain/taxonomy"
+import { SANDBOX_IDLE_SWEEPER_KEY, SANDBOX_IDLE_SWEEPER_PATTERN } from "@domain/sandboxes"
+import { SHOWCASE_CLEANUP_CRON_KEY, SHOWCASE_CLEANUP_CRON_PATTERN } from "@domain/showcase"
+import { ESCALATION_SWEEPER_KEY, ESCALATION_SWEEPER_PATTERN } from "@domain/signals"
+import {
+  CUSTOM_BEHAVIOR_GARDENING_CRON_KEY,
+  CUSTOM_BEHAVIOR_GARDENING_CRON_PATTERN,
+  TAXONOMY_GARDENING_CRON_KEY,
+  TAXONOMY_GARDENING_CRON_PATTERN,
+} from "@domain/taxonomy"
 import { serve } from "@hono/node-server"
 import { serveStatic } from "@hono/node-server/serve-static"
 import { createPollingOutboxConsumer } from "@platform/db-postgres"
-import { parseEnv } from "@platform/env"
+import { parseEnv, parseEnvOptional } from "@platform/env"
 import {
   createBullBoardQueues,
   createBullMqQueueConsumer,
@@ -37,32 +50,41 @@ import {
   getStorageDisk,
   getWorkflowStarter,
 } from "./clients.ts"
-import { createAnnotationQueuesWorker } from "./workers/annotation-queues.ts"
+import { createAgentDispatchWorker } from "./workers/agent-dispatch.ts"
 import { createAnnotationScoresWorker } from "./workers/annotation-scores.ts"
 import { createApiKeysWorker } from "./workers/api-keys.ts"
 import { createBillingWorker } from "./workers/billing.ts"
 import { createBillingOverageWorker } from "./workers/billing-overage.ts"
-import { createDeterministicFlaggersWorker } from "./workers/deterministic-flaggers.ts"
-import { createAlertIncidentsWorker } from "./workers/domain-events/alert-incidents.ts"
+import { createDestinationsWorker } from "./workers/destinations.ts"
+import { createIncidentsWorker } from "./workers/domain-events/incidents.ts"
 import { createInvitationEmailWorker } from "./workers/domain-events/invitation-email.ts"
 import { createMagicLinkEmailWorker } from "./workers/domain-events/magic-link-email.ts"
 import { createMarketingContactsWorker } from "./workers/domain-events/marketing-contacts.ts"
+import { createOrganizationClaimEmailWorker } from "./workers/domain-events/organization-claim-email.ts"
 import { createUserDeletionWorker } from "./workers/domain-events/user-deletion.ts"
 import { createDomainEventsWorker } from "./workers/domain-events.ts"
 import { createEvaluationsWorker } from "./workers/evaluations.ts"
 import { createExportsWorker } from "./workers/exports.ts"
-import { createIssuesWorker } from "./workers/issues.ts"
+import { createFlaggerScreeningWorker } from "./workers/flagger-screening.ts"
 import { createLiveEvaluationsWorker } from "./workers/live-evaluations.ts"
+import { createMemoryProjectionWorker } from "./workers/memory-projection.ts"
 import { createMonitorsWorker } from "./workers/monitors.ts"
 import { createNotificationEmailerWorker } from "./workers/notification-emailer.ts"
 import { createNotificationSlackWorker } from "./workers/notification-slack.ts"
 import { createNotificationsWorker } from "./workers/notifications.ts"
+import { createOrganizationCleanupWorker } from "./workers/organization-cleanup.ts"
 import { createPostHogAnalyticsWorker } from "./workers/posthog-analytics.ts"
 import { createProductFeedbackWorker } from "./workers/product-feedback.ts"
 import { createProjectsWorker } from "./workers/projects.ts"
+import { createSandboxesWorker } from "./workers/sandboxes.ts"
 import { createScoresWorker } from "./workers/scores.ts"
+import { createSessionEndWorker } from "./workers/session-end.ts"
+import { createShowcaseWorker } from "./workers/showcase.ts"
+import { createSignalsWorker } from "./workers/signals.ts"
+import { createSignalsGenerateSignalWorker } from "./workers/signals-generate-signal.ts"
+import { createSignalsMatchWorker } from "./workers/signals-match.ts"
+import { createSignalsPreviewWorker } from "./workers/signals-preview.ts"
 import { createSpanIngestionWorker } from "./workers/span-ingestion.ts"
-import { createStartFlaggerWorkflowWorker } from "./workers/start-flagger-workflow.ts"
 import { createTaxonomyWorker } from "./workers/taxonomy.ts"
 import { createTraceEndWorker } from "./workers/trace-end.ts"
 import { createTraceSearchWorker } from "./workers/trace-search.ts"
@@ -112,21 +134,22 @@ const bootstrap = async () => {
   const initializeWorkers = async () => {
     const bullMqConfig = Effect.runSync(loadBullMqConfig())
 
-    // Set up bull-board dashboard with read-only Queue instances
-    const { TOPIC_NAMES } = await import("@domain/queue")
-    const bullBoardQueues = createBullBoardQueues(bullMqConfig, TOPIC_NAMES)
+    // The bull-board dashboard is opt-in: mounted only when both credentials are set.
+    const bullBoardUser = Effect.runSync(parseEnvOptional("LAT_BULL_BOARD_USERNAME", "string"))
+    const bullBoardPass = Effect.runSync(parseEnvOptional("LAT_BULL_BOARD_PASSWORD", "string"))
+    if (bullBoardUser && bullBoardPass) {
+      const { TOPIC_NAMES } = await import("@domain/queue")
+      const bullBoardQueues = createBullBoardQueues(bullMqConfig, TOPIC_NAMES)
+      app.use("/bull-board/*", basicAuth({ username: bullBoardUser, password: bullBoardPass }))
 
-    const bullBoardUser = Effect.runSync(parseEnv("LAT_BULL_BOARD_USERNAME", "string"))
-    const bullBoardPass = Effect.runSync(parseEnv("LAT_BULL_BOARD_PASSWORD", "string"))
-    app.use("/bull-board/*", basicAuth({ username: bullBoardUser, password: bullBoardPass }))
-
-    const serverAdapter = new HonoAdapter(serveStatic)
-    serverAdapter.setBasePath("/bull-board")
-    createBullBoard({
-      queues: bullBoardQueues.map((q) => new BullMQAdapter(q, { readOnlyMode: true })),
-      serverAdapter,
-    })
-    app.route("/bull-board", serverAdapter.registerPlugin())
+      const serverAdapter = new HonoAdapter(serveStatic)
+      serverAdapter.setBasePath("/bull-board")
+      createBullBoard({
+        queues: bullBoardQueues.map((q) => new BullMQAdapter(q, { readOnlyMode: true })),
+        serverAdapter,
+      })
+      app.route("/bull-board", serverAdapter.registerPlugin())
+    }
 
     const queuePublisher = await Effect.runPromise(
       createBullMqQueuePublisher({ redis: bullMqConfig }).pipe(withTracing),
@@ -177,12 +200,23 @@ const bootstrap = async () => {
     createDomainEventsWorker(ctx)
     createMagicLinkEmailWorker(ctx)
     createInvitationEmailWorker(ctx)
+    createOrganizationClaimEmailWorker(ctx)
+    createOrganizationCleanupWorker(ctx)
     createUserDeletionWorker(ctx)
     createMarketingContactsWorker(ctx)
-    createAlertIncidentsWorker(ctx)
+    createIncidentsWorker(ctx)
     createNotificationsWorker(ctx)
     createNotificationEmailerWorker(ctx)
     createNotificationSlackWorker(ctx)
+    createAgentDispatchWorker(ctx)
+    createDestinationsWorker({
+      consumer: ctx.consumer,
+      publisher: ctx.publisher,
+      redisClient: ctx.redisClient,
+      postgresClient: ctx.postgresClient,
+      adminPostgresClient: getAdminPostgresClient(),
+      clickhouseClient: ctx.clickhouseClient,
+    })
     createApiKeysWorker(ctx)
     createBillingWorker({ consumer: ctx.consumer, postgresClient: ctx.postgresClient })
     createBillingOverageWorker({ consumer: ctx.consumer, workflowStarter: ctx.workflowStarter })
@@ -195,21 +229,26 @@ const bootstrap = async () => {
       redisClient: ctx.redisClient,
     })
     createExportsWorker(ctx)
-    await createIssuesWorker({ ...ctx, adminPostgresClient: getAdminPostgresClient() })
+    await createSignalsWorker({ ...ctx, adminPostgresClient: getAdminPostgresClient() })
     createMonitorsWorker({ ...ctx, adminPostgresClient: getAdminPostgresClient() })
     createEvaluationsWorker(ctx)
     createAnnotationScoresWorker(ctx)
     createLiveEvaluationsWorker(ctx)
-    createAnnotationQueuesWorker(ctx)
     createTraceEndWorker(ctx)
-    createDeterministicFlaggersWorker(ctx)
-    createStartFlaggerWorkflowWorker(ctx)
+    createSessionEndWorker(ctx)
+    createSignalsMatchWorker(ctx)
+    createSignalsPreviewWorker(ctx)
+    createSignalsGenerateSignalWorker(ctx)
+    createFlaggerScreeningWorker(ctx)
+    createMemoryProjectionWorker(ctx)
     createProjectsWorker(ctx)
     createScoresWorker(ctx)
+    createShowcaseWorker(ctx)
     createPostHogAnalyticsWorker(ctx)
     createProductFeedbackWorker(ctx)
     createTraceSearchWorker({
       consumer: ctx.consumer,
+      publisher: ctx.publisher,
       clickhouseClient: ctx.clickhouseClient,
       postgresClient: ctx.postgresClient,
       redisClient: ctx.redisClient,
@@ -227,8 +266,11 @@ const bootstrap = async () => {
       consumer: ctx.consumer,
       publisher: ctx.publisher,
       postgresClient: ctx.postgresClient,
-      adminPostgresClient: getAdminPostgresClient(),
       clickhouseClient: ctx.clickhouseClient,
+    })
+    createSandboxesWorker({
+      consumer: ctx.consumer,
+      adminPostgresClient: getAdminPostgresClient(),
     })
 
     // Register (or refresh) the weekly Wrapped trigger. upsert semantics
@@ -246,8 +288,48 @@ const bootstrap = async () => {
         .pipe(withTracing),
     )
 
-    // Hourly escalation sweep. Backs up the `ScoreAssignedToIssue`-driven
-    // throttled check by reconsidering every open `issue.escalating`
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "organization-cleanup",
+          "reapExpired",
+          {},
+          { key: "organization-cleanup:daily", pattern: "0 3 * * *", tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Daily off-peak Showcase regeneration (S4): build a fresh `next`, gate it,
+    // and auto-swap the pointer. The handler no-ops when no showcase exists / a
+    // build is already in flight, so this is safe to register on every boot.
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "showcase",
+          "regenerate",
+          {},
+          { key: "showcase:regenerate:daily", pattern: "0 4 * * *", tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Daily Showcase cleanup / self-heal (S5), an hour before regeneration:
+    // reclaim a wedged `building` pointer and retire showcase-org projects that
+    // are neither `current` nor `next` (PG soft-delete + background CH delete).
+    // No-ops when no showcase exists / nothing is stale, so safe on every boot.
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "showcase",
+          "cleanup",
+          {},
+          { key: SHOWCASE_CLEANUP_CRON_KEY, pattern: SHOWCASE_CLEANUP_CRON_PATTERN, tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Hourly escalation sweep. Backs up the `ScoreAssignedToSignal`-driven
+    // throttled check by reconsidering every open signal escalation
     // incident once an hour — closes incidents whose burst has aged out of
     // the 6h window and whose scoring has gone quiet, and lets the 24h
     // backstop + 72h timeout exits fire even when no new scores arrive.
@@ -283,6 +365,59 @@ const bootstrap = async () => {
           "gardenSweep",
           { triggeredAt: new Date().toISOString() },
           { key: TAXONOMY_GARDENING_CRON_KEY, pattern: TAXONOMY_GARDENING_CRON_PATTERN, tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Scoped-gardening sweep: keeps every eligible custom behavior a living
+    // taxonomy, the scoped analogue of the global gardenSweep above.
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "taxonomy",
+          "gardenCustomBehaviorSweep",
+          // No triggeredAt: repeatable payloads are frozen at boot, so the handler
+          // anchors its throttle window at execution time instead.
+          {},
+          { key: CUSTOM_BEHAVIOR_GARDENING_CRON_KEY, pattern: CUSTOM_BEHAVIOR_GARDENING_CRON_PATTERN, tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "sandboxes",
+          "archiveIdle",
+          {},
+          { key: SANDBOX_IDLE_SWEEPER_KEY, pattern: SANDBOX_IDLE_SWEEPER_PATTERN, tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Every-minute destinations sweep. Selects active destinations due for a
+    // sync (idle backoff applied, sandbox orgs excluded) and fans out one
+    // `runSync` per destination.
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "destinations",
+          "sweep",
+          {},
+          { key: DESTINATION_SWEEPER_KEY, pattern: DESTINATION_SWEEPER_PATTERN, tz: "UTC" },
+        )
+        .pipe(withTracing),
+    )
+
+    // Nightly prune of aged-out `destination_sync_runs` audit rows (30d
+    // retention). Separate from the every-minute sweep — retention is coarse.
+    await Effect.runPromise(
+      queuePublisher
+        .scheduleRepeatable(
+          "destinations",
+          "pruneSyncRuns",
+          {},
+          { key: DESTINATION_PRUNE_KEY, pattern: DESTINATION_PRUNE_PATTERN, tz: "UTC" },
         )
         .pipe(withTracing),
     )

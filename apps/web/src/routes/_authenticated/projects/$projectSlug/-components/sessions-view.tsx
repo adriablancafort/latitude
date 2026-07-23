@@ -9,19 +9,29 @@ import {
   Text,
   Tooltip,
 } from "@repo/ui"
-import { formatCount, formatDuration, formatPrice, relativeTime } from "@repo/utils"
+import { formatCount, formatDuration, formatPercentage, formatPrice, relativeTime } from "@repo/utils"
+import { useHotkeys } from "@tanstack/react-hotkeys"
 import { useQueries } from "@tanstack/react-query"
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
 import { useAnnotationCountsByTraceIds } from "../../../../../domains/annotations/annotations.collection.ts"
-import { useSessionMetrics, useSessionsInfiniteScroll } from "../../../../../domains/sessions/sessions.collection.ts"
+import { sandboxOrgIdForScope, useProjectScope } from "../../../../../domains/projects/project-scope.tsx"
+import {
+  isHasLlmActivityFilterOn,
+  useSessionMetrics,
+  useSessionsCountWithoutLlmActivityFilter,
+  useSessionsInfiniteScroll,
+} from "../../../../../domains/sessions/sessions.collection.ts"
 import type { SessionRecord } from "../../../../../domains/sessions/sessions.functions.ts"
 import type { TraceRecord } from "../../../../../domains/traces/traces.functions.ts"
 import { ListingLayout as Layout, listingLayoutIntrinsicScroll } from "../../../../../layouts/ListingLayout/index.tsx"
+import { useParamState } from "../../../../../lib/hooks/useParamState.ts"
 import type { SelectionState } from "../../../../../lib/hooks/useSelectableRows.ts"
 import { FiltersSidebar } from "./filters-sidebar.tsx"
 import { sessionTracesQueryOptions } from "./session-detail-drawer/use-session-traces.ts"
 import { SessionOutlierBadge } from "./session-outlier-badge.tsx"
+import { SessionsOrphanFragmentsBlankSlate } from "./sessions-orphan-fragments-blank-slate.tsx"
+import { CacheHitRateSubheader } from "./table/cache-hit-rate-subheader.tsx"
 import { IndicatorsCell } from "./table/indicators-cell.tsx"
 import { TableMetricSubheader } from "./table/metric-subheader.tsx"
 import { DEFAULT_SEARCH_SORTING, RELEVANCE_SORT_COLUMN } from "./trace-page-state.ts"
@@ -51,6 +61,7 @@ export const SESSION_COLUMN_OPTIONS = [
   { id: "duration", label: "Duration" },
   { id: "ttft", label: "Time To First Token", defaultHidden: true },
   { id: "cost", label: "Cost" },
+  { id: "cacheHitRate", label: "Cache Hit Rate" },
   { id: "sessionId", label: "Session ID" },
   { id: "userId", label: "User ID" },
   { id: "models", label: "Models" },
@@ -69,13 +80,16 @@ function useExpandedSessionTraces(
   expandedIds: ReadonlySet<string>,
   sessions: readonly SessionRecord[],
 ) {
+  const scope = useProjectScope()
   const expandedSessions = useMemo(() => sessions.filter((s) => expandedIds.has(s.sessionId)), [sessions, expandedIds])
 
   // Shared cache with the session panel's `useSessionTraces` — same key, same
   // query function. With the panel open on an expanded row the ClickHouse query
   // runs once and both surfaces read from it.
   const results = useQueries({
-    queries: expandedSessions.map((s) => sessionTracesQueryOptions(projectId, s.sessionId, s.traceIds)),
+    queries: expandedSessions.map((s) =>
+      sessionTracesQueryOptions(sandboxOrgIdForScope(scope), projectId, s.sessionId, s.traceIds),
+    ),
   })
 
   return useMemo(() => {
@@ -95,9 +109,7 @@ interface SessionsViewProps {
   readonly projectId: string
   readonly filters: FilterSet
   readonly filtersOpen: boolean
-  /** Session whose detail panel is open — highlights its row. */
   readonly activeSessionId: string | undefined
-  /** Trace currently shown in the panel's trace slot — highlights its sub-row. */
   readonly activeTraceId?: string | undefined
   readonly sorting: InfiniteTableSorting
   readonly onSortingChange: (sorting: InfiniteTableSorting) => void
@@ -105,29 +117,17 @@ interface SessionsViewProps {
   readonly onSelectionChange: (state: SelectionState<string>) => void
   readonly totalTraceCount: number
   readonly onFiltersChange: (filters: FilterSet) => void
+  readonly onShowAllSessions: () => void
   readonly onFiltersClose: () => void
-  /**
-   * Opens the session detail panel. A bare session-row click passes just the
-   * session id (panel lands on Metadata); a trace reference passes the trace id
-   * too (panel slides straight into that trace's slot).
-   */
   readonly onOpenSession: (sessionId: string, traceId?: string) => void
-  /** Closes the session detail panel (clicking the already-open session row). */
   readonly onCloseSession: () => void
   readonly visibleColumnIds: readonly SessionColumnId[]
   readonly isSearching: boolean
-  /**
-   * Free-text search query forwarded to `listSessionsByProject`. Optional —
-   * the project page's Sessions tab (the original consumer) renders this view
-   * without search, and the `/search` route passes the current query through.
-   *
-   * When non-empty, `useSessionsInfiniteScroll` returns the per-session
-   * `searchMatches` payload (keyed by `sessionId`) alongside the sessions
-   * page. We destructure it from the same hook call so the route doesn't
-   * have to thread it as a prop — one source of truth, no risk of the route
-   * forgetting to plumb a second piece of data.
-   */
+  readonly hasUserAppliedFilters: boolean
+  readonly selectable?: boolean
   readonly searchQuery?: string
+  /** Filter fields to hide in the built-in sidebar (e.g. `topics`). */
+  readonly excludeFilterFields?: readonly string[]
 }
 
 export function SessionsView({
@@ -142,13 +142,21 @@ export function SessionsView({
   onSelectionChange,
   totalTraceCount,
   onFiltersChange,
+  onShowAllSessions,
   onFiltersClose,
   onOpenSession,
   onCloseSession,
   visibleColumnIds,
   isSearching,
+  hasUserAppliedFilters,
   searchQuery,
+  selectable = true,
+  excludeFilterFields,
 }: SessionsViewProps) {
+  // Annotations are an LLM-feedback feature — off under a sandbox scope. Skip
+  // the counts fetch so the Indicators column shows errors only (mirrors the
+  // Traces table's `annotationsEnabled` gate).
+  const annotationsEnabled = useProjectScope().kind === "live"
   const effectiveVisibleColumnIds = useMemo(
     () => (isSearching ? visibleColumnIds : visibleColumnIds.filter((id) => id !== "searchMatches")),
     [visibleColumnIds, isSearching],
@@ -206,7 +214,6 @@ export function SessionsView({
     })
   }, [])
 
-  const hasActiveFilters = Object.keys(filters).length > 0
   const isRelevanceSort = sorting.column === RELEVANCE_SORT_COLUMN
 
   const {
@@ -217,14 +224,34 @@ export function SessionsView({
   } = useSessionsInfiniteScroll({
     projectId,
     sorting,
-    ...(hasActiveFilters ? { filters } : {}),
+    filters,
     ...(searchQuery ? { searchQuery } : {}),
   })
 
   const { data: sessionMetrics, isLoading: sessionMetricsLoading } = useSessionMetrics({
     projectId,
-    ...(hasActiveFilters ? { filters } : {}),
+    filters,
   })
+
+  const shouldCheckOrphanFragmentSessions =
+    !isLoading && sessions.length === 0 && isHasLlmActivityFilterOn(filters) && !searchQuery
+  const { totalCount: sessionsWithoutLlmActivityCount, isLoading: isOrphanFragmentCountLoading } =
+    useSessionsCountWithoutLlmActivityFilter({
+      projectId,
+      filters,
+      enabled: shouldCheckOrphanFragmentSessions,
+    })
+  const hasOrphanFragmentSessions =
+    shouldCheckOrphanFragmentSessions && !isOrphanFragmentCountLoading && sessionsWithoutLlmActivityCount > 0
+
+  const blankSlate = useMemo(() => {
+    if (searchQuery) return "No sessions match the current search"
+    if (hasOrphanFragmentSessions) {
+      return <SessionsOrphanFragmentsBlankSlate onShowAllSessions={onShowAllSessions} />
+    }
+    if (hasUserAppliedFilters) return "No sessions match the current filters"
+    return "No sessions found"
+  }, [hasOrphanFragmentSessions, hasUserAppliedFilters, onShowAllSessions, searchQuery])
 
   // Fetch annotation counts for every trace that could show in the visible
   // session rows (trace_ids on each session) so the Indicators column can
@@ -241,7 +268,7 @@ export function SessionsView({
   const { data: annotationCounts, pendingTraceIds: annotationCountsPendingTraceIds } = useAnnotationCountsByTraceIds({
     projectId,
     traceIds: sessionRelevantTraceIds,
-    enabled: sessionRelevantTraceIds.length > 0,
+    enabled: annotationsEnabled && sessionRelevantTraceIds.length > 0,
   })
 
   const getRowAnnotationCounts = useCallback(
@@ -437,6 +464,19 @@ export function SessionsView({
         ),
       },
       {
+        key: "cacheHitRate",
+        header: "Cache Hit Rate",
+        align: "end",
+        width: 130,
+        render: (row) => {
+          const rate = field(row, "cacheHitRate")
+          return <span>{rate === null ? "-" : formatPercentage(rate)}</span>
+        },
+        renderSubheader: () => (
+          <CacheHitRateSubheader analytics={sessionMetrics?.tokenAnalytics} isLoading={sessionMetricsLoading} />
+        ),
+      },
+      {
         key: "sessionId",
         header: "Session ID",
         width: 160,
@@ -582,6 +622,39 @@ export function SessionsView({
     [matchingTraceIdSet],
   )
 
+  // J/K navigate sessions, except when a spans tree is showing (it takes over
+  // J/K, mirroring traces-view): the open trace's spans tab (`traceTab`), or a
+  // single-trace session's own spans tab (`sessionTab`) when no trace is open.
+  const [activeTraceTab] = useParamState("traceTab", "trace")
+  const [activeSessionTab] = useParamState("sessionTab", "session")
+  const spansTreeActive = activeTraceId
+    ? activeTraceTab === "spans"
+    : Boolean(activeSessionId) && activeSessionTab === "spans"
+  const jkEnabled = !spansTreeActive
+  useHotkeys([
+    {
+      hotkey: "J",
+      callback: () => {
+        const idx = activeSessionId ? sessions.findIndex((session) => session.sessionId === activeSessionId) : -1
+        const next = sessions[idx + 1]
+        if (next) onOpenSession(next.sessionId)
+        else if (sessions.length > 0 && !activeSessionId) onOpenSession(sessions[0]!.sessionId)
+      },
+      options: { enabled: jkEnabled },
+    },
+    {
+      hotkey: "K",
+      callback: () => {
+        const idx = activeSessionId
+          ? sessions.findIndex((session) => session.sessionId === activeSessionId)
+          : sessions.length
+        const prev = sessions[idx - 1]
+        if (prev) onOpenSession(prev.sessionId)
+      },
+      options: { enabled: jkEnabled },
+    },
+  ])
+
   const getExpandedRows = (row: SessionTableRow): ExpandedRows<SessionTableRow> => {
     if (row.kind !== "session") return { data: [] }
     const sessionId = row.session.sessionId
@@ -632,6 +705,7 @@ export function SessionsView({
           filters={filters}
           onFiltersChange={onFiltersChange}
           onClose={onFiltersClose}
+          {...(excludeFilterFields ? { excludeFields: excludeFilterFields } : {})}
         />
       )}
       <Layout.List>
@@ -646,12 +720,12 @@ export function SessionsView({
           getRowAriaLabel={getRowAriaLabel}
           getRowClassName={getRowClassName}
           {...(activeTraceId || activeSessionId ? { activeRowKey: activeTraceId || (activeSessionId as string) } : {})}
-          selection={selection}
+          {...(selectable ? { selection } : {})}
           infiniteScroll={infiniteScroll}
           sorting={sorting}
           defaultSorting={searchQuery ? DEFAULT_SEARCH_SORTING : DEFAULT_SESSION_SORTING}
           onSortChange={onSortingChange}
-          blankSlate={hasActiveFilters || searchQuery ? "No sessions match the current search" : "No sessions found"}
+          blankSlate={blankSlate}
           expandedRowKeys={expandedIds}
           getExpandedRows={getExpandedRows}
           isRowExpandable={isSessionExpandable}

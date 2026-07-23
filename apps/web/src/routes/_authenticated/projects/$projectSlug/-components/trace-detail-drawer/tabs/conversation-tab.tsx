@@ -1,4 +1,4 @@
-import type { TraceSearchHighlightsResult } from "@domain/spans"
+import type { AgentGraph, AgentNode, TraceSearchHighlightsResult } from "@domain/spans"
 import {
   Button,
   Conversation,
@@ -10,14 +10,42 @@ import {
   Skeleton,
   Text,
 } from "@repo/ui"
+import { formatBytes } from "@repo/utils"
 import { useHotkeys } from "@tanstack/react-hotkeys"
 import { DownloadIcon } from "lucide-react"
-import { type ReactNode, type RefObject, useCallback, useMemo, useRef } from "react"
+import {
+  type ReactNode,
+  type RefObject,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import type { GenAIMessage } from "rosetta-ai"
 import { HotkeyBadge } from "../../../../../../../components/hotkey-badge.tsx"
-import { useConversationSpanMaps } from "../../../../../../../domains/spans/spans.collection.ts"
-import { useTraceSearchHighlights } from "../../../../../../../domains/traces/traces.collection.ts"
+import { useAuthSession } from "../../../../../../../domains/sessions/session.collection.ts"
+import {
+  useConversationSpanMaps,
+  useSessionConversationSpanMaps,
+  useSpansByTraceCollection,
+} from "../../../../../../../domains/spans/spans.collection.ts"
+import {
+  useTraceConversationMessages,
+  useTraceSearchHighlights,
+} from "../../../../../../../domains/traces/traces.collection.ts"
 import type { TraceDetailRecord } from "../../../../../../../domains/traces/traces.functions.ts"
-import { useAuthenticatedImpersonatedBy, useAuthenticatedUser } from "../../../../../-route-data.ts"
+import type {
+  ConversationTimeline,
+  TimelineMarker,
+} from "../../../../../../../lib/conversation-timeline/build-conversation-timeline.ts"
+import {
+  messageIndexAtTime,
+  visibleRangeToBand,
+} from "../../../../../../../lib/conversation-timeline/message-windows.ts"
+import { wallToTimeline } from "../../../../../../../lib/conversation-timeline/timeline-scale.ts"
+import { useParamState } from "../../../../../../../lib/hooks/useParamState.ts"
 import { AnnotationPopover } from "../../annotations/annotation-popover.tsx"
 import {
   type TextSelectionPopoverControls,
@@ -25,89 +53,177 @@ import {
 } from "../../annotations/hooks/use-annotation-popover.ts"
 import { useTraceAnnotationsData } from "../../annotations/hooks/use-trace-annotations-data.ts"
 import { MessageAnnotationTrigger } from "../../annotations/message-annotation-trigger.tsx"
-import { useScrollToFirstHighlight } from "./use-scroll-to-first-highlight.ts"
+import { findNearestMessageAnchor, flashElement } from "../../conversation-timeline/flash-highlight.ts"
+import { TimelineBar } from "../../conversation-timeline/timeline-bar.tsx"
+import { useViewportBand } from "../../conversation-timeline/use-viewport-band.ts"
+import { buildSubagentToolCalls } from "../../session-detail-drawer/agents-breakdown/agent-decorations.ts"
+import { SubagentConversationView } from "../../session-detail-drawer/agents-breakdown/subagent-conversation-view.tsx"
+import { useAgentGraph } from "../../session-detail-drawer/agents-breakdown/use-agent-graph.ts"
+import { useSubagentPreviews } from "../../session-detail-drawer/agents-breakdown/use-subagent-previews.ts"
+import {
+  computeLoadedConversationHighlights,
+  formatConversationSearchForBackend,
+} from "./compute-loaded-conversation-highlights.ts"
+import { ConversationSearchBar } from "./conversation-search-bar.tsx"
+import {
+  getFirstMatchHint,
+  getNavigableSearchHighlights,
+  resolveSearchScrollTarget,
+  toSearchHighlightRanges,
+} from "./navigable-search-highlights.ts"
+import { scrollToSearchMatch } from "./scroll-to-highlight-match.ts"
+import { SearchMatchNavigator } from "./search-match-navigator.tsx"
 
-function toSearchHighlightRanges(result: TraceSearchHighlightsResult | undefined): readonly HighlightRange[] {
-  if (!result || result.highlights.length === 0) return []
-  return result.highlights.map((h) => ({
-    messageIndex: h.messageIndex,
-    partIndex: h.partIndex,
-    startOffset: h.startOffset,
-    endOffset: h.endOffset,
-    type: h.type,
-  }))
+const LOAD_MORE_THRESHOLD_PX = 1200
+
+// Staff-only (admins + impersonating + DEV) — never shown to regular customers.
+function StaffConversationDownloadButton({
+  traceId,
+  messages,
+}: {
+  readonly traceId: string
+  readonly messages: readonly unknown[]
+}) {
+  const { isAdmin, isImpersonating } = useAuthSession()
+  const isStaff = import.meta.env.DEV || isAdmin || isImpersonating
+
+  const handleDownload = useCallback(() => {
+    const json = JSON.stringify(messages, null, 2)
+    const blob = new Blob([json], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `trace-${traceId.slice(0, 7)}-conversation-loaded.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, [messages, traceId])
+
+  if (!isStaff) return null
+  return (
+    <Button variant="ghost" size="sm" onClick={handleDownload} aria-label="Download conversation as JSON">
+      <Icon icon={DownloadIcon} size="sm" />
+    </Button>
+  )
 }
 
 function ConversationContent({
   traceDetail,
+  messages,
   navigateToSpan,
+  sessionSpanScope,
   projectId,
   isActive,
+  annotationsEnabled,
   scrollContainerRef,
   textSelectionPopoverControlsRef,
   onPopoverClose,
   searchQuery,
   messageTrailingSlot,
+  timeline,
+  focusMessageIndex,
+  totalMessages,
+  payloadBytes,
+  hasMoreMessages,
+  isLoadingMoreMessages,
+  onLoadMoreMessages,
+  onSelectAgent,
+  agentGraph: agentGraphOverride,
 }: {
   readonly traceDetail: TraceDetailRecord
-  readonly navigateToSpan?: ((spanId: string) => void) | undefined
+  readonly messages: readonly GenAIMessage[]
+  readonly navigateToSpan?: ((spanId: string, traceId?: string) => void) | undefined
+  /** When set, message/tool-call navigation links resolve against ALL session spans
+   *  (not just this trace); annotations still anchor to this trace. */
+  readonly sessionSpanScope?:
+    | {
+        readonly sessionId: string
+        readonly sessionStartTime: string
+        readonly sessionEndTime: string
+      }
+    | undefined
   readonly projectId: string
   readonly isActive: boolean
+  /** Off under a sandbox scope — hides the inline annotate affordances and skips annotation fetches. */
+  readonly annotationsEnabled: boolean
   readonly scrollContainerRef?: RefObject<HTMLDivElement | null> | undefined
   readonly textSelectionPopoverControlsRef?: RefObject<TextSelectionPopoverControls | null> | undefined
   readonly onPopoverClose?: (() => void) | undefined
   readonly searchQuery?: string | undefined
   /** Renders a slot below each message (e.g. semantic moment labels). Receives the original messageIndex and role. */
   readonly messageTrailingSlot?: ((messageIndex: number, role: string) => ReactNode) | undefined
+  /** Timeline for the minimap bar: null while loading, undefined when the feature is off. */
+  readonly timeline?: ConversationTimeline | null | undefined
+  readonly focusMessageIndex?: number | undefined
+  readonly totalMessages: number
+  readonly payloadBytes: number
+  readonly hasMoreMessages: boolean
+  readonly isLoadingMoreMessages: boolean
+  readonly onLoadMoreMessages: () => unknown
+  /** Opens a subagent's conversation in place (from a decorated tool call). */
+  readonly onSelectAgent?: ((node: AgentNode) => void) | undefined
+  /** Session-wide agent graph. When set, replaces the trace-local graph so tool calls from every trace in the accumulated conversation decorate, not just the latest. */
+  readonly agentGraph?: AgentGraph | undefined
 }) {
   const internalScrollRef = useRef<HTMLDivElement>(null)
   const scrollRef = scrollContainerRef ?? internalScrollRef
   const navigatorRef = useRef<ScrollNavigatorHandle>(null)
   const navItemRefs = useRef<(HTMLDivElement | null)[]>([])
   const clearSelectionRef = useRef<(() => void) | null>(null)
-
-  const user = useAuthenticatedUser()
-  const impersonatedBy = useAuthenticatedImpersonatedBy()
-  const isDev = import.meta.env.DEV
-  const isAdmin = (user as { role?: string }).role === "admin"
-  const showDownload = isDev || isAdmin || impersonatedBy !== null
-
-  const handleDownload = useCallback(() => {
-    const json = JSON.stringify(traceDetail.allMessages, null, 2)
-    const blob = new Blob([json], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `trace-${traceDetail.traceId.slice(0, 7)}-conversation.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, [traceDetail])
+  const autoLoadingMoreRef = useRef(false)
+  const hasScrolledToSearchRef = useRef<string | null>(null)
 
   const { data: spanMaps } = useConversationSpanMaps({
     projectId,
     traceId: traceDetail.traceId,
+    startTime: traceDetail.startTime,
+    allMessages: messages,
+    enabled: messages.length > 0 && (annotationsEnabled || (navigateToSpan !== undefined && sessionSpanScope == null)),
   })
 
-  useHotkeys([
-    {
-      hotkey: "N",
-      callback: () => navigatorRef.current?.navigate("down"),
-      options: { enabled: isActive, ignoreInputs: true },
-    },
-    {
-      hotkey: "P",
-      callback: () => navigatorRef.current?.navigate("up"),
-      options: { enabled: isActive, ignoreInputs: true },
-    },
-  ])
+  const { data: sessionSpanMaps } = useSessionConversationSpanMaps({
+    projectId,
+    sessionId: sessionSpanScope?.sessionId ?? "",
+    latestTraceId: traceDetail.traceId,
+    sessionStartTime: sessionSpanScope?.sessionStartTime ?? "",
+    sessionEndTime: sessionSpanScope?.sessionEndTime ?? "",
+    allMessages: messages,
+    enabled: sessionSpanScope != null && messages.length > 0 && navigateToSpan !== undefined,
+  })
 
-  const getSpanIdForMessage = useCallback((messageIndex: number) => spanMaps?.messageSpanMap[messageIndex], [spanMaps])
+  const navSpanMaps = sessionSpanScope ? sessionSpanMaps : spanMaps
+
+  const { data: agentSpans } = useSpansByTraceCollection({
+    projectId,
+    traceId: traceDetail.traceId,
+    startTimeFrom: traceDetail.startTime,
+    startTimeTo: traceDetail.endTime,
+  })
+  const traceAgentGraph = useAgentGraph(agentSpans)
+  // A session passes the session-wide graph so tool calls from every trace decorate; a plain trace uses its own.
+  const agentGraph = agentGraphOverride ?? traceAgentGraph
+
+  const band = useViewportBand({ scrollRef, timeline: timeline ?? null, isActive })
+
+  const [hoveredMessageIndex, setHoveredMessageIndex] = useState<number | null>(null)
+  const hoverSlice = useMemo(
+    () =>
+      timeline && hoveredMessageIndex !== null
+        ? visibleRangeToBand(timeline, hoveredMessageIndex, hoveredMessageIndex)
+        : null,
+    [timeline, hoveredMessageIndex],
+  )
+
+  const getSpanIdForMessage = useCallback(
+    (messageIndex: number) => spanMaps?.messageSpanMap[messageIndex]?.spanId,
+    [spanMaps],
+  )
 
   const { messageLevelAnnotations, isCreatePending, isUpdatePending } = useTraceAnnotationsData({
     projectId,
     traceId: traceDetail.traceId,
+    enabled: annotationsEnabled,
   })
 
   const {
@@ -127,35 +243,292 @@ function ConversationContent({
     traceId: traceDetail.traceId,
     isActive,
     getSpanIdForMessage,
+    annotationsEnabled,
   })
 
+  const dismissSelectionUi = useCallback(() => {
+    closeAnnotationPopover()
+    clearSelectionRef.current?.()
+  }, [closeAnnotationPopover])
+
+  const scrollToMessageAnchor = useCallback(
+    (messageIndex: number) => {
+      const container = scrollRef.current
+      if (!container) return
+      const el = findNearestMessageAnchor(container, messageIndex)
+      if (!el) return
+      el.scrollIntoView({ block: "center", behavior: "smooth" })
+      flashElement(el)
+    },
+    [scrollRef],
+  )
+
+  const handleTrackClick = useCallback(
+    (timelineMs: number) => {
+      if (!timeline) return
+      dismissSelectionUi()
+      const index = messageIndexAtTime(timeline, timelineMs)
+      if (index !== null) scrollToMessageAnchor(index)
+    },
+    [timeline, dismissSelectionUi, scrollToMessageAnchor],
+  )
+
+  const loadMoreMessages = useCallback(() => {
+    if (!hasMoreMessages || isLoadingMoreMessages || autoLoadingMoreRef.current) return
+
+    autoLoadingMoreRef.current = true
+    void Promise.resolve(onLoadMoreMessages())
+      .catch(() => undefined)
+      .finally(() => {
+        autoLoadingMoreRef.current = false
+      })
+  }, [hasMoreMessages, isLoadingMoreMessages, onLoadMoreMessages])
+
+  const maybeLoadMoreMessages = useCallback(() => {
+    const container = scrollRef.current
+    if (!container) return
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distanceFromBottom > LOAD_MORE_THRESHOLD_PX) return
+
+    loadMoreMessages()
+  }, [scrollRef, loadMoreMessages])
+
+  const handleMarkerClick = useCallback(
+    (marker: TimelineMarker) => {
+      const container = scrollRef.current
+      if (!container || !timeline) return
+      dismissSelectionUi()
+      switch (marker.kind) {
+        case "annotation": {
+          // Text-anchored annotations open in context; the instant scroll keeps
+          // the popover position measured against the settled layout.
+          const el = annotationsEnabled
+            ? container.querySelector<HTMLElement>(`[data-annotation-id="${marker.annotationId}"]`)
+            : null
+          if (el) {
+            el.scrollIntoView({ block: "center" })
+            const rect = el.getBoundingClientRect()
+            onAnnotationClick(marker.annotationId, { x: rect.left + rect.width / 2, y: rect.bottom })
+            return
+          }
+          scrollToMessageAnchor(marker.messageIndex ?? timeline.messages.length - 1)
+          return
+        }
+        case "moment":
+          scrollToMessageAnchor(marker.messageIndex)
+          return
+        case "toolCall": {
+          const el = marker.toolCallId
+            ? container.querySelector<HTMLElement>(`[data-tool-call-id="${marker.toolCallId}"]`)
+            : null
+          if (el) {
+            el.scrollIntoView({ block: "center", behavior: "smooth" })
+            flashElement(el)
+            return
+          }
+          handleTrackClick(wallToTimeline(timeline.scale, marker.atMs))
+          return
+        }
+        case "trace": {
+          const index =
+            marker.firstMessageIndex ?? messageIndexAtTime(timeline, wallToTimeline(timeline.scale, marker.atMs))
+          scrollToMessageAnchor(index ?? 0)
+          return
+        }
+        case "subagentSpawned": {
+          const el = marker.toolCallId
+            ? container.querySelector<HTMLElement>(`[data-tool-call-id="${marker.toolCallId}"]`)
+            : null
+          if (el) {
+            el.scrollIntoView({ block: "center", behavior: "smooth" })
+            flashElement(el)
+            return
+          }
+          handleTrackClick(wallToTimeline(timeline.scale, marker.atMs))
+          return
+        }
+      }
+    },
+    [
+      scrollRef,
+      timeline,
+      dismissSelectionUi,
+      annotationsEnabled,
+      onAnnotationClick,
+      scrollToMessageAnchor,
+      handleTrackClick,
+    ],
+  )
+
+  const [debouncedConversationSearch, setDebouncedConversationSearch] = useState("")
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0)
+
+  const handleDebouncedSearchQueryChange = useCallback((query: string) => {
+    setDebouncedConversationSearch(query)
+  }, [])
+
   const effectiveSearchQuery = searchQuery ?? ""
-  const { data: searchHighlightsData } = useTraceSearchHighlights({
+  const loadedConversationHighlights = useMemo(
+    () => computeLoadedConversationHighlights(messages, debouncedConversationSearch),
+    [debouncedConversationSearch, messages],
+  )
+
+  const localNavigableMatches = useMemo(
+    () => getNavigableSearchHighlights(loadedConversationHighlights.highlights),
+    [loadedConversationHighlights],
+  )
+
+  const needsRemoteSearchFallback =
+    debouncedConversationSearch.length > 0 && localNavigableMatches.length === 0 && hasMoreMessages
+
+  const backendConversationSearchQuery = useMemo(
+    () => formatConversationSearchForBackend(debouncedConversationSearch),
+    [debouncedConversationSearch],
+  )
+
+  const { data: projectSearchHighlightsData } = useTraceSearchHighlights({
     projectId,
     traceId: traceDetail.traceId,
     searchQuery: effectiveSearchQuery,
+    enabled: debouncedConversationSearch.length === 0 && effectiveSearchQuery.length > 0,
   })
 
-  const searchHighlightRanges = useMemo(() => toSearchHighlightRanges(searchHighlightsData), [searchHighlightsData])
+  const { data: remoteFallbackHighlightsData, isFetching: isRemoteSearchFallbackFetching } = useTraceSearchHighlights({
+    projectId,
+    traceId: traceDetail.traceId,
+    searchQuery: backendConversationSearchQuery,
+    enabled: needsRemoteSearchFallback && backendConversationSearchQuery.length > 0,
+  })
+
+  const searchHighlightsData = useMemo<TraceSearchHighlightsResult | undefined>(() => {
+    if (debouncedConversationSearch.length > 0) {
+      if (localNavigableMatches.length > 0) return loadedConversationHighlights
+      if (needsRemoteSearchFallback && remoteFallbackHighlightsData) return remoteFallbackHighlightsData
+      return loadedConversationHighlights
+    }
+    return projectSearchHighlightsData
+  }, [
+    debouncedConversationSearch,
+    loadedConversationHighlights,
+    localNavigableMatches.length,
+    needsRemoteSearchFallback,
+    projectSearchHighlightsData,
+    remoteFallbackHighlightsData,
+  ])
+
+  const navigableMatches = useMemo(
+    () => getNavigableSearchHighlights(searchHighlightsData?.highlights ?? []),
+    [searchHighlightsData],
+  )
+
+  const activeSearchQuery =
+    debouncedConversationSearch.length > 0 ? debouncedConversationSearch : effectiveSearchQuery.trim()
+  const searchNavigationActive = activeSearchQuery.length > 0 && navigableMatches.length > 0
+  const remoteFallbackFirstMatch = useMemo(() => {
+    if (!needsRemoteSearchFallback || !remoteFallbackHighlightsData) return null
+    return getNavigableSearchHighlights(remoteFallbackHighlightsData.highlights)[0] ?? null
+  }, [needsRemoteSearchFallback, remoteFallbackHighlightsData])
+  const isSearchingUnloadedConversation =
+    needsRemoteSearchFallback &&
+    (isRemoteSearchFallbackFetching ||
+      (remoteFallbackFirstMatch != null && remoteFallbackFirstMatch.messageIndex >= messages.length))
+
+  useHotkeys([
+    {
+      hotkey: "N",
+      callback: () => {
+        if (searchNavigationActive) {
+          setActiveMatchIndex((index) => Math.min(index + 1, navigableMatches.length - 1))
+          return
+        }
+        navigatorRef.current?.navigate("down")
+      },
+      options: { enabled: isActive, ignoreInputs: true },
+    },
+    {
+      hotkey: "P",
+      callback: () => {
+        if (searchNavigationActive) {
+          setActiveMatchIndex((index) => Math.max(index - 1, 0))
+          return
+        }
+        navigatorRef.current?.navigate("up")
+      },
+      options: { enabled: isActive, ignoreInputs: true },
+    },
+  ])
+
+  // TODO(frontend-use-effect-policy): resets the active match when the debounced query changes.
+  useEffect(() => {
+    setActiveMatchIndex(0)
+  }, [activeSearchQuery])
+
+  const searchHighlightRanges = useMemo(
+    () => toSearchHighlightRanges(searchHighlightsData, searchNavigationActive ? activeMatchIndex : null),
+    [activeMatchIndex, searchHighlightsData, searchNavigationActive],
+  )
 
   const mergedHighlightRanges = useMemo<readonly HighlightRange[]>(
     () => [...annotationHighlightRanges, ...searchHighlightRanges],
     [annotationHighlightRanges, searchHighlightRanges],
   )
 
-  const firstMatchHint = useMemo<FirstMatchHint | null>(() => {
-    if (!searchHighlightsData || searchHighlightsData.firstMatchIndex < 0) return null
-    const first = searchHighlightsData.highlights[searchHighlightsData.firstMatchIndex]
-    if (!first) return null
-    return { messageIndex: first.messageIndex, partIndex: first.partIndex }
-  }, [searchHighlightsData])
+  const firstMatchHint = useMemo<FirstMatchHint | null>(
+    () => getFirstMatchHint(searchHighlightsData),
+    [searchHighlightsData],
+  )
 
-  useScrollToFirstHighlight({
-    scrollRef,
-    traceId: traceDetail.traceId,
-    searchQuery: effectiveSearchQuery,
-    highlightsData: searchHighlightsData,
-  })
+  // TODO(frontend-use-effect-policy): loading search target pages is a query-side effect keyed by async highlight results.
+  useEffect(() => {
+    if (debouncedConversationSearch.length > 0) return
+    if (!firstMatchHint || firstMatchHint.messageIndex < messages.length) return
+    loadMoreMessages()
+  }, [debouncedConversationSearch, firstMatchHint, messages.length, loadMoreMessages])
+
+  // TODO(frontend-use-effect-policy): loads conversation chunks until a remote lexical match is in view.
+  useEffect(() => {
+    if (!needsRemoteSearchFallback || !remoteFallbackFirstMatch) return
+    if (remoteFallbackFirstMatch.messageIndex < messages.length) return
+    loadMoreMessages()
+  }, [needsRemoteSearchFallback, remoteFallbackFirstMatch, messages.length, loadMoreMessages])
+
+  useEffect(() => {
+    if (focusMessageIndex === undefined || focusMessageIndex < messages.length) return
+    loadMoreMessages()
+  }, [focusMessageIndex, messages.length, loadMoreMessages])
+
+  const searchScrollTarget = useMemo(
+    () =>
+      activeSearchQuery.length > 0
+        ? resolveSearchScrollTarget({
+            result: searchHighlightsData,
+            navigableMatches,
+            activeNavigableIndex: activeMatchIndex,
+          })
+        : null,
+    [activeMatchIndex, activeSearchQuery, navigableMatches, searchHighlightsData],
+  )
+
+  // TODO(frontend-use-effect-policy): scrolls to the active search match after highlight DOM mounts.
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container || !searchScrollTarget) {
+      hasScrolledToSearchRef.current = null
+      return
+    }
+    if (searchScrollTarget.messageIndex >= messages.length) return
+
+    const scrollKey = JSON.stringify({
+      query: activeSearchQuery,
+      matchIndex: activeMatchIndex,
+      target: searchScrollTarget,
+    })
+    if (hasScrolledToSearchRef.current === scrollKey) return
+    hasScrolledToSearchRef.current = scrollKey
+
+    return scrollToSearchMatch(container, searchScrollTarget)
+  }, [activeMatchIndex, activeSearchQuery, messages.length, scrollRef, searchScrollTarget])
 
   if (textSelectionPopoverControlsRef) {
     textSelectionPopoverControlsRef.current = {
@@ -165,98 +538,170 @@ function ConversationContent({
   }
 
   const messageActions =
-    navigateToSpan && spanMaps && Object.keys(spanMaps.messageSpanMap).length > 0
+    navigateToSpan && navSpanMaps && Object.keys(navSpanMaps.messageSpanMap).length > 0
       ? new Map(
-          Object.entries(spanMaps.messageSpanMap).map(([idx, spanId]) => [Number(idx), () => navigateToSpan(spanId)]),
-        )
-      : undefined
-
-  const toolCallActions =
-    navigateToSpan && spanMaps && Object.keys(spanMaps.toolCallSpanMap).length > 0
-      ? new Map(
-          Object.entries(spanMaps.toolCallSpanMap).map(([toolCallId, spanId]) => [
-            toolCallId,
-            () => navigateToSpan(spanId),
+          Object.entries(navSpanMaps.messageSpanMap).map(([idx, ref]) => [
+            Number(idx),
+            () => navigateToSpan(ref.spanId, ref.traceId),
           ]),
         )
       : undefined
 
+  const toolCallActions =
+    navigateToSpan && navSpanMaps && Object.keys(navSpanMaps.toolCallSpanMap).length > 0
+      ? new Map(
+          Object.entries(navSpanMaps.toolCallSpanMap).map(([toolCallId, ref]) => [
+            toolCallId,
+            () => navigateToSpan(ref.spanId, ref.traceId),
+          ]),
+        )
+      : undefined
+
+  const subagentPreviews = useSubagentPreviews({ projectId, graph: agentGraph })
+  const subagentToolCalls = useMemo(
+    () => buildSubagentToolCalls({ graph: agentGraph, onOpenConversation: onSelectAgent, previews: subagentPreviews }),
+    [agentGraph, onSelectAgent, subagentPreviews],
+  )
+  const subagentToolCallsProp = subagentToolCalls && subagentToolCalls.size > 0 ? subagentToolCalls : undefined
+
+  // A "successful" result part from a failed execution span should always
+  // render as failed.
+  const failedToolCallIds = timeline && timeline.failedToolCallIds.size > 0 ? timeline.failedToolCallIds : undefined
+
+  const showBar = timeline != null && timeline.scale.totalTimelineMs > 0 && timeline.messages.length > 0
+
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
-      <div ref={scrollRef} className="flex min-w-0 flex-col py-8 px-4 overflow-y-auto overflow-x-hidden flex-1">
+      <div className="shrink-0 border-b border-border bg-background px-4 py-2">
+        <div className="flex items-center gap-2">
+          <ConversationSearchBar className="min-w-0 flex-1" onDebouncedQueryChange={handleDebouncedSearchQueryChange} />
+          {isSearchingUnloadedConversation ? (
+            <Text.H6 color="foregroundMuted" className="shrink-0">
+              Searching…
+            </Text.H6>
+          ) : null}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <StaffConversationDownloadButton traceId={traceDetail.traceId} messages={messages} />
+            {searchNavigationActive ? (
+              <SearchMatchNavigator
+                activeIndex={activeMatchIndex}
+                matchCount={navigableMatches.length}
+                onPrevious={() => setActiveMatchIndex((index) => Math.max(index - 1, 0))}
+                onNext={() => setActiveMatchIndex((index) => Math.min(index + 1, navigableMatches.length - 1))}
+              />
+            ) : (
+              <ScrollNavigator
+                ref={navigatorRef}
+                scrollContainerRef={scrollRef}
+                itemRefs={navItemRefs}
+                prevLabel={
+                  <>
+                    Previous <HotkeyBadge hotkey="P" />
+                  </>
+                }
+                nextLabel={
+                  <>
+                    Next <HotkeyBadge hotkey="N" />
+                  </>
+                }
+              />
+            )}
+          </div>
+        </div>
+      </div>
+      <div
+        ref={scrollRef}
+        className="flex min-w-0 flex-col py-8 px-4 overflow-y-auto overflow-x-hidden flex-1"
+        onScroll={maybeLoadMoreMessages}
+        onPointerMove={(e) => {
+          const anchor = e.target instanceof HTMLElement ? e.target.closest("[data-message-index]") : null
+          const raw = anchor?.getAttribute("data-message-index")
+          const index = raw == null ? Number.NaN : Number.parseInt(raw, 10)
+          setHoveredMessageIndex(Number.isNaN(index) ? null : index)
+        }}
+        onPointerLeave={() => setHoveredMessageIndex(null)}
+      >
         <Conversation
-          messages={traceDetail.allMessages}
+          messages={messages}
           enableNavigator
           scrollContainerRef={scrollRef}
           navigatorRef={navigatorRef}
           navItemRefsRef={navItemRefs}
-          onTextSelect={handleTextSelect}
-          onSelectionDismiss={closeAnnotationPopover}
           clearSelectionRef={clearSelectionRef}
           highlightRanges={mergedHighlightRanges}
           firstMatchHint={firstMatchHint}
-          onAnnotationClick={onAnnotationClick}
-          messageAnnotationSlot={(messageIndex, role) => {
-            const data = messageLevelAnnotations.get(messageIndex)
-            return (
-              <MessageAnnotationTrigger
-                key={data?.annotations.map((a) => a.id).join(",") ?? `no-annotation-${messageIndex}`}
-                messageIndex={messageIndex}
-                messageRole={role}
-                projectId={projectId}
-                traceId={traceDetail.traceId}
-                spanId={spanMaps?.messageSpanMap[messageIndex]}
-                annotations={data?.annotations ?? []}
-                annotators={data?.annotators ?? []}
-                onClose={onPopoverClose}
-              />
-            )
-          }}
+          {...(failedToolCallIds ? { failedToolCallIds } : {})}
+          {...(annotationsEnabled
+            ? {
+                messageAnnotationSlot: (messageIndex: number, role: string) => {
+                  const data = messageLevelAnnotations.get(messageIndex)
+                  return (
+                    <MessageAnnotationTrigger
+                      key={data?.annotations.map((a) => a.id).join(",") ?? `no-annotation-${messageIndex}`}
+                      messageIndex={messageIndex}
+                      messageRole={role}
+                      projectId={projectId}
+                      traceId={traceDetail.traceId}
+                      spanId={spanMaps?.messageSpanMap[messageIndex]?.spanId}
+                      annotations={data?.annotations ?? []}
+                      annotators={data?.annotators ?? []}
+                      onClose={onPopoverClose}
+                    />
+                  )
+                },
+                onTextSelect: handleTextSelect,
+                onSelectionDismiss: closeAnnotationPopover,
+                onAnnotationClick,
+              }
+            : {})}
           {...(messageActions ? { messageActions } : {})}
           {...(toolCallActions ? { toolCallActions } : {})}
+          {...(subagentToolCallsProp ? { subagentToolCalls: subagentToolCallsProp } : {})}
           {...(messageTrailingSlot ? { messageTrailingSlot } : {})}
         />
-        <AnnotationPopover
-          position={textSelectionPopoverPosition}
-          scrollContainerRef={scrollRef}
-          projectId={projectId}
-          annotations={textSelectionAnnotations}
-          showCreateForm={textSelectionAnnotations.length === 0}
-          createInitialPassed={textSelectionInitialPassed}
-          createAutoFocus={textSelectionInitialPassed !== null}
-          isCreateLoading={isCreatePending}
-          isUpdateLoading={isUpdatePending}
-          onSave={createTextSelectionAnnotation}
-          onUpdate={updateTextSelectionAnnotation}
-          onClose={() => {
-            closeAnnotationPopover()
-            clearSelectionRef.current?.()
-            onPopoverClose?.()
-          }}
-        />
+        {hasMoreMessages ? (
+          <div className="flex flex-col items-center gap-2 py-6">
+            <Text.H6 color="foregroundMuted">
+              Showing {messages.length} of {totalMessages} messages ({formatBytes(payloadBytes)} total payload)
+            </Text.H6>
+            {isLoadingMoreMessages ? <Text.H6 color="foregroundMuted">Loading more messages…</Text.H6> : null}
+          </div>
+        ) : null}
+        {annotationsEnabled ? (
+          <AnnotationPopover
+            position={textSelectionPopoverPosition}
+            scrollContainerRef={scrollRef}
+            projectId={projectId}
+            annotations={textSelectionAnnotations}
+            showCreateForm={textSelectionAnnotations.length === 0}
+            createInitialPassed={textSelectionInitialPassed}
+            createAutoFocus={textSelectionInitialPassed !== null}
+            isCreateLoading={isCreatePending}
+            isUpdateLoading={isUpdatePending}
+            onSave={createTextSelectionAnnotation}
+            onUpdate={updateTextSelectionAnnotation}
+            onClose={() => {
+              closeAnnotationPopover()
+              clearSelectionRef.current?.()
+              onPopoverClose?.()
+            }}
+          />
+        ) : null}
       </div>
-      <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-        {showDownload && (
-          <Button variant="ghost" size="sm" onClick={handleDownload} aria-label="Download conversation as JSON">
-            <Icon icon={DownloadIcon} size="sm" />
-          </Button>
-        )}
-        <ScrollNavigator
-          ref={navigatorRef}
-          scrollContainerRef={scrollRef}
-          itemRefs={navItemRefs}
-          prevLabel={
-            <>
-              Previous <HotkeyBadge hotkey="P" />
-            </>
-          }
-          nextLabel={
-            <>
-              Next <HotkeyBadge hotkey="N" />
-            </>
-          }
+      {timeline === null && (
+        <div className="border-t border-border bg-background px-4 py-3">
+          <Skeleton className="h-10 w-full" />
+        </div>
+      )}
+      {showBar && timeline && (
+        <TimelineBar
+          timeline={timeline}
+          band={band}
+          hoverSlice={hoverSlice}
+          onTrackClick={handleTrackClick}
+          onMarkerClick={handleMarkerClick}
         />
-      </div>
+      )}
     </div>
   )
 }
@@ -265,20 +710,36 @@ export function ConversationTab({
   traceDetail,
   isDetailLoading,
   navigateToSpan,
+  sessionSpanScope,
   projectId,
   isActive,
+  annotationsEnabled = true,
   scrollContainerRef,
   textSelectionPopoverControlsRef,
   onPopoverClose,
   searchQuery,
   messageTrailingSlot,
+  timeline,
+  focusMessageIndex,
+  agentGraph,
 }: {
   readonly traceDetail: TraceDetailRecord | null | undefined
   readonly isDetailLoading: boolean
   /** Optional callback to navigate to a span. If not provided, message/tool call actions are hidden. */
-  readonly navigateToSpan?: ((spanId: string) => void) | undefined
+  readonly navigateToSpan?: ((spanId: string, traceId?: string) => void) | undefined
+  /** When set, message/tool-call navigation links resolve against ALL session spans
+   *  (not just this trace); annotations still anchor to this trace. */
+  readonly sessionSpanScope?:
+    | {
+        readonly sessionId: string
+        readonly sessionStartTime: string
+        readonly sessionEndTime: string
+      }
+    | undefined
   readonly projectId: string
   readonly isActive: boolean
+  /** Off under a sandbox scope — hides inline annotate affordances and skips annotation fetches. Defaults on. */
+  readonly annotationsEnabled?: boolean
   /** Optional ref to the scroll container. Used for external scroll control (e.g., annotation navigation). */
   readonly scrollContainerRef?: RefObject<HTMLDivElement | null> | undefined
   readonly textSelectionPopoverControlsRef?: RefObject<TextSelectionPopoverControls | null> | undefined
@@ -287,8 +748,55 @@ export function ConversationTab({
   readonly searchQuery?: string | undefined
   /** Renders a slot below each message (e.g. semantic moment labels). Receives the original messageIndex and role. */
   readonly messageTrailingSlot?: ((messageIndex: number, role: string) => ReactNode) | undefined
+  /** Timeline for the minimap bar: null while loading, undefined when the feature is off. */
+  readonly timeline?: ConversationTimeline | null | undefined
+  readonly focusMessageIndex?: number | undefined
+  /** Session-wide agent graph for decoration; when omitted the conversation derives a trace-local one. */
+  readonly agentGraph?: AgentGraph | undefined
 }) {
-  if (isDetailLoading) {
+  const conversation = useTraceConversationMessages({
+    projectId,
+    traceId: traceDetail?.traceId ?? "",
+    enabled: traceDetail != null,
+  })
+
+  const [agentTraceId, setAgentTraceId] = useParamState("agentTraceId", "", { history: "push" })
+  const [agentSpanId, setAgentSpanId] = useParamState("agentSpanId", "", { history: "push" })
+  const [mountedAgent, setMountedAgent] = useState<{ readonly traceId: string; readonly spanId: string } | null>(null)
+  const [subagentSlidIn, setSubagentSlidIn] = useState(false)
+
+  const selectAgent = useCallback(
+    (node: AgentNode | null) => {
+      if (!node?.ref.spanId) {
+        setSubagentSlidIn(false)
+        setAgentTraceId("")
+        setAgentSpanId("")
+        return
+      }
+      // Flip the transform in the same tick as the click so the slide starts
+      // immediately; the pane's content mounts a beat later (see the effect below).
+      setSubagentSlidIn(true)
+      setAgentTraceId(node.ref.traceId)
+      setAgentSpanId(node.ref.spanId)
+    },
+    [setAgentTraceId, setAgentSpanId],
+  )
+  const showSubagent = agentSpanId.length > 0 && agentTraceId.length > 0
+
+  // Reconcile the slide with the URL (browser back/forward, or the drawer
+  // clearing the params) and mount the pane's content off the critical path via
+  // startTransition so the transform can start animating right away.
+  // TODO(frontend-use-effect-policy): coordinates URL-driven mount/animate with the DOM transition.
+  useEffect(() => {
+    if (showSubagent) {
+      setSubagentSlidIn(true)
+      startTransition(() => setMountedAgent({ traceId: agentTraceId, spanId: agentSpanId }))
+    } else {
+      setSubagentSlidIn(false)
+    }
+  }, [showSubagent, agentTraceId, agentSpanId])
+
+  if (isDetailLoading || (traceDetail && conversation.isLoading)) {
     return (
       <div className="flex flex-col gap-4 py-8 px-4 flex-1">
         <Skeleton className="h-20 w-full" />
@@ -307,16 +815,55 @@ export function ConversationTab({
   }
 
   return (
-    <ConversationContent
-      isActive={isActive}
-      traceDetail={traceDetail}
-      navigateToSpan={navigateToSpan}
-      projectId={projectId}
-      scrollContainerRef={scrollContainerRef}
-      textSelectionPopoverControlsRef={textSelectionPopoverControlsRef}
-      onPopoverClose={onPopoverClose}
-      searchQuery={searchQuery}
-      messageTrailingSlot={messageTrailingSlot}
-    />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div
+          className="flex h-full w-full transition-transform duration-300 ease-out"
+          style={{ transform: subagentSlidIn ? "translateX(-100%)" : "translateX(0)" }}
+          onTransitionEnd={(e) => {
+            // Unmount the subagent pane only after it has slid fully back out.
+            if (e.target === e.currentTarget && !showSubagent) setMountedAgent(null)
+          }}
+        >
+          {/* Main conversation — stays mounted through the slide so its scroll position survives. */}
+          <div className="flex min-h-0 w-full shrink-0 flex-col">
+            <ConversationContent
+              isActive={isActive && !showSubagent}
+              annotationsEnabled={annotationsEnabled}
+              traceDetail={traceDetail}
+              messages={conversation.messages}
+              navigateToSpan={navigateToSpan}
+              sessionSpanScope={sessionSpanScope}
+              projectId={projectId}
+              scrollContainerRef={scrollContainerRef}
+              textSelectionPopoverControlsRef={textSelectionPopoverControlsRef}
+              onPopoverClose={onPopoverClose}
+              searchQuery={searchQuery}
+              messageTrailingSlot={messageTrailingSlot}
+              timeline={timeline}
+              focusMessageIndex={focusMessageIndex}
+              totalMessages={conversation.totalMessages}
+              payloadBytes={conversation.payloadBytes}
+              hasMoreMessages={conversation.hasNextPage}
+              isLoadingMoreMessages={conversation.isFetchingNextPage}
+              onLoadMoreMessages={() => conversation.fetchNextPage()}
+              onSelectAgent={selectAgent}
+              agentGraph={agentGraph}
+            />
+          </div>
+          {/* Subagent conversation — lazily mounted to the right, then slid into view. */}
+          <div className="flex min-h-0 w-full shrink-0 flex-col">
+            {mountedAgent && (
+              <SubagentConversationView
+                projectId={projectId}
+                agentTraceId={mountedAgent.traceId}
+                agentSpanId={mountedAgent.spanId}
+                onSelectAgent={selectAgent}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }

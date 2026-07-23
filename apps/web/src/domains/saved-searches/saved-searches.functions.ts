@@ -1,4 +1,9 @@
 import {
+  createMonitorUseCase,
+  SEMANTIC_SEARCH_UNMONITORABLE_MESSAGE,
+  savedSearchQueryIsMonitorable,
+} from "@domain/monitors"
+import {
   createSavedSearch,
   deleteSavedSearch,
   getSavedSearchBySlug,
@@ -9,14 +14,25 @@ import {
   searchSavedSearches,
   updateSavedSearch,
 } from "@domain/saved-searches"
-import { filterSetSchema, OrganizationId, ProjectId, SavedSearchId, UserId } from "@domain/shared"
-import { OutboxEventWriterLive, SavedSearchRepositoryLive, withPostgres } from "@platform/db-postgres"
+import {
+  alertIncidentConditionSchema,
+  alertSeveritySchema,
+  filterSetSchema,
+  monitorMetricSchema,
+  ProjectId,
+  SavedSearchId,
+  SqlClient,
+  UserId,
+  ValidationError,
+} from "@domain/shared"
+import { MonitorRepositoryLive, OutboxEventWriterLive, SavedSearchRepositoryLive } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import { z } from "zod"
-import { requireSession } from "../../server/auth.ts"
 import { getPostgresClient } from "../../server/clients.ts"
+import { requireScopedSession, resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 
 export interface SavedSearchRecord {
   readonly id: string
@@ -47,13 +63,12 @@ const querySchema = z.string().max(SAVED_SEARCH_QUERY_MAX_LENGTH).nullable()
 
 export const listSavedSearchesByProject = createServerFn({ method: "GET" })
   .inputValidator(z.object({ projectId: z.string() }))
-  .handler(async ({ data }): Promise<readonly SavedSearchRecord[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<readonly SavedSearchRecord[]> => {
+    const orgId = await resolveOrgScope(context)
 
     const page = await Effect.runPromise(
       listSavedSearches({ projectId: ProjectId(data.projectId) }).pipe(
-        withPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
+        withScopedPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
         withTracing,
       ),
     )
@@ -82,16 +97,15 @@ export const searchSavedSearchesOrgWide = createServerFn({ method: "GET" })
       limit: z.number().int().min(1).max(25).optional(),
     }),
   )
-  .handler(async ({ data }): Promise<readonly SavedSearchSearchRecord[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<readonly SavedSearchSearchRecord[]> => {
+    const orgId = await resolveOrgScope(context)
 
     const results = await Effect.runPromise(
       searchSavedSearches({
         ...(data.searchQuery !== undefined ? { searchQuery: data.searchQuery } : {}),
         ...(data.preferProjectId !== undefined ? { preferProjectId: ProjectId(data.preferProjectId) } : {}),
         ...(data.limit !== undefined ? { limit: data.limit } : {}),
-      }).pipe(withPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId), withTracing),
+      }).pipe(withScopedPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId), withTracing),
     )
 
     return results.map(
@@ -108,20 +122,35 @@ export const searchSavedSearchesOrgWide = createServerFn({ method: "GET" })
 
 export const getSavedSearchBySlugFn = createServerFn({ method: "GET" })
   .inputValidator(z.object({ projectId: z.string(), slug: z.string() }))
-  .handler(async ({ data }): Promise<SavedSearchRecord | null> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<SavedSearchRecord | null> => {
+    const orgId = await resolveOrgScope(context)
 
     return Effect.runPromise(
       getSavedSearchBySlug({ projectId: ProjectId(data.projectId), slug: data.slug })
         .pipe(Effect.map(toRecord))
         .pipe(
           Effect.catchTag("SavedSearchNotFoundError", () => Effect.succeed(null)),
-          withPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
+          withScopedPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
           withTracing,
         ),
     )
   })
+
+const MONITOR_NAME_MAX_LENGTH = 128
+const savedSearchMonitorKindSchema = z.enum(["savedSearch.match", "savedSearch.threshold", "savedSearch.escalating"])
+
+/**
+ * Optional companion monitor created alongside a new saved search. It stores the
+ * saved-search id on the monitor target so edits keep flowing into the metric monitor.
+ */
+const savedSearchMonitorSchema = z.object({
+  kind: savedSearchMonitorKindSchema,
+  condition: alertIncidentConditionSchema.nullable(),
+  severity: alertSeveritySchema,
+  metric: monitorMetricSchema.optional(),
+})
+
+export type SavedSearchMonitorInput = z.infer<typeof savedSearchMonitorSchema>
 
 export const createSavedSearchFn = createServerFn({ method: "POST" })
   .inputValidator(
@@ -130,21 +159,70 @@ export const createSavedSearchFn = createServerFn({ method: "POST" })
       name: nameSchema,
       query: querySchema,
       filterSet: filterSetSchema,
+      monitor: savedSearchMonitorSchema.optional(),
     }),
   )
-  .handler(async ({ data }): Promise<SavedSearchRecord> => {
-    const { organizationId, userId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<SavedSearchRecord> => {
+    const { userId, organizationId: orgId } = await requireScopedSession(context)
+    const monitorInput = data.monitor
+
+    // The modal disables the monitor toggle for queries with a semantic part;
+    // enforce it server-side too (createMonitorUseCase re-checks in-transaction).
+    if (monitorInput && !savedSearchQueryIsMonitorable(data.query)) {
+      throw new ValidationError({ field: "monitor.source", message: SEMANTIC_SEARCH_UNMONITORABLE_MESSAGE })
+    }
+
+    const createSearch = createSavedSearch({
+      projectId: ProjectId(data.projectId),
+      name: data.name,
+      query: data.query,
+      filterSet: data.filterSet,
+      createdByUserId: UserId(userId),
+    })
 
     const created = await Effect.runPromise(
-      createSavedSearch({
-        projectId: ProjectId(data.projectId),
-        name: data.name,
-        query: data.query,
-        filterSet: data.filterSet,
-        createdByUserId: UserId(userId),
-      }).pipe(
-        withPostgres(Layer.mergeAll(SavedSearchRepositoryLive, OutboxEventWriterLive), getPostgresClient(), orgId),
+      (monitorInput
+        ? Effect.gen(function* () {
+            const sqlClient = yield* SqlClient
+            // One transaction so a failed monitor never strands the search:
+            // the nested transaction inside `createMonitorUseCase` is pass-through.
+            return yield* sqlClient.transaction(
+              Effect.gen(function* () {
+                const search = yield* createSearch
+                yield* createMonitorUseCase({
+                  organizationId: orgId,
+                  projectId: ProjectId(data.projectId),
+                  name: search.name.slice(0, MONITOR_NAME_MAX_LENGTH),
+                  target: {
+                    type: "savedSearch",
+                    id: search.id,
+                    filterSet: search.filterSet,
+                  },
+                  rule: {
+                    trigger: monitorInput.kind.includes("threshold")
+                      ? "threshold"
+                      : monitorInput.kind.includes("escalating")
+                        ? "escalating"
+                        : "match",
+                    config: {
+                      filterSet: search.filterSet,
+                      metric: monitorInput.metric ?? { kind: "count" },
+                      ...(monitorInput.condition ? { condition: monitorInput.condition as never } : {}),
+                    },
+                    severity: monitorInput.severity,
+                  },
+                })
+                return search
+              }),
+            )
+          })
+        : createSearch
+      ).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(SavedSearchRepositoryLive, OutboxEventWriterLive, MonitorRepositoryLive),
+          getPostgresClient(),
+          orgId,
+        ),
         withTracing,
       ),
     )
@@ -160,9 +238,8 @@ export const updateSavedSearchFn = createServerFn({ method: "POST" })
       filterSet: filterSetSchema.optional(),
     }),
   )
-  .handler(async ({ data }): Promise<SavedSearchRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<SavedSearchRecord> => {
+    const orgId = await resolveOrgScope(context)
 
     const updated = await Effect.runPromise(
       updateSavedSearch({
@@ -170,20 +247,23 @@ export const updateSavedSearchFn = createServerFn({ method: "POST" })
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.query !== undefined ? { query: data.query } : {}),
         ...(data.filterSet !== undefined ? { filterSet: data.filterSet } : {}),
-      }).pipe(withPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId), withTracing),
+      }).pipe(withScopedPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId), withTracing),
     )
     return toRecord(updated)
   })
 
 export const deleteSavedSearchFn = createServerFn({ method: "POST" })
   .inputValidator(z.object({ id: z.string() }))
-  .handler(async ({ data }): Promise<void> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<void> => {
+    const orgId = await resolveOrgScope(context)
 
     await Effect.runPromise(
       deleteSavedSearch({ savedSearchId: SavedSearchId(data.id) }).pipe(
-        withPostgres(Layer.mergeAll(SavedSearchRepositoryLive, OutboxEventWriterLive), getPostgresClient(), orgId),
+        withScopedPostgres(
+          Layer.mergeAll(SavedSearchRepositoryLive, OutboxEventWriterLive),
+          getPostgresClient(),
+          orgId,
+        ),
         withTracing,
       ),
     )

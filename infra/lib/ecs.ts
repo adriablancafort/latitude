@@ -331,7 +331,7 @@ function createTaskDefinition(
 
   // Resource allocation for Datadog Agent sidecar container
   const DATADOG_AGENT_CPU = 256
-  const DATADOG_AGENT_MEMORY = 512
+  const DATADOG_AGENT_MEMORY = 256
 
   const protocol = "https"
   const webUrl = `${protocol}://${config.domains.web}`
@@ -362,6 +362,12 @@ function createTaskDefinition(
       secrets["google-oauth-client-secret"].arn,
       secrets["github-oauth-client-id"].arn,
       secrets["github-oauth-client-secret"].arn,
+      secrets["github-app-id"].arn,
+      secrets["github-app-slug"].arn,
+      secrets["github-app-private-key"].arn,
+      secrets["github-app-webhook-secret"].arn,
+      secrets["github-app-client-id"].arn,
+      secrets["github-app-client-secret"].arn,
       secrets["stripe-secret-key"].arn,
       secrets["stripe-webhook-secret"].arn,
       secrets["stripe-pro-price-id"].arn,
@@ -377,8 +383,6 @@ function createTaskDefinition(
       secrets["latitude-telemetry-project-slug"].arn,
       secrets["turnstile-secret-key"].arn,
       secrets["posthog-api-key"].arn,
-      secrets["framer-api-key"].arn,
-      secrets["framer-project-url"].arn,
       secrets["loops-api-key"].arn,
       secrets["v2-support-app-id"].arn,
       secrets["v2-support-app-secret-key"].arn,
@@ -409,6 +413,12 @@ function createTaskDefinition(
         googleOauthClientSecretArn,
         githubOauthClientIdArn,
         githubOauthClientSecretArn,
+        githubAppIdArn,
+        githubAppSlugArn,
+        githubAppPrivateKeyArn,
+        githubAppWebhookSecretArn,
+        githubAppClientIdArn,
+        githubAppClientSecretArn,
         stripeSecretKeyArn,
         stripeWebhookSecretArn,
         stripeProPriceIdArn,
@@ -424,8 +434,6 @@ function createTaskDefinition(
         latitudeTelemetryProjectSlugArn,
         turnstileSecretKeyArn,
         posthogApiKeyArn,
-        framerApiKeyArn,
-        framerProjectUrlArn,
         loopsApiKeyArn,
         supportAppIdArn,
         supportAppSecretKeyArn,
@@ -461,11 +469,8 @@ function createTaskDefinition(
           { name: "LAT_INGEST_URL", value: ingestUrl },
           { name: "LAT_LATITUDE_TELEMETRY_INGEST_URL", value: ingestUrl },
           { name: "LAT_LATITUDE_API_URL", value: apiUrl },
-          { name: "LAT_BETTER_AUTH_URL", value: apiUrl },
           { name: "LAT_TRUSTED_ORIGINS", value: trustedOrigins },
           { name: "LAT_CORS_ALLOWED_ORIGINS", value: webUrl },
-          { name: "VITE_LAT_API_URL", value: `${apiUrl}/v1` },
-          { name: "VITE_LAT_WEB_URL", value: webUrl },
           ...(config.name === "production" ? [{ name: "VITE_LAT_GTM_CONTAINER_ID", value: "GTM-5NWGV24H" }] : []),
           { name: "DD_TRACE_ENABLED", value: "true" },
           { name: "DD_ENV", value: config.name },
@@ -476,7 +481,9 @@ function createTaskDefinition(
           { name: "DD_AGENT_HOST", value: "localhost" },
           { name: "LAT_OBSERVABILITY_ENABLED", value: "true" },
           { name: "LAT_OBSERVABILITY_OTLP_TRACES_ENDPOINT", value: "http://localhost:4318/v1/traces" },
+          { name: "LAT_OSS_TELEMETRY_ENABLED", value: "false" },
           { name: "LAT_POSTHOG_HOST", value: "https://eu.i.posthog.com" },
+          { name: "LAT_TAXONOMY_ADAPTIVE_CLUSTERING_MODE", value: config.name === "production" ? "shadow" : "off" },
         ]
 
         const baseSecrets: { name: string; valueFrom: string }[] = [
@@ -484,10 +491,10 @@ function createTaskDefinition(
           { name: "LAT_ADMIN_DATABASE_URL", valueFrom: dbAdminSecretArn },
           { name: "LAT_BETTER_AUTH_SECRET", valueFrom: betterAuthArn },
           { name: "LAT_MASTER_ENCRYPTION_KEY", valueFrom: encryptionKeyArn },
-          { name: "CLICKHOUSE_URL", valueFrom: clickhouseUrlArn },
-          { name: "CLICKHOUSE_USER", valueFrom: clickhouseUserArn },
-          { name: "CLICKHOUSE_PASSWORD", valueFrom: clickhousePasswordArn },
-          { name: "CLICKHOUSE_DB", valueFrom: clickhouseDbArn },
+          { name: "LAT_CLICKHOUSE_URL", valueFrom: clickhouseUrlArn },
+          { name: "LAT_CLICKHOUSE_USER", valueFrom: clickhouseUserArn },
+          { name: "LAT_CLICKHOUSE_PASSWORD", valueFrom: clickhousePasswordArn },
+          { name: "LAT_CLICKHOUSE_DB", valueFrom: clickhouseDbArn },
           { name: "LAT_VOYAGE_API_KEY", valueFrom: voyageApiKeyArn },
           { name: "LAT_MAILGUN_API_KEY", valueFrom: mailgunApiKeyArn },
           { name: "LAT_MAILGUN_DOMAIN", valueFrom: mailgunDomainArn },
@@ -513,20 +520,23 @@ function createTaskDefinition(
           { name: "LAT_TEMPORAL_TASK_QUEUE", value: temporalCloud.taskQueue },
         ]
 
-        // Temporal's worker runs webpack to bundle workflows at startup; V8's default
-        // container-derived heap (~half of this task's container memory) is too small and OOMs.
-        const workflowsMaxOldSpaceMb = Math.max(384, Math.floor(serviceConfig.memory * 0.7))
+        const nodeOptions = {
+          name: "NODE_OPTIONS",
+          value: `--max-old-space-size=${Math.max(384, Math.floor(serviceConfig.memory * 0.7))}`,
+        }
 
         const serviceSpecificEnvVars: Record<string, { name: string; value: string }[]> = {
           // The API and web app start/query workflows (e.g. issue monitoring).
-          api: temporalEnvVars,
-          web: temporalEnvVars,
+          api: [nodeOptions, ...temporalEnvVars],
+          ingest: [nodeOptions],
+          web: [nodeOptions, ...temporalEnvVars],
           workflows: [
             { name: "LAT_WORKFLOWS_HEALTH_PORT", value: "8080" },
-            { name: "NODE_OPTIONS", value: `--max-old-space-size=${workflowsMaxOldSpaceMb}` },
+            { name: "LAT_TEMPORAL_MAX_CONCURRENT_ACTIVITY_TASKS", value: "4" },
+            nodeOptions,
             ...temporalEnvVars,
           ],
-          workers: temporalEnvVars,
+          workers: [nodeOptions, ...temporalEnvVars],
         }
 
         const environment = [...baseEnvironment, ...(serviceSpecificEnvVars[serviceConfig.name] ?? [])]
@@ -537,6 +547,15 @@ function createTaskDefinition(
           { name: "LAT_GOOGLE_CLIENT_SECRET", valueFrom: googleOauthClientSecretArn },
           { name: "LAT_GITHUB_CLIENT_ID", valueFrom: githubOauthClientIdArn },
           { name: "LAT_GITHUB_CLIENT_SECRET", valueFrom: githubOauthClientSecretArn },
+        ]
+
+        const githubAppSecrets = [
+          { name: "LAT_GITHUB_APP_ID", valueFrom: githubAppIdArn },
+          { name: "LAT_GITHUB_APP_SLUG", valueFrom: githubAppSlugArn },
+          { name: "LAT_GITHUB_APP_PRIVATE_KEY", valueFrom: githubAppPrivateKeyArn },
+          { name: "LAT_GITHUB_WEBHOOK_SECRET", valueFrom: githubAppWebhookSecretArn },
+          { name: "LAT_GITHUB_APP_CLIENT_ID", valueFrom: githubAppClientIdArn },
+          { name: "LAT_GITHUB_APP_CLIENT_SECRET", valueFrom: githubAppClientSecretArn },
         ]
 
         const temporalSecret = { name: "LAT_TEMPORAL_API_KEY", valueFrom: temporalApiKeyArn }
@@ -563,16 +582,11 @@ function createTaskDefinition(
           { name: "LAT_V2_SUPPORT_APP_SECRET_KEY", valueFrom: supportAppSecretKeyArn },
         ]
 
-        const framerSecrets = [
-          { name: "LAT_FRAMER_API_KEY", valueFrom: framerApiKeyArn },
-          { name: "LAT_FRAMER_PROJECT_URL", valueFrom: framerProjectUrlArn },
-        ]
-
         const serviceSpecificSecrets: Record<string, { name: string; valueFrom: string }[]> = {
-          api: [temporalSecret],
-          web: [...oauthSecrets, ...stripeSelfServeSecrets, temporalSecret, ...supportSecrets, ...framerSecrets],
+          api: [temporalSecret, ...githubAppSecrets],
+          web: [...oauthSecrets, ...stripeSelfServeSecrets, temporalSecret, ...supportSecrets, ...githubAppSecrets],
           workflows: [temporalSecret, ...stripeOverageSecrets],
-          workers: [temporalSecret, ...bullBoardSecrets],
+          workers: [temporalSecret, ...bullBoardSecrets, ...githubAppSecrets],
         }
 
         const secrets = [...baseSecrets, ...(serviceSpecificSecrets[serviceConfig.name] ?? [])]
@@ -684,26 +698,28 @@ function createTaskDefinition(
       },
     )
 
-  // Calculate valid Fargate CPU/memory combination
-  // Fargate only supports specific predefined values
+  // Calculate a valid Fargate CPU/memory combination. Fargate accepts memory
+  // only from CPU-specific ranges/increments, so round up rather than passing
+  // arbitrary totals like 2560 MiB after adding the Datadog sidecar.
   const totalCpu = serviceConfig.cpu + DATADOG_AGENT_CPU
   const totalMemory = serviceConfig.memory + DATADOG_AGENT_MEMORY
 
-  // Valid Fargate CPU values: 256, 512, 1024, 2048, 4096, 8192, 16384
-  const validCpuValues = [256, 512, 1024, 2048, 4096, 8192, 16384]
-  const taskCpu = validCpuValues.find((cpu) => cpu >= totalCpu) ?? 16384
+  const fargateOptions = [
+    { cpu: 256, minMemory: 512, maxMemory: 2048, step: 512 },
+    { cpu: 512, minMemory: 1024, maxMemory: 4096, step: 1024 },
+    { cpu: 1024, minMemory: 2048, maxMemory: 8192, step: 1024 },
+    { cpu: 2048, minMemory: 4096, maxMemory: 16384, step: 1024 },
+    { cpu: 4096, minMemory: 8192, maxMemory: 30720, step: 1024 },
+    { cpu: 8192, minMemory: 16384, maxMemory: 61440, step: 4096 },
+    { cpu: 16384, minMemory: 32768, maxMemory: 122880, step: 8192 },
+  ] as const
 
-  // Memory must be at least double the CPU (in MB) and in valid ranges
-  const minMemoryForCpu: Record<number, number> = {
-    256: 512,
-    512: 1024,
-    1024: 2048,
-    2048: 4096,
-    4096: 8192,
-    8192: 16384,
-    16384: 32768,
-  }
-  const taskMemory = Math.max(totalMemory, minMemoryForCpu[taskCpu] ?? 32768)
+  const taskOption =
+    fargateOptions.find((option) => option.cpu >= totalCpu && totalMemory <= option.maxMemory) ??
+    fargateOptions[fargateOptions.length - 1]
+  const taskCpu = taskOption.cpu
+  const taskMemoryBase = Math.max(totalMemory, taskOption.minMemory)
+  const taskMemory = Math.ceil(taskMemoryBase / taskOption.step) * taskOption.step
 
   return new aws.ecs.TaskDefinition(`${name}-${serviceConfig.name}-task`, {
     family: `${name}-${serviceConfig.name}`,
@@ -777,10 +793,10 @@ function createMigrationTaskDefinition(
           ],
           secrets: [
             { name: "LAT_ADMIN_DATABASE_URL", valueFrom: dbSecretArn },
-            { name: "CLICKHOUSE_MIGRATION_URL", valueFrom: clickhouseMigrationUrlArn },
-            { name: "CLICKHOUSE_USER", valueFrom: clickhouseUserArn },
-            { name: "CLICKHOUSE_PASSWORD", valueFrom: clickhousePasswordArn },
-            { name: "CLICKHOUSE_DB", valueFrom: clickhouseDbArn },
+            { name: "LAT_CLICKHOUSE_MIGRATION_URL", valueFrom: clickhouseMigrationUrlArn },
+            { name: "LAT_CLICKHOUSE_USER", valueFrom: clickhouseUserArn },
+            { name: "LAT_CLICKHOUSE_PASSWORD", valueFrom: clickhousePasswordArn },
+            { name: "LAT_CLICKHOUSE_DB", valueFrom: clickhouseDbArn },
             { name: "LAT_VOYAGE_API_KEY", valueFrom: voyageApiKeyArn },
           ],
         }

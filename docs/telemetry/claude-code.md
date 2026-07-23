@@ -19,7 +19,7 @@ Stream Claude Code conversations into Latitude as traces. After setup, Claude Co
 3. Run the installer:
 
 ```bash
-npx -y @latitude-data/claude-code-telemetry install
+npx -y @latitude-data/claude-code-telemetry@latest install
 ```
 
 The installer prompts for your API key and project slug, then configures Claude Code to export telemetry after each turn.
@@ -27,7 +27,7 @@ The installer prompts for your API key and project slug, then configures Claude 
 You can also pass values directly:
 
 ```bash
-npx -y @latitude-data/claude-code-telemetry install \
+npx -y @latitude-data/claude-code-telemetry@latest install \
   --api-key=lat_xxx \
   --project=your-project-slug \
   --yes
@@ -50,7 +50,7 @@ Restart Claude Code for the change to take effect.
 To remove the integration:
 
 ```bash
-npx -y @latitude-data/claude-code-telemetry uninstall
+npx -y @latitude-data/claude-code-telemetry@latest uninstall
 ```
 
 ## Manual configuration
@@ -69,7 +69,7 @@ If you manage Claude Code settings yourself, add the telemetry command to `~/.cl
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y @latitude-data/claude-code-telemetry",
+            "command": "npx -y @latitude-data/claude-code-telemetry@latest",
             "async": true
           }
         ]
@@ -86,8 +86,49 @@ Restart Claude Code after saving.
 Treat this as full-fidelity telemetry. Latitude receives the content needed to reconstruct Claude Code turns, including prompts, responses, tool input/output, and system context when available.
 
 - Telemetry runs for each turn until disabled or uninstalled.
-- Latitude does not redact secrets from captured content.
 - Disable telemetry before working with sensitive material you do not want sent to Latitude.
+
+## Custom redaction
+
+If you want to keep telemetry enabled but mask specific span attributes before they leave your machine, set `LATITUDE_REDACT_ATTRIBUTES` in your Claude Code environment. Redaction happens locally, after the content gate and before the OTLP export.
+
+`LATITUDE_REDACT_ATTRIBUTES` accepts a JSON array (or comma-separated list) of patterns. Each pattern can be:
+
+- An **exact attribute name** — `"gen_ai.tool.call.arguments"`
+- A **regex source string** — `"^gen_ai\\.(input|output)\\.messages$"` (anchored match)
+- A **`/pattern/flags` string** — `"/^gen_ai\\.tool\\.call\\.(arguments|result)$/i"`
+
+`LATITUDE_REDACT_MASK` sets the replacement value (default: `******`). Set it to `[]` to replace message arrays with an empty array instead of a string.
+
+### Examples
+
+Redact all prompt and response messages, plus tool arguments and results:
+
+```bash
+LATITUDE_REDACT_ATTRIBUTES='["/^gen_ai\\.(input|output)\\.messages$/", "/^gen_ai\\.tool\\.call\\.(arguments|result)$/"]' \
+LATITUDE_REDACT_MASK='[]' \
+claude
+```
+
+Redact only a specific custom attribute by exact name:
+
+```bash
+LATITUDE_REDACT_ATTRIBUTES='["user_prompt"]' \
+claude
+```
+
+To persist redaction settings, add them to the `env` block in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "LATITUDE_API_KEY": "lat_xxx",
+    "LATITUDE_PROJECT": "your-project-slug",
+    "LATITUDE_REDACT_ATTRIBUTES": "[\"/^gen_ai\\\\.(input|output)\\\\.messages$/\"]",
+    "LATITUDE_REDACT_MASK": "[]"
+  }
+}
+```
 
 ## Troubleshooting
 

@@ -1,3 +1,4 @@
+import { anyValueToPlain } from "../any-value.ts"
 import type { OtlpKeyValue } from "../types.ts"
 import { type Candidate, fromString, fromStringArray } from "./utils.ts"
 
@@ -72,12 +73,10 @@ function fromDotFlattened(prefix: string): Candidate<Record<string, string>> {
       const result: Record<string, string> = {}
       const prefixDot = `${prefix}.`
       for (const attr of attrs) {
-        if (attr.key.startsWith(prefixDot)) {
-          const subKey = attr.key.slice(prefixDot.length)
-          if (subKey && attr.value?.stringValue !== undefined) {
-            result[subKey] = attr.value.stringValue
-          }
-        }
+        if (!attr.key.startsWith(prefixDot)) continue
+        const subKey = attr.key.slice(prefixDot.length)
+        const value = toStringValue(anyValueToPlain(attr.value))
+        if (subKey && value !== undefined) result[subKey] = value
       }
       return Object.keys(result).length > 0 ? result : undefined
     },
@@ -93,6 +92,7 @@ export function resolveMetadata(attrs: readonly OtlpKeyValue[]): Record<string, 
     fromDotFlattened("langfuse.observation.metadata"), // Langfuse (span-level, dot-flattened)
     fromDotFlattened("braintrust.metadata"), // Braintrust (dot-flattened fallback)
     fromDotFlattened("traceloop.association.properties"), // Traceloop / OpenLLMetry (dot-flattened)
+    fromDotFlattened("trace.metadata"), // OpenRouter Broadcast OTLP custom trace metadata
     fromDotFlattened("langsmith.metadata"), // LangSmith (dot-flattened)
     fromDotFlattened("meta.metadata"), // Datadog (dot-flattened)
   ]

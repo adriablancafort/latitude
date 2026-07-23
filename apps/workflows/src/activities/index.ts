@@ -31,48 +31,73 @@ export {
   recordEvaluationGenerationUsage,
 } from "./evaluation-alignment-activities.ts"
 export { optimizeEvaluationDraft } from "./evaluation-optimization-activities.ts"
-export { draftAnnotate, runFlagger, saveAnnotation } from "./flagger-activities.ts"
 export {
-  assignOrCreateIssue,
-  assignScoreToIssue,
-  checkEligibility,
-  createIssueFromScore,
-  embedScoreFeedback,
-  syncScoreAnalytics,
-} from "./issue-discovery-activities.ts"
+  type ClassifySessionFlaggerActivityInput,
+  classifySessionFlagger,
+  type DraftSessionFlaggerAnnotationActivityInput,
+  draftSessionFlaggerAnnotation,
+  type SaveSessionFlaggerAnnotationActivityInput,
+  type ScreenSessionFlaggersActivityInput,
+  saveSessionFlaggerAnnotation,
+  screenSessionFlaggers,
+} from "./flagger-session-activities.ts"
 export { buildOptimizationDedupeKey, scheduleEvaluationOptimization } from "./schedule-evaluation-optimization.ts"
 export {
   type SeedDemoProjectActivityInput,
   seedDemoProjectClickHouseActivity,
+  seedDemoProjectDerivedSnapshotActivity,
   seedDemoProjectPostgresActivity,
   seedDemoProjectTraceSearchActivity,
 } from "./seed-demo-project-activities.ts"
 export {
+  type BackfillProjectDescriptor,
   type BackfillSessionDescriptor,
+  type ListBackfillProjectsActivityInput,
+  type ListRecentBackfillSessionsActivityInput,
   listBackfillSessionsActivity,
+  listRecentBackfillSessionsActivity,
+  listSessionIntelligenceBackfillProjectsActivity,
   resetSessionIntelligenceForProjectActivity,
+  resetSessionIntelligenceForSessionsActivity,
   resetTaxonomyForProjectActivity,
+  type SelectiveSessionIntelligenceResetActivityInput,
   type SessionIntelligenceBackfillActivityInput,
   waitForTaxonomyObservationStabilityActivity,
 } from "./session-intelligence-backfill-activities.ts"
 export {
+  assertShowcaseNextQualityActivity,
+  enqueueShowcaseCleanupActivity,
+  markShowcaseNextReadyActivity,
+  swapShowcaseActivity,
+} from "./showcase-regeneration-activities.ts"
+export {
+  assignOrCreateSignal,
+  assignScoreToSignal,
+  checkEligibility,
+  createSignalFromScore,
+  embedScoreFeedback,
+  syncScoreAnalytics,
+} from "./signal-discovery-activities.ts"
+export {
   assertGardenTaxonomyQualityActivity,
+  cleanupGardenTaxonomyStagingActivity,
   completeGardenTaxonomyRunActivity,
   deprecateGardenTaxonomyClustersActivity,
   emitGardenTaxonomyLineageActivity,
   failGardenTaxonomyRunActivity,
   type GardenTaxonomyActivityInput,
   type GardenTaxonomyActivityResult,
+  type GardenTaxonomyBuildPlanResult,
+  type GardenTaxonomyDeprecateClustersInput,
   type GardenTaxonomyNamingPlanResult,
   type GardenTaxonomyQualityResult,
-  mergeGardenTaxonomyClustersActivity,
-  nameGardenTaxonomyActivity,
+  type GardenTaxonomyReassignObservationsInput,
+  type GardenTaxonomySaveClustersInput,
   planGardenTaxonomyNamingActivity,
-  reassignGardenTaxonomyNoiseActivity,
-  reconcileGardenTaxonomyCountsActivity,
-  recurseGardenTaxonomyTreeActivity,
+  planHierarchicalGardenTaxonomyActivity,
+  reassignGardenTaxonomyObservationsActivity,
+  saveGardenTaxonomyClustersActivity,
   startGardenTaxonomyRunActivity,
-  sweepGardenTaxonomyNoiseActivity,
 } from "./taxonomy-gardening-activities.ts"
 export {
   type NameTaxonomyClusterActivityInput,

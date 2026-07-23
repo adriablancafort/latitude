@@ -1,11 +1,11 @@
 import { cuidSchema, scoreIdSchema, sessionIdSchema, spanIdSchema, traceIdSchema } from "@domain/shared"
 import { z } from "zod"
-import { ANNOTATION_SCORE_PARTIAL_SOURCE_IDS, SCORE_SOURCE_ID_MAX_LENGTH, SCORE_SOURCES } from "../constants.ts"
+import { ANNOTATION_SCORE_PARTIAL_SOURCE_IDS, SCORE_SOURCE_ID_MAX_LENGTH, SCORE_SOURCE_TYPES } from "../constants.ts"
 
 const scoreSourceIdSchema = z.string().min(1).max(SCORE_SOURCE_ID_MAX_LENGTH)
 
-export const scoreSourceSchema = z.enum(SCORE_SOURCES)
-export type ScoreSource = z.infer<typeof scoreSourceSchema>
+export const scoreSourceTypeSchema = z.enum(SCORE_SOURCE_TYPES)
+export type ScoreSourceType = z.infer<typeof scoreSourceTypeSchema>
 
 export const annotationScorePartialSourceIdSchema = z.enum(ANNOTATION_SCORE_PARTIAL_SOURCE_IDS)
 export type AnnotationScorePartialSourceId = z.infer<typeof annotationScorePartialSourceIdSchema>
@@ -32,6 +32,7 @@ const annotationAnchorFields = {
   startOffset: z.number().int().nonnegative().optional(), // optional start offset for substring annotations within a textual part
   endOffset: z.number().int().nonnegative().optional(), // optional end offset for substring annotations within a textual part
   textFormat: z.enum(ANNOTATION_ANCHOR_TEXT_FORMATS).optional(), // optional UI-side text transform applied before the offsets were captured (e.g. prettified JSON); resolvers must apply the same transform before slicing
+  contentHash: z.string().optional(), // hash of the anchored message's content; flagger dedup key per (session, flaggerSlug) that survives compaction renumbering (flagger rows only)
 } as const
 
 function validateAnnotationAnchor(anchor: AnnotationAnchorInput, ctx: z.core.$RefinementCtx<unknown>) {
@@ -113,7 +114,7 @@ export const baseScoreSchema = z.object({
   traceId: traceIdSchema.nullable(), // optional trace id inherited from instrumentation
   spanId: spanIdSchema.nullable(), // optional span id inherited from instrumentation
   simulationId: cuidSchema.nullable(), // optional simulation CUID link
-  issueId: cuidSchema.nullable(), // optional issue CUID assignment
+  signalId: cuidSchema.nullable(), // optional issue CUID assignment
   value: scoreValueSchema, // normalized [0, 1] score value
   passed: z.boolean(), // true if passed, false if failed or errored
   feedback: z.string(), // clusterable feedback text used by issues
@@ -158,28 +159,28 @@ function validateScoreLifecycle(
 }
 
 export const evaluationScoreSchema = baseScoreSchema.extend({
-  source: z.literal("evaluation"),
+  sourceType: z.literal("evaluation"),
   sourceId: cuidSchema, // evaluation cuid that produced this score
   metadata: evaluationScoreMetadataSchema,
 })
 export type EvaluationScore = z.infer<typeof evaluationScoreSchema>
 
 export const annotationScoreSchema = baseScoreSchema.extend({
-  source: z.literal("annotation"),
-  sourceId: annotationScoreSourceIdSchema, // sentinel `"UI"` / `"API"` / `"SYSTEM"` for drafts and automation, or annotation-queue cuid for queue-authored rows
+  sourceType: z.literal("annotation"),
+  sourceId: annotationScoreSourceIdSchema, // sentinel `"UI"` / `"API"` / `"SYSTEM"` for drafts and automation, or a cuid for authored rows
   metadata: annotationScoreMetadataSchema,
 })
 export type AnnotationScore = z.infer<typeof annotationScoreSchema>
 
 export const customScoreSchema = baseScoreSchema.extend({
-  source: z.literal("custom"),
+  sourceType: z.literal("custom"),
   sourceId: scoreSourceIdSchema, // user-supplied tag for custom-source scores
   metadata: customScoreMetadataSchema,
 })
 export type CustomScore = z.infer<typeof customScoreSchema>
 
 export const scoreSchema = z
-  .discriminatedUnion("source", [evaluationScoreSchema, annotationScoreSchema, customScoreSchema])
+  .discriminatedUnion("sourceType", [evaluationScoreSchema, annotationScoreSchema, customScoreSchema])
   .superRefine(validateScoreLifecycle)
 export type Score = z.infer<typeof scoreSchema>
 

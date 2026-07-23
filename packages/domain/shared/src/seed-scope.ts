@@ -21,9 +21,6 @@ import { type ApiKeyId, CUID_LENGTH, type OrganizationId, type ProjectId } from 
  * - `traceHex` / `spanHex` for ClickHouse spans — 32-char and 16-char hex
  *   respectively, already the format the existing `fixedTraceHex` /
  *   `fixedSpanHex` helpers in `seeds.ts` produce.
- * - `queueAssigneeUserIds` is non-empty by construction (the use-case
- *   that builds a demo scope already validated the org has members).
- *   Bootstrap scope passes the seven-user `SEED_MANUAL_QUEUE_ASSIGNEES`.
  * - `timelineAnchor` is the "now" all relative dates are computed from.
  *   Bootstrap passes `SEED_TIMELINE_ANCHOR`; demo passes a fresh
  *   per-call anchor.
@@ -32,7 +29,6 @@ export interface SeedScope {
   readonly organizationId: OrganizationId
   readonly projectId: ProjectId
   readonly timelineAnchor: Date
-  readonly queueAssigneeUserIds: readonly string[]
   /**
    * The api key id seeded ClickHouse spans should reference. Bootstrap
    * scope passes `SEED_API_KEY_ID` (the canonical seed org's default
@@ -82,7 +78,6 @@ export interface CreateSeedScopeInput {
   readonly organizationId: OrganizationId
   readonly projectId: ProjectId
   readonly timelineAnchor: Date
-  readonly queueAssigneeUserIds: readonly string[]
   readonly apiKeyId: ApiKeyId
   readonly overrides?: SeedScopeOverrides
 }
@@ -115,6 +110,14 @@ const SPAN_HEX_LENGTH = 16
 
 const deriveTraceHex = (projectId: string, key: string, index: number): string =>
   sha256(["trace", projectId, key, index]).toString("hex").slice(0, TRACE_HEX_LENGTH)
+
+/**
+ * Project-scoped trace hex, matching `SeedScope.traceHex`, but callable
+ * without building a full scope. The demo-project snapshot import uses it to
+ * regenerate a `(traceKey, index)` slot under two different project ids and so
+ * map the source project's seeded trace ids onto the target project's.
+ */
+export const seedTraceHex = (projectId: string, key: string, index = 0): string => deriveTraceHex(projectId, key, index)
 
 const deriveSpanHex = (projectId: string, key: string, index: number): string =>
   sha256(["span", projectId, key, index]).toString("hex").slice(0, SPAN_HEX_LENGTH)
@@ -150,12 +153,11 @@ const deriveTimestampDaysAgo = (anchor: Date, daysAgo: number, hour: number, min
  * no collisions, just an id that differs from any pre-existing literal).
  */
 export const createSeedScope = (input: CreateSeedScopeInput): SeedScope => {
-  const { organizationId, projectId, timelineAnchor, queueAssigneeUserIds, apiKeyId, overrides } = input
+  const { organizationId, projectId, timelineAnchor, apiKeyId, overrides } = input
   return {
     organizationId,
     projectId,
     timelineAnchor,
-    queueAssigneeUserIds,
     apiKeyId,
     cuid: (key) => overrides?.cuid?.(key) ?? deriveCuid(projectId, key),
     uuid: (key) => overrides?.uuid?.(key) ?? deriveUuid(projectId, key),

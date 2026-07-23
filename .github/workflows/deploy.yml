@@ -21,13 +21,14 @@ permissions:
 jobs:
   validate-target:
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'latitude-dev/latitude-llm' }}
     outputs:
       target_sha: ${{ steps.target.outputs.target_sha }}
       staging_should_deploy: ${{ steps.target.outputs.staging_should_deploy }}
       production_should_deploy: ${{ steps.target.outputs.production_should_deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
@@ -159,7 +160,7 @@ jobs:
       contents: read
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6.1.1
+        uses: aws-actions/configure-aws-credentials@6.2.2
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: eu-central-1
@@ -455,7 +456,7 @@ jobs:
       deployment: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.staging-build.outputs.git_commit_sha }}
 
@@ -475,8 +476,6 @@ jobs:
         run: pnpm turbo run build --filter "@app/*"
         env:
           NODE_ENV: production
-          VITE_LAT_API_URL: ${{ vars.VITE_LAT_API_URL }}
-          VITE_LAT_WEB_URL: ${{ vars.VITE_LAT_WEB_URL }}
           VITE_LAT_TURNSTILE_SITE_KEY: ${{ vars.VITE_LAT_TURNSTILE_SITE_KEY }}
           VITE_LAT_POSTHOG_KEY: ${{ vars.VITE_LAT_POSTHOG_KEY }}
           VITE_LAT_POSTHOG_HOST: ${{ vars.VITE_LAT_POSTHOG_HOST }}
@@ -489,7 +488,7 @@ jobs:
           pnpm dlx @datadog/datadog-ci sourcemaps upload apps/web/.output/public \
             --service web \
             --release-version "$RELEASE" \
-            --minified-path-prefix "${{ vars.VITE_LAT_WEB_URL }}"
+            --minified-path-prefix "${{ vars.DD_SOURCEMAP_URL_PREFIX }}"
           pnpm dlx @datadog/datadog-ci sourcemaps upload apps/web/.output/server \
             --service web \
             --release-version "$RELEASE" \
@@ -534,7 +533,7 @@ jobs:
       contents: read
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6.1.1
+        uses: aws-actions/configure-aws-credentials@6.2.2
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: eu-central-1
@@ -830,7 +829,7 @@ jobs:
       deployment: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.production-build.outputs.git_commit_sha }}
 
@@ -850,8 +849,6 @@ jobs:
         run: pnpm turbo run build --filter "@app/*"
         env:
           NODE_ENV: production
-          VITE_LAT_API_URL: ${{ vars.VITE_LAT_API_URL }}
-          VITE_LAT_WEB_URL: ${{ vars.VITE_LAT_WEB_URL }}
           VITE_LAT_TURNSTILE_SITE_KEY: ${{ vars.VITE_LAT_TURNSTILE_SITE_KEY }}
           VITE_LAT_POSTHOG_KEY: ${{ vars.VITE_LAT_POSTHOG_KEY }}
           VITE_LAT_POSTHOG_HOST: ${{ vars.VITE_LAT_POSTHOG_HOST }}
@@ -863,7 +860,7 @@ jobs:
           pnpm dlx @datadog/datadog-ci sourcemaps upload apps/web/.output/public \
             --service web \
             --release-version "$RELEASE" \
-            --minified-path-prefix "${{ vars.VITE_LAT_WEB_URL }}"
+            --minified-path-prefix "${{ vars.DD_SOURCEMAP_URL_PREFIX }}"
           pnpm dlx @datadog/datadog-ci sourcemaps upload apps/web/.output/server \
             --service web \
             --release-version "$RELEASE" \

@@ -1,6 +1,7 @@
 import type { ContextOptions } from "@latitude-data/telemetry"
 import { Context, type Effect } from "effect"
 import type { z } from "zod"
+import type { GenerationReasoning } from "./config.ts"
 import type { AICredentialError, AIError } from "./errors.ts"
 
 export {
@@ -9,6 +10,20 @@ export {
   buildProjectScopedAiMetadata,
   type ProjectScopedAiIds,
 } from "./ai-generate-telemetry.ts"
+export {
+  type AIProviderModelConfig,
+  DEFAULT_EMBEDDING_CONFIG,
+  DEFAULT_RERANKING_CONFIG,
+  EMBEDDING_DIMENSIONS,
+  GENERATION_FEATURES,
+  GENERATION_REASONING_LEVELS,
+  type GenerationFeature,
+  type GenerationModelConfig,
+  type GenerationReasoning,
+  resolveEmbeddingConfig,
+  resolveGenerationConfig,
+  resolveRerankingConfig,
+} from "./config.ts"
 export { AICredentialError, AIError } from "./errors.ts"
 export {
   formatGenAIConversation,
@@ -44,7 +59,7 @@ export interface GenerateInput<T> {
   readonly system: string
   readonly prompt: string
   readonly schema: z.ZodType<T>
-  readonly reasoning?: "none" | "provider-default" | "minimal" | "low" | "medium" | "high" | "xhigh"
+  readonly reasoning?: GenerationReasoning
   readonly maxTokens?: number
   readonly temperature?: number
   readonly topP?: number
@@ -80,8 +95,8 @@ export interface GenerateResult<T> {
 
 export interface EmbedInput {
   readonly text: string
+  readonly provider: string
   readonly model: string
-  readonly dimensions: number
   /**
    * Voyage (and most asymmetric embedding models) produce different vectors
    * for documents vs queries. Indexing callers should use `"document"`;
@@ -89,7 +104,7 @@ export interface EmbedInput {
    */
   readonly inputType?: "document" | "query"
   /**
-   * When set, the Voyage adapter wraps the provider call in Latitude `capture` for tracing.
+   * When set, the embedding adapter wraps the provider call in Latitude `capture` for tracing.
    * Excluded from AI cache keys (see `withAICache`).
    */
   readonly telemetry?: GenerateTelemetryCapture
@@ -106,9 +121,10 @@ export interface EmbedResult {
 export interface RerankInput {
   readonly query: string
   readonly documents: readonly string[]
+  readonly provider: string
   readonly model: string
   /**
-   * When set, the Voyage adapter wraps the provider call in Latitude `capture` for tracing.
+   * When set, the rerank adapter wraps the provider call in Latitude `capture` for tracing.
    * Excluded from AI cache keys (see `withAICache`).
    */
   readonly telemetry?: GenerateTelemetryCapture
@@ -142,6 +158,62 @@ export class AIGenerate extends Context.Service<AIGenerate, AIGenerateShape>()("
 export class AIEmbed extends Context.Service<AIEmbed, AIEmbedShape>()("@domain/ai/AIEmbed") {}
 
 export class AIRerank extends Context.Service<AIRerank, AIRerankShape>()("@domain/ai/AIRerank") {}
+
+// ---------------------------------------------------------------------------
+// Agent loop (native tool-calling)
+// ---------------------------------------------------------------------------
+
+/**
+ * A tool the agent loop can call. `inputSchema` is the model-facing schema the
+ * adapter hands the provider; `execute` is an opaque promise the adapter awaits
+ * with the raw provider-parsed input. Callers own validation and error shaping
+ * inside `execute` — the adapter never inspects the input or the return value.
+ */
+export interface AgentToolDef {
+  readonly name: string
+  readonly description: string
+  readonly inputSchema: z.ZodType
+  readonly execute: (input: unknown) => Promise<unknown>
+}
+
+/** One provider step: any assistant narration plus the tool calls it issued. */
+export interface AgentStep {
+  /** Assistant text generated this step; the worker mirrors it into the pending status. */
+  readonly text?: string
+  readonly toolCalls: ReadonlyArray<{ readonly name: string; readonly input: unknown }>
+  readonly finishReason?: string
+  readonly tokenUsage?: { readonly input: number; readonly output: number }
+}
+
+export interface RunAgentInput {
+  readonly provider: string
+  readonly model: string
+  readonly system: string
+  readonly prompt: string
+  readonly tools: ReadonlyArray<AgentToolDef>
+  /** Hard ceiling on provider steps; the loop stops once this many steps run. */
+  readonly maxSteps: number
+  readonly reasoning?: GenerationReasoning
+  readonly maxTokens?: number
+  readonly temperature?: number
+  readonly abortSignal?: AbortSignal
+  /** Invoked after each provider step, in order. Never throws into the loop. */
+  readonly onStep?: (step: AgentStep) => void
+  readonly telemetry?: GenerateTelemetryCapture
+}
+
+export interface RunAgentResult {
+  readonly text: string
+  readonly steps: ReadonlyArray<AgentStep>
+  readonly tokenUsage: { readonly input: number; readonly output: number }
+  readonly finishReason: string
+}
+
+export interface AIAgentShape {
+  runAgent(input: RunAgentInput): Effect.Effect<RunAgentResult, AIError | AICredentialError>
+}
+
+export class AIAgent extends Context.Service<AIAgent, AIAgentShape>()("@domain/ai/AIAgent") {}
 
 // ---------------------------------------------------------------------------
 // Unified AI service

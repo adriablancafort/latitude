@@ -1,9 +1,11 @@
 import { MOMENT_KINDS, type MomentKind } from "@domain/conversation-intelligence"
-import { normalizeCentroid, OrganizationId, ProjectId, TaxonomyClusterId } from "@domain/shared"
+import { CustomBehaviorId, normalizeCentroid, ProjectId, TaxonomyClusterId } from "@domain/shared"
 import {
   type ClusterAnalysisAggregate,
+  getBehaviourTrajectoryUseCase,
   getClusterSessionIntelligenceUseCase,
   isDisplayableTaxonomyName,
+  listBehaviourSessionsUseCase,
   listProjectBehavioursUseCase,
   type ProjectBehaviourNode,
   type TaxonomyCluster,
@@ -14,15 +16,17 @@ import {
 import {
   TaxonomyClusterIntelligenceRepositoryLive,
   TaxonomyObservationRepositoryLive,
-  withClickHouse,
+  TaxonomyViewAssignmentRepositoryLive,
 } from "@platform/db-clickhouse"
-import { TaxonomyClusterRepositoryLive, withPostgres } from "@platform/db-postgres"
+import { TaxonomyClusterRepositoryLive } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import { z } from "zod"
-import { requireSession } from "../../server/auth.ts"
 import { getClickhouseClient, getPostgresClient } from "../../server/clients.ts"
+import { resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedClickHouse } from "../../server/scoped-clickhouse.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 import { type CentroidPoint2D, projectCentroidsTo2D } from "./centroid-projection.ts"
 
 export interface TaxonomyClusterRecord {
@@ -84,6 +88,13 @@ export interface BehaviourTimeRangeRecord {
 }
 
 export type BehaviourSessionFilter = "all" | MomentKind
+export type BehaviourTrajectoryMetric = "frequency" | "escalation" | "resolution" | "churnRisk" | "wins"
+
+export interface BehaviourMomentRangeRecord {
+  readonly metric: BehaviourTrajectoryMetric
+  readonly fromTurn: number
+  readonly toTurn: number
+}
 
 export interface BehaviourSessionRecord {
   readonly sessionId: string
@@ -148,6 +159,17 @@ const behaviourTimeRangeSchema = z
   })
   .optional()
 
+const behaviourTrajectoryMetricSchema = z.enum(["frequency", "escalation", "resolution", "churnRisk", "wins"])
+
+const behaviourMomentRangeSchema = z
+  .object({
+    metric: behaviourTrajectoryMetricSchema,
+    fromTurn: z.number().int().min(0),
+    toTurn: z.number().int().min(0),
+  })
+  .refine((range) => range.toTurn >= range.fromTurn, "toTurn must be greater than or equal to fromTurn")
+  .optional()
+
 const parseBehaviourTimeRange = (timeRange: BehaviourTimeRangeRecord | undefined) => ({
   from: timeRange?.fromIso ? new Date(timeRange.fromIso) : undefined,
   to: timeRange?.toIso ? new Date(timeRange.toIso) : undefined,
@@ -156,6 +178,9 @@ const parseBehaviourTimeRange = (timeRange: BehaviourTimeRangeRecord | undefined
 const clickHouseTaxonomyIntelligenceLayer = Layer.mergeAll(
   TaxonomyObservationRepositoryLive,
   TaxonomyClusterIntelligenceRepositoryLive,
+  // Provides scoped per-cluster counts to listProjectBehavioursUseCase when a
+  // customBehaviorId is passed; unused (never resolved) on the global path.
+  TaxonomyViewAssignmentRepositoryLive,
 )
 
 const postgresTaxonomyReadLayer = Layer.mergeAll(TaxonomyClusterRepositoryLive)
@@ -217,6 +242,9 @@ const intelligenceFromAggregate = (aggregate: ClusterAnalysisAggregate | null): 
 
 const flattenNodes = (nodes: readonly ProjectBehaviourNode[]): readonly ProjectBehaviourNode[] =>
   nodes.flatMap((node) => [node, ...flattenNodes(node.children)])
+
+const countBehaviourNodes = (nodes: readonly BehaviourNodeRecord[]): number =>
+  nodes.reduce((sum, node) => sum + 1 + countBehaviourNodes(node.children), 0)
 
 interface WeightedIntelligence {
   readonly intelligence: BehaviourIntelligenceSummaryRecord
@@ -317,9 +345,8 @@ interface TopicFilterOptionRecord {
  */
 export const getTopicFilterOptions = createServerFn({ method: "GET" })
   .inputValidator(z.object({ projectId: z.string() }))
-  .handler(async ({ data }): Promise<readonly TopicFilterOptionRecord[]> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<readonly TopicFilterOptionRecord[]> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
 
     return Effect.runPromise(
@@ -342,9 +369,16 @@ export const getTopicFilterOptions = createServerFn({ method: "GET" })
             walk(childrenByParent.get(node.id) ?? [])
           }
         }
-        walk(active.filter((cluster) => cluster.parentClusterId === null))
+        // The divisive build always produces a single root that englobes the
+        // whole project — filtering by it means "everything", so it is a
+        // useless option. When it is the only root and it has children, start
+        // the option list from its depth-1 children (mirrors the behaviours
+        // table). A single childless root still surfaces as the only option.
+        const roots = active.filter((cluster) => cluster.parentClusterId === null)
+        const rootChildren = roots.length === 1 && roots[0] ? (childrenByParent.get(roots[0].id) ?? []) : []
+        walk(roots.length === 1 && rootChildren.length > 0 ? rootChildren : roots)
         return out
-      }).pipe(withPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId), withTracing),
+      }).pipe(withScopedPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId), withTracing),
     )
   })
 
@@ -358,11 +392,11 @@ export const getProjectBehaviours = createServerFn({ method: "GET" })
       minObservations: z.number().int().positive().optional(),
       limit: z.number().int().positive().max(500).optional(),
       timeRange: behaviourTimeRangeSchema,
+      customBehaviorId: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<ProjectBehavioursRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<ProjectBehavioursRecord> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
     const timeRange = parseBehaviourTimeRange(data.timeRange)
 
@@ -371,6 +405,7 @@ export const getProjectBehaviours = createServerFn({ method: "GET" })
         const result = yield* listProjectBehavioursUseCase({
           organizationId: orgId,
           projectId,
+          ...(data.customBehaviorId ? { customBehaviorId: CustomBehaviorId(data.customBehaviorId) } : {}),
           ...(data.dimension ? { dimension: data.dimension } : {}),
           // high_escalation filters on intelligence rollups below, after the
           // tree and aggregates are loaded; the domain use-case has no
@@ -400,6 +435,7 @@ export const getProjectBehaviours = createServerFn({ method: "GET" })
                 clusterIds: [TaxonomyClusterId(node.cluster.id)],
                 sourceWindowStart,
                 sourceWindowEnd,
+                ...(data.customBehaviorId ? { customBehaviorId: CustomBehaviorId(data.customBehaviorId) } : {}),
               })
               .pipe(Effect.map((aggregate) => [node.cluster.id, aggregate] as const)),
           { concurrency: 6 },
@@ -413,23 +449,15 @@ export const getProjectBehaviours = createServerFn({ method: "GET" })
         const topics = result.topics.map((topic) =>
           toBehaviourNodeRecord(topic, aggregatesByClusterId, positionsByClusterId),
         )
-        return { topics: data.segment === "high_escalation" ? pruneToHighEscalation(topics) : topics }
+        const displayTopics = data.segment === "high_escalation" ? pruneToHighEscalation(topics) : topics
+        return { topics: countBehaviourNodes(displayTopics) >= 2 ? displayTopics : [] }
       }).pipe(
-        withPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
-        withClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
+        withScopedPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
+        withScopedClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
         withTracing,
       ),
     )
   })
-
-const trajectoryBucketExpression = (axis: BehaviourTrajectoryAxis) =>
-  axis === "day" ? "toString(toDate(cs.startTime))" : "toString(m.first_message_index)"
-
-const parseTrajectoryNumber = (value: unknown): number => {
-  if (typeof value === "number") return value
-  if (typeof value === "string") return Number(value)
-  return 0
-}
 
 export const getBehaviourTrajectory = createServerFn({ method: "GET" })
   .inputValidator(
@@ -438,199 +466,32 @@ export const getBehaviourTrajectory = createServerFn({ method: "GET" })
       categoryClusterIds: z.array(z.string()).max(100),
       axis: z.enum(["day", "turn"]),
       timeRange: behaviourTimeRangeSchema,
+      customBehaviorId: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<BehaviourTrajectoryRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<BehaviourTrajectoryRecord> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
     const timeRange = parseBehaviourTimeRange(data.timeRange)
     const categoryClusterIds = [...new Set(data.categoryClusterIds)].filter((id) => id.length > 0)
     if (categoryClusterIds.length === 0) return { buckets: [], rows: [] }
 
-    const subtreeEntries = await Effect.runPromise(
-      Effect.gen(function* () {
-        const clusters = yield* TaxonomyClusterRepository
-        return yield* Effect.forEach(
-          categoryClusterIds,
-          (clusterId) =>
-            clusters
-              .listSubtreeIds({ projectId, clusterId: TaxonomyClusterId(clusterId) })
-              .pipe(Effect.map((clusterIds) => [clusterId, clusterIds] as const)),
-          { concurrency: 6 },
-        )
-      }).pipe(withPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId), withTracing),
+    return Effect.runPromise(
+      getBehaviourTrajectoryUseCase({
+        organizationId: orgId,
+        projectId,
+        categoryClusterIds: categoryClusterIds.map((id) => TaxonomyClusterId(id)),
+        axis: data.axis,
+        ...(timeRange.from ? { startTimeFrom: timeRange.from } : {}),
+        ...(timeRange.to ? { startTimeTo: timeRange.to } : {}),
+        ...(data.customBehaviorId ? { customBehaviorId: CustomBehaviorId(data.customBehaviorId) } : {}),
+      }).pipe(
+        withScopedPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
+        withScopedClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
+        withTracing,
+      ),
     )
-
-    const bucketExpression = trajectoryBucketExpression(data.axis)
-    const timeFromClause = timeRange.from ? "AND o.start_time >= {startTimeFrom:DateTime64(9, 'UTC')}" : ""
-    const timeToClause = timeRange.to ? "AND o.start_time < {startTimeTo:DateTime64(9, 'UTC')}" : ""
-    const clickhouse = getClickhouseClient()
-    const rowsByCategory = await Promise.all(
-      subtreeEntries.map(async ([categoryClusterId, clusterIds]) => {
-        const result = await clickhouse.query({
-          query: `
-            WITH latest_analyses AS (
-              SELECT organization_id, project_id, session_id, analysis_hash
-              FROM session_analyses FINAL
-              WHERE organization_id = {organizationId:String}
-                AND project_id = {projectId:String}
-            ),
-            cluster_sessions AS (
-              SELECT
-                o.organization_id AS organization_id,
-                o.project_id AS project_id,
-                o.session_id AS session_id,
-                any(a.analysis_hash) AS analysisHash,
-                min(o.start_time) AS startTime
-              FROM taxonomy_observations AS o FINAL
-              INNER JOIN latest_analyses AS a
-                ON o.organization_id = a.organization_id
-               AND o.project_id = a.project_id
-               AND o.session_id = a.session_id
-               AND o.analysis_hash = a.analysis_hash
-              WHERE o.organization_id = {organizationId:String}
-                AND o.project_id = {projectId:String}
-                AND o.assigned_cluster_id IN {clusterIds:Array(String)}
-                ${timeFromClause}
-                ${timeToClause}
-              GROUP BY o.organization_id, o.project_id, o.session_id
-            )
-            SELECT
-              ${bucketExpression} AS bucket,
-              count() AS frequency,
-              countIf(m.kind = 'escalation') AS escalation,
-              countIf(m.kind = 'resolution') AS resolution,
-              countIf(m.kind IN ('abandonment', 'user_frustration')) AS churnRisk,
-              countIf(m.kind IN ('resolution', 'user_satisfaction')) AS wins,
-              max(m.last_message_index) AS maxLastMessageIndex,
-              maxIf(m.last_message_index, m.kind = 'escalation') AS maxEscalationLastMessageIndex,
-              maxIf(m.last_message_index, m.kind = 'resolution') AS maxResolutionLastMessageIndex,
-              maxIf(m.last_message_index, m.kind IN ('abandonment', 'user_frustration')) AS maxChurnRiskLastMessageIndex,
-              maxIf(m.last_message_index, m.kind IN ('resolution', 'user_satisfaction')) AS maxWinsLastMessageIndex
-            FROM cluster_sessions AS cs
-            INNER JOIN session_moment_labels AS m FINAL
-              ON cs.organization_id = m.organization_id
-             AND cs.project_id = m.project_id
-             AND cs.session_id = m.session_id
-             AND cs.analysisHash = m.analysis_hash
-            GROUP BY bucket
-            ORDER BY ${data.axis === "day" ? "bucket ASC" : "toUInt16(bucket) ASC"}
-          `,
-          query_params: {
-            organizationId,
-            projectId: data.projectId,
-            clusterIds,
-            axis: data.axis,
-            ...(timeRange.from ? { startTimeFrom: timeRange.from.toISOString().replace("Z", "") } : {}),
-            ...(timeRange.to ? { startTimeTo: timeRange.to.toISOString().replace("Z", "") } : {}),
-          },
-          format: "JSONEachRow",
-        })
-        const rows = (await result.json()) as Array<{
-          readonly bucket: string
-          readonly frequency: number | string
-          readonly escalation: number | string
-          readonly resolution: number | string
-          readonly churnRisk: number | string
-          readonly wins: number | string
-          readonly maxLastMessageIndex: number | string
-          readonly maxEscalationLastMessageIndex: number | string
-          readonly maxResolutionLastMessageIndex: number | string
-          readonly maxChurnRiskLastMessageIndex: number | string
-          readonly maxWinsLastMessageIndex: number | string
-        }>
-        return rows.map((row) => ({
-          categoryClusterId,
-          bucket: row.bucket,
-          frequency: parseTrajectoryNumber(row.frequency),
-          escalation: parseTrajectoryNumber(row.escalation),
-          resolution: parseTrajectoryNumber(row.resolution),
-          churnRisk: parseTrajectoryNumber(row.churnRisk),
-          wins: parseTrajectoryNumber(row.wins),
-          maxLastMessageIndex: parseTrajectoryNumber(row.maxLastMessageIndex),
-          maxEscalationLastMessageIndex: parseTrajectoryNumber(row.maxEscalationLastMessageIndex),
-          maxResolutionLastMessageIndex: parseTrajectoryNumber(row.maxResolutionLastMessageIndex),
-          maxChurnRiskLastMessageIndex: parseTrajectoryNumber(row.maxChurnRiskLastMessageIndex),
-          maxWinsLastMessageIndex: parseTrajectoryNumber(row.maxWinsLastMessageIndex),
-        }))
-      }),
-    )
-
-    const rows = rowsByCategory.flat()
-    const buckets = [...new Set(rows.map((row) => row.bucket))].sort((left, right) =>
-      data.axis === "day" ? left.localeCompare(right) : Number(left) - Number(right),
-    )
-    return { buckets, rows }
   })
-
-const behaviourSessionFilterMatches = (session: BehaviourSessionRecord, filter: BehaviourSessionFilter) => {
-  if (filter === "all") return true
-  if (filter === "resolution") return session.momentKinds.includes("resolution")
-  if (filter === "abandonment") return session.momentKinds.includes("abandonment")
-  return session.momentKinds.includes(filter)
-}
-
-const behaviourSessionFilterSql = `
-  ({filter:String} = 'all'
-    OR ({filter:String} = 'resolution' AND has(momentKinds, 'resolution'))
-    OR ({filter:String} = 'abandonment' AND has(momentKinds, 'abandonment'))
-    OR ({filter:String} NOT IN ('all', 'resolution', 'abandonment') AND has(momentKinds, {filter:String})))
-`
-
-// Observations are pinned to each session's CURRENT analysis: superseded
-// analysis generations are never deleted, so an unscoped read unions every
-// re-analysis and \`any(analysis_hash)\` could pick a stale hash, breaking the
-// trace link and silently dropping every moment label.
-const behaviourClusterSessionsCte = (timeFromClause = "", timeToClause = "") => `
-  WITH latest_analyses AS (
-    SELECT organization_id, project_id, session_id, analysis_hash, trace_ids
-    FROM session_analyses FINAL
-    WHERE organization_id = {organizationId:String}
-      AND project_id = {projectId:String}
-  ),
-  cluster_sessions AS (
-    SELECT
-      o.organization_id AS organization_id,
-      o.project_id AS project_id,
-      o.session_id AS session_id,
-      any(a.analysis_hash) AS analysisHash,
-      arrayElement(any(a.trace_ids), 1) AS traceId,
-      argMin(o.moment_id, o.start_time) AS momentId,
-      any(JSONExtractString(o.projection_metadata, 'summary')) AS summary,
-      min(o.start_time) AS startTime,
-      max(o.end_time) AS endTime
-    FROM taxonomy_observations AS o FINAL
-    INNER JOIN latest_analyses AS a
-      ON o.organization_id = a.organization_id
-     AND o.project_id = a.project_id
-     AND o.session_id = a.session_id
-     AND o.analysis_hash = a.analysis_hash
-    WHERE o.organization_id = {organizationId:String}
-      AND o.project_id = {projectId:String}
-      AND o.assigned_cluster_id IN {clusterIds:Array(String)}
-      ${timeFromClause}
-      ${timeToClause}
-    GROUP BY o.organization_id, o.project_id, o.session_id
-  ),
-  enriched_sessions AS (
-    SELECT
-      cs.session_id AS sessionId,
-      any(cs.traceId) AS traceId,
-      any(cs.momentId) AS momentId,
-      any(cs.summary) AS summary,
-      any(cs.startTime) AS startTime,
-      any(cs.endTime) AS endTime,
-      groupUniqArrayIf(m.kind, m.kind != '') AS momentKinds
-    FROM cluster_sessions AS cs
-    LEFT JOIN session_moment_labels AS m FINAL
-      ON cs.organization_id = m.organization_id
-     AND cs.project_id = m.project_id
-     AND cs.session_id = m.session_id
-     AND cs.analysisHash = m.analysis_hash
-    GROUP BY cs.session_id
-  )
-`
 
 export const getBehaviourSessions = createServerFn({ method: "GET" })
   .inputValidator(
@@ -641,109 +502,63 @@ export const getBehaviourSessions = createServerFn({ method: "GET" })
       limit: z.number().int().min(1).max(100).optional(),
       filter: z.enum(["all", ...MOMENT_KINDS]).optional(),
       timeRange: behaviourTimeRangeSchema,
+      momentRange: behaviourMomentRangeSchema,
+      customBehaviorId: z.string().optional(),
     }),
   )
-  .handler(async ({ data }): Promise<BehaviourSessionsRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
-    const offset = data.offset ?? 0
-    const limit = data.limit ?? 50
-    const filter = data.filter ?? "all"
+  .handler(async ({ data, context }): Promise<BehaviourSessionsRecord> => {
+    const orgId = await resolveOrgScope(context)
     const timeRange = parseBehaviourTimeRange(data.timeRange)
-    // Tree node: sessions assigned anywhere in its subtree belong to it.
-    const clusterIds = await Effect.runPromise(
-      Effect.gen(function* () {
-        const clusters = yield* TaxonomyClusterRepository
-        return yield* clusters.listSubtreeIds({
-          projectId: ProjectId(data.projectId),
-          clusterId: TaxonomyClusterId(data.clusterId),
-        })
-      }).pipe(withPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId), withTracing),
+
+    const page = await Effect.runPromise(
+      listBehaviourSessionsUseCase({
+        organizationId: orgId,
+        projectId: ProjectId(data.projectId),
+        clusterId: TaxonomyClusterId(data.clusterId),
+        filter: data.filter ?? "all",
+        ...(data.momentRange ? { momentRange: data.momentRange } : {}),
+        ...(timeRange.from ? { startTimeFrom: timeRange.from } : {}),
+        ...(timeRange.to ? { startTimeTo: timeRange.to } : {}),
+        offset: data.offset ?? 0,
+        limit: data.limit ?? 50,
+        ...(data.customBehaviorId ? { customBehaviorId: CustomBehaviorId(data.customBehaviorId) } : {}),
+      }).pipe(
+        withScopedPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
+        withScopedClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
+        withTracing,
+      ),
     )
-    const timeFromClause = timeRange.from ? "AND o.start_time >= {startTimeFrom:DateTime64(9, 'UTC')}" : ""
-    const timeToClause = timeRange.to ? "AND o.start_time < {startTimeTo:DateTime64(9, 'UTC')}" : ""
-    const timeQueryParams = {
-      ...(timeRange.from ? { startTimeFrom: timeRange.from.toISOString().replace("Z", "") } : {}),
-      ...(timeRange.to ? { startTimeTo: timeRange.to.toISOString().replace("Z", "") } : {}),
-    }
-    const result = await getClickhouseClient().query({
-      query: `${behaviourClusterSessionsCte(timeFromClause, timeToClause)}
-              SELECT sessionId, traceId, momentId, summary, startTime, endTime, momentKinds
-              FROM enriched_sessions
-              WHERE ${behaviourSessionFilterSql}
-              ORDER BY endTime DESC
-              LIMIT {pageSize:UInt32}
-              OFFSET {offset:UInt32}`,
-      query_params: {
-        organizationId,
-        projectId: data.projectId,
-        clusterIds,
-        filter,
-        pageSize: limit + 1,
-        offset,
-        ...timeQueryParams,
-      },
-      format: "JSONEachRow",
-    })
-    const rows = (await result.json()) as Array<{
-      readonly sessionId: string
-      readonly traceId: string
-      readonly momentId: string
-      readonly summary: string
-      readonly startTime: string
-      readonly endTime: string
-      readonly momentKinds: readonly string[]
-    }>
-    const histogramInterval =
-      timeRange.from && (!timeRange.to || timeRange.to.getTime() - timeRange.from.getTime() <= 2 * 24 * 60 * 60_000)
-        ? "1 HOUR"
-        : "1 DAY"
-    const histogramResult = await getClickhouseClient().query({
-      query: `${behaviourClusterSessionsCte(timeFromClause, timeToClause)}
-              SELECT
-                toStartOfInterval(endTime, INTERVAL ${histogramInterval}) AS startTime,
-                count() AS count
-              FROM enriched_sessions
-              WHERE ${behaviourSessionFilterSql}
-              GROUP BY startTime
-              ORDER BY startTime ASC`,
-      query_params: { organizationId, projectId: data.projectId, clusterIds, filter, ...timeQueryParams },
-      format: "JSONEachRow",
-    })
-    const histogram = (await histogramResult.json()) as Array<{
-      readonly startTime: string
-      readonly count: number
-    }>
-    const sessions = rows
-      .map(
-        (row): BehaviourSessionRecord => ({
-          sessionId: row.sessionId,
-          traceId: row.traceId,
-          momentId: row.momentId,
-          summary: row.summary,
-          startTime: new Date(row.startTime).toISOString(),
-          endTime: new Date(row.endTime).toISOString(),
-          momentKinds: row.momentKinds,
-        }),
-      )
-      .filter((session) => behaviourSessionFilterMatches(session, filter))
-    const pagedSessions = sessions.slice(0, limit)
+
     return {
-      sessions: pagedSessions,
-      hasMore: sessions.length > limit,
-      nextOffset: sessions.length > limit ? offset + limit : null,
-      histogram: histogram.map((bucket) => ({
-        startTime: new Date(bucket.startTime).toISOString(),
-        count: Number(bucket.count),
+      sessions: page.sessions.map((session) => ({
+        sessionId: session.sessionId,
+        traceId: session.traceId,
+        momentId: session.momentId,
+        summary: session.summary,
+        startTime: session.startTime.toISOString(),
+        endTime: session.endTime.toISOString(),
+        momentKinds: session.momentKinds,
+      })),
+      hasMore: page.hasMore,
+      nextOffset: page.nextOffset,
+      histogram: page.histogram.map((bucket) => ({
+        startTime: bucket.startTime.toISOString(),
+        count: bucket.count,
       })),
     }
   })
 
 export const getClusterProfile = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ projectId: z.string(), clusterId: z.string(), timeRange: behaviourTimeRangeSchema }))
-  .handler(async ({ data }): Promise<ClusterSessionIntelligenceRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .inputValidator(
+    z.object({
+      projectId: z.string(),
+      clusterId: z.string(),
+      timeRange: behaviourTimeRangeSchema,
+      customBehaviorId: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data, context }): Promise<ClusterSessionIntelligenceRecord> => {
+    const orgId = await resolveOrgScope(context)
     const projectId = ProjectId(data.projectId)
     const timeRange = parseBehaviourTimeRange(data.timeRange)
 
@@ -754,6 +569,7 @@ export const getClusterProfile = createServerFn({ method: "GET" })
         clusterId: TaxonomyClusterId(data.clusterId),
         sourceWindowStart: timeRange.from ?? new Date(0),
         sourceWindowEnd: timeRange.to ?? new Date(),
+        ...(data.customBehaviorId ? { customBehaviorId: CustomBehaviorId(data.customBehaviorId) } : {}),
       }).pipe(
         Effect.map((result) => ({
           rates: result.rates,
@@ -762,8 +578,8 @@ export const getClusterProfile = createServerFn({ method: "GET" })
             Object.fromEntries(Object.entries(example).map(([key, value]) => [key, String(value)])),
           ),
         })),
-        withPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
-        withClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
+        withScopedPostgres(postgresTaxonomyReadLayer, getPostgresClient(), orgId),
+        withScopedClickHouse(clickHouseTaxonomyIntelligenceLayer, getClickhouseClient(), orgId),
         withTracing,
       ),
     )

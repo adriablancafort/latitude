@@ -1,3 +1,4 @@
+import { minimalScriptSession } from "@domain/sandbox"
 import { Effect } from "effect"
 import type {
   BaselineEvaluationExampleResult,
@@ -9,14 +10,12 @@ import {
   buildEvaluationAlignmentJudgeTelemetryCapture,
   type EvaluationAlignmentJudgeTelemetryScope,
 } from "../../runtime/ai-telemetry.ts"
-import { executeEvaluationScriptWithAI } from "../../runtime/evaluation-execution.ts"
+import { executeEvaluationScriptSandboxed } from "../../runtime/sandbox-execution.ts"
 
-// TODO(eval-sandbox): when sandbox is available, executeEvaluationScript will run arbitrary JS;
-// this function delegates to it and its structure won't change.
 export const evaluateDraftAgainstExamplesUseCase = Effect.fn("evaluations.evaluateDraftAgainstExamples")(
   function* (input: {
-    readonly issueName: string
-    readonly issueDescription: string
+    readonly signalName: string
+    readonly signalDescription: string
     readonly script: string
     readonly positiveExamples: readonly HydratedEvaluationAlignmentExample[]
     readonly negativeExamples: readonly HydratedEvaluationAlignmentExample[]
@@ -27,13 +26,9 @@ export const evaluateDraftAgainstExamplesUseCase = Effect.fn("evaluations.evalua
     const exampleResults: BaselineEvaluationExampleResult[] = []
 
     for (const example of examples) {
-      const execution = yield* executeEvaluationScriptWithAI({
+      const execution = yield* executeEvaluationScriptSandboxed({
         script: input.script,
-        conversation: example.conversation,
-        issue: {
-          name: input.issueName,
-          description: input.issueDescription,
-        },
+        session: minimalScriptSession(example.conversation),
         telemetry: buildEvaluationAlignmentJudgeTelemetryCapture({
           scope: input.judgeTelemetry,
           traceId: String(example.traceId),
@@ -42,7 +37,7 @@ export const evaluateDraftAgainstExamplesUseCase = Effect.fn("evaluations.evalua
       })
 
       const expectedPositive = example.label === "positive"
-      const predictedPositive = execution.result.passed === false
+      const predictedPositive = execution.result.passed === true
 
       confusionMatrix = addConfusionMatrixObservation(confusionMatrix, {
         expectedPositive,

@@ -6,7 +6,7 @@ import {
 } from "@domain/evaluations"
 import type { EventEnvelope } from "@domain/events"
 import type { PublishOptions, QueueName, QueuePublisherShape, WorkflowStarterShape } from "@domain/queue"
-import { TRACE_END_DEBOUNCE_MS } from "@domain/spans"
+import { SESSION_END_DEBOUNCE_MS, TRACE_END_DEBOUNCE_MS } from "@domain/spans"
 import type { RedisClient } from "@platform/cache-redis"
 import { evaluations } from "@platform/db-postgres/schema/evaluations"
 import { setupTestClickHouse, setupTestPostgres } from "@platform/testkit"
@@ -15,6 +15,8 @@ import { beforeEach, describe, expect, it } from "vitest"
 
 import { TestQueueConsumer } from "../testing/index.ts"
 import { createDomainEventsWorker } from "./domain-events.ts"
+import { createSessionEndWorker } from "./session-end.ts"
+import { createSignalsMatchWorker } from "./signals-match.ts"
 import { createTraceEndWorker } from "./trace-end.ts"
 
 const pg = setupTestPostgres()
@@ -115,7 +117,7 @@ const makeEvaluationRow = () =>
     id: "e".repeat(24),
     organizationId: ORGANIZATION_ID,
     projectId: PROJECT_ID,
-    issueId: "i".repeat(24),
+    signalId: "i".repeat(24),
     name: "pipeline-evaluation",
     description: "Live monitoring integration evaluation",
     script: "export default async function evaluate() { return { value: 1 } }",
@@ -241,7 +243,7 @@ describe("live monitoring integration", () => {
     await pg.db.delete(evaluations)
   })
 
-  it("debounces TracesIngested into trace-end:run before publishing execute work", async () => {
+  it("runs the pipeline from TracesIngested through trace-end into a live-evaluation execute", async () => {
     await ch.client.insert({
       table: "spans",
       values: [makeTraceRow()],
@@ -258,10 +260,20 @@ describe("live monitoring integration", () => {
     createTraceEndWorker({
       consumer: harness.consumer,
       publisher: harness.publisher,
+      clickhouseClient: ch.client,
+    })
+    createSessionEndWorker({
+      consumer: harness.consumer,
+      publisher: harness.publisher,
+      clickhouseClient: ch.client,
+      workflowStarter: createFakeWorkflowStarter(),
+    })
+    createSignalsMatchWorker({
+      consumer: harness.consumer,
+      publisher: harness.publisher,
       postgresClient: pg.appPostgresClient,
       clickhouseClient: ch.client,
       redisClient: createFakeRedisClient(),
-      workflowStarter: createFakeWorkflowStarter(),
     })
 
     const envelope = makeEnvelope({
@@ -272,6 +284,7 @@ describe("live monitoring integration", () => {
 
     await harness.consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
 
+    // domain-events debounces only trace-end now; session-level work is published from the trace-end job.
     expect(harness.getDelayed("trace-end")).toEqual([
       {
         queue: "trace-end",
@@ -285,11 +298,12 @@ describe("live monitoring integration", () => {
         options: {
           dedupeKey: `trace-end:run:${ORGANIZATION_ID}:${PROJECT_ID}:${TRACE_ID}`,
           debounceMs: TRACE_END_DEBOUNCE_MS,
+          attempts: 10,
+          backoff: { type: "exponential", delayMs: 1_000 },
         },
       },
     ])
-
-    await harness.flushDelayed("trace-end")
+    expect(harness.getDelayed("signals")).toEqual([])
 
     expect(harness.published).toContainEqual({
       queue: "projects",
@@ -303,6 +317,53 @@ describe("live monitoring integration", () => {
         dedupeKey: `projects:first-trace:${PROJECT_ID}`,
       },
     })
+
+    await harness.flushDelayed("trace-end")
+
+    // trace-end hands session-level work to session-end, debounced per session and carrying the
+    // session's latest trace. signals:match is not published until session-end fires.
+    expect(harness.published.find((message) => message.queue === "signals" && message.task === "match")).toBeUndefined()
+    expect(harness.getDelayed("session-end")).toEqual([
+      {
+        queue: "session-end",
+        task: "run",
+        payload: {
+          organizationId: ORGANIZATION_ID,
+          projectId: PROJECT_ID,
+          sessionId: "session-1",
+          latestTraceId: TRACE_ID,
+          latestTraceStartTime: TIMESTAMP.toISOString(),
+          isSandbox: false,
+        },
+        options: {
+          dedupeKey: `org:${ORGANIZATION_ID}:session-end:${PROJECT_ID}:session-1`,
+          debounceMs: SESSION_END_DEBOUNCE_MS,
+        },
+      },
+    ])
+
+    await harness.flushDelayed("session-end")
+
+    // session-end publishes signals:match immediately (no debounce) with reason "ingest".
+    const signalsMatch = harness.published.find((message) => message.queue === "signals" && message.task === "match")
+    if (signalsMatch === undefined) throw new Error("session-end did not publish signals:match")
+    expect(signalsMatch).toEqual({
+      queue: "signals",
+      task: "match",
+      payload: {
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        traceId: TRACE_ID,
+        isSandbox: false,
+        reason: "ingest",
+      },
+      options: {
+        dedupeKey: `org:${ORGANIZATION_ID}:signals-match:${PROJECT_ID}:${TRACE_ID}`,
+      },
+    })
+
+    await harness.consumer.dispatchTask("signals", "match", signalsMatch.payload)
+
     expect(harness.published).toContainEqual({
       queue: "live-evaluations",
       task: "execute",
@@ -323,7 +384,7 @@ describe("live monitoring integration", () => {
     })
   }, 15_000)
 
-  it("replaces debounced trace-end:run when TracesIngested is dispatched twice for the same trace", async () => {
+  it("does not double-run the evaluation when TracesIngested is dispatched twice for the same trace", async () => {
     await ch.client.insert({
       table: "spans",
       values: [makeTraceRow()],
@@ -340,10 +401,20 @@ describe("live monitoring integration", () => {
     createTraceEndWorker({
       consumer: harness.consumer,
       publisher: harness.publisher,
+      clickhouseClient: ch.client,
+    })
+    createSessionEndWorker({
+      consumer: harness.consumer,
+      publisher: harness.publisher,
+      clickhouseClient: ch.client,
+      workflowStarter: createFakeWorkflowStarter(),
+    })
+    createSignalsMatchWorker({
+      consumer: harness.consumer,
+      publisher: harness.publisher,
       postgresClient: pg.appPostgresClient,
       clickhouseClient: ch.client,
       redisClient: createFakeRedisClient(),
-      workflowStarter: createFakeWorkflowStarter(),
     })
 
     const envelope = makeEnvelope({
@@ -356,6 +427,7 @@ describe("live monitoring integration", () => {
     await harness.consumer.dispatchTask("domain-events", "dispatch", dispatchPayload)
     await harness.consumer.dispatchTask("domain-events", "dispatch", dispatchPayload)
 
+    // The two dispatches collapse to a single debounced trace-end job (same dedupeKey).
     const delayedTraceEnd = harness.getDelayed("trace-end")
     expect(delayedTraceEnd).toHaveLength(1)
     expect(delayedTraceEnd[0]).toEqual({
@@ -370,10 +442,27 @@ describe("live monitoring integration", () => {
       options: {
         dedupeKey: `trace-end:run:${ORGANIZATION_ID}:${PROJECT_ID}:${TRACE_ID}`,
         debounceMs: TRACE_END_DEBOUNCE_MS,
+        attempts: 10,
+        backoff: { type: "exponential", delayMs: 1_000 },
       },
     })
 
     await harness.flushDelayed("trace-end")
+
+    // The two collapsed trace-end runs debounce to a single session-end job (same session dedupeKey).
+    expect(harness.getDelayed("session-end")).toHaveLength(1)
+
+    await harness.flushDelayed("session-end")
+
+    // The single session-end run publishes exactly one signals:match.
+    const signalsMatches = harness.published.filter(
+      (message) => message.queue === "signals" && message.task === "match",
+    )
+    expect(signalsMatches).toHaveLength(1)
+
+    const signalsMatch = signalsMatches[0]
+    if (signalsMatch === undefined) throw new Error("session-end did not publish signals:match")
+    await harness.consumer.dispatchTask("signals", "match", signalsMatch.payload)
 
     const liveEvalExecutePublishes = harness.published.filter(
       (message) => message.queue === "live-evaluations" && message.task === "execute",

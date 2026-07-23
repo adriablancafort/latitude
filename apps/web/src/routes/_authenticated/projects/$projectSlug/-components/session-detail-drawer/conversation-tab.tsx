@@ -2,11 +2,17 @@ import type { MomentKind } from "@domain/conversation-intelligence"
 import { Button, Icon, Popover, PopoverClose, PopoverContent, PopoverTrigger, Text } from "@repo/ui"
 import { XIcon } from "lucide-react"
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { useProjectScope } from "../../../../../../domains/projects/project-scope.tsx"
+import type { SessionDetailRecord } from "../../../../../../domains/sessions/sessions.functions.ts"
+import { useSpansBySessionCollection } from "../../../../../../domains/spans/spans.collection.ts"
 import { useSessionMomentIntelligence } from "../../../../../../domains/traces/traces.collection.ts"
-import type { SessionMomentIntelligenceRecord } from "../../../../../../domains/traces/traces.functions.ts"
+import type { SessionMomentIntelligenceRecord, TraceRecord } from "../../../../../../domains/traces/traces.functions.ts"
 import { useParamState } from "../../../../../../lib/hooks/useParamState.ts"
 import { useConversationAnnotationFocus } from "../annotations/hooks/use-conversation-annotation-focus.ts"
+import { findNearestMessageAnchor } from "../conversation-timeline/flash-highlight.ts"
+import { useSessionTimeline } from "../conversation-timeline/use-session-timeline.ts"
 import { ConversationTab as TraceConversationTab } from "../trace-detail-drawer/tabs/conversation-tab.tsx"
+import { useAgentGraph } from "./agents-breakdown/use-agent-graph.ts"
 
 const MOMENT_FOCUS_OBSERVER_TIMEOUT_MS = 2000
 
@@ -88,7 +94,7 @@ function MomentLabelBadge({ label, store }: { readonly label: MomentLabelRecord;
           {label.kind.replaceAll("_", " ")}
         </button>
       </PopoverTrigger>
-      <PopoverContent side="bottom" align="start" className="w-96">
+      <PopoverContent side="bottom" align="start" className="w-96 max-w-[calc(100vw-2rem)]">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <MomentLabelEvidence label={label} />
@@ -102,23 +108,6 @@ function MomentLabelBadge({ label, store }: { readonly label: MomentLabelRecord;
       </PopoverContent>
     </Popover>
   )
-}
-
-/** Finds the rendered message element closest to `messageIndex` (tool-result
- * messages can be absorbed into their caller, so exact anchors may not render). */
-function findMomentAnchor(container: HTMLElement, messageIndex: number): HTMLElement | null {
-  const exact = container.querySelector<HTMLElement>(`[data-message-index="${messageIndex}"]`)
-  if (exact) return exact
-  let best: { node: HTMLElement; distance: number } | null = null
-  for (const node of container.querySelectorAll<HTMLElement>("[data-message-index]")) {
-    const raw = node.getAttribute("data-message-index")
-    if (raw == null) continue
-    const index = Number.parseInt(raw, 10)
-    if (Number.isNaN(index)) continue
-    const distance = Math.abs(index - messageIndex)
-    if (!best || distance < best.distance) best = { node, distance }
-  }
-  return best?.node ?? null
 }
 
 function findMomentRangeAnchors(
@@ -136,7 +125,7 @@ function findMomentRangeAnchors(
   }
 
   if (anchors.length > 0) return anchors
-  const fallback = findMomentAnchor(container, firstMessageIndex)
+  const fallback = findNearestMessageAnchor(container, firstMessageIndex)
   return fallback ? [fallback] : []
 }
 
@@ -233,7 +222,7 @@ function useScrollToFocusedMoment({
       if (done || !container || anchorIndex === undefined) return true
       const anchors = momentTarget
         ? findMomentRangeAnchors(container, momentTarget.moment.firstMessageIndex, momentTarget.moment.lastMessageIndex)
-        : [findMomentAnchor(container, anchorIndex)].filter((anchor): anchor is HTMLElement => anchor !== null)
+        : [findNearestMessageAnchor(container, anchorIndex)].filter((anchor): anchor is HTMLElement => anchor !== null)
       const anchor = anchors[0]
       if (!anchor) return false
       lastScrolledKey.current = key
@@ -281,22 +270,66 @@ function useScrollToFocusedMoment({
  */
 export function ConversationTab({
   projectId,
-  sessionId,
+  session,
+  traces,
   latestTraceId,
   isActive,
   searchQuery,
   focusMomentKind,
   focusMomentId,
+  navigateToSpan,
 }: {
   readonly projectId: string
-  readonly sessionId: string
+  readonly session: SessionDetailRecord
+  readonly traces: readonly TraceRecord[]
   readonly latestTraceId: string
   readonly isActive: boolean
   readonly searchQuery?: string
   readonly focusMomentKind?: MomentKind | undefined
   /** Scrolls to this semantic moment when no label kind is focused. */
   readonly focusMomentId?: string | undefined
+  /** Navigates to a span in the session Spans tab; enables the conversation's span-link affordances. */
+  readonly navigateToSpan?: ((spanId: string) => void) | undefined
 }) {
+  const sessionId = session.sessionId
+  // Annotations are an LLM-feedback feature — off under a sandbox scope.
+  const annotationsEnabled = useProjectScope().kind === "live"
+  const { data: moments } = useSessionMomentIntelligence({ projectId, sessionId })
+
+  // The conversation is the latest trace's accumulated history, but it shows tool
+  // calls from every trace in the session — so decoration needs the session-wide
+  // agent graph, not just the latest trace's. Shares the Spans-tab collection key.
+  const { data: sessionSpans } = useSpansBySessionCollection({
+    projectId,
+    sessionId,
+    traceIds: session.traceIds,
+    startTimeFrom: session.startTime,
+    startTimeTo: session.endTime,
+  })
+  const agentGraph = useAgentGraph(sessionSpans)
+
+  const timelineMoments = useMemo(
+    () =>
+      (moments ?? []).flatMap((row) =>
+        row.labels.map((label) => ({
+          id: label.labelId,
+          messageIndex: label.lastMessageIndex,
+          kind: capitalizeMomentKind(label.kind),
+          summary: displayLabelSummary(label.summary),
+          confidence: label.confidence,
+        })),
+      ),
+    [moments],
+  )
+
+  const timeline = useSessionTimeline({
+    projectId,
+    session,
+    traces,
+    latestTraceId,
+    annotationsEnabled,
+    moments: timelineMoments,
+  })
   const [focusAnnotationId, setFocusAnnotationId] = useParamState("annotationId", "")
   const selectedLabelStore = useSelectedLabelStore()
   const { scrollContainerRef, textSelectionPopoverControlsRef, traceDetail, isDetailLoading } =
@@ -306,8 +339,8 @@ export function ConversationTab({
       focusAnnotationId,
       isConversationActive: isActive,
       onFocusConsumed: () => setFocusAnnotationId(""),
+      annotationsEnabled,
     })
-  const { data: moments } = useSessionMomentIntelligence({ projectId, sessionId })
 
   // Labels are scored per turn, so each badge anchors to the exact message
   // that triggered the detection (label.lastMessageIndex), not the end of the
@@ -323,6 +356,19 @@ export function ConversationTab({
     }
     return map
   }, [moments])
+
+  const focusMessageIndex = useMemo(() => {
+    if (!moments) return undefined
+    if (focusMomentKind) {
+      return moments
+        .find((row) => row.labels.some((label) => label.kind === focusMomentKind))
+        ?.labels.find((label) => label.kind === focusMomentKind)?.lastMessageIndex
+    }
+    if (focusMomentId) {
+      return moments.find((row) => row.moment.momentId === focusMomentId)?.moment.firstMessageIndex
+    }
+    return undefined
+  }, [focusMomentId, focusMomentKind, moments])
 
   useScrollToFocusedMoment({
     scrollRef: scrollContainerRef,
@@ -365,8 +411,18 @@ export function ConversationTab({
       isDetailLoading={isDetailLoading}
       projectId={projectId}
       isActive={isActive}
+      annotationsEnabled={annotationsEnabled}
       scrollContainerRef={scrollContainerRef}
       textSelectionPopoverControlsRef={textSelectionPopoverControlsRef}
+      timeline={timeline}
+      focusMessageIndex={focusMessageIndex}
+      sessionSpanScope={{
+        sessionId,
+        sessionStartTime: session.startTime,
+        sessionEndTime: session.endTime,
+      }}
+      agentGraph={agentGraph}
+      {...(navigateToSpan ? { navigateToSpan } : {})}
       {...(labelsByMessageIndex.size > 0 ? { messageTrailingSlot } : {})}
       {...(searchQuery ? { searchQuery } : {})}
     />

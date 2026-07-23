@@ -1,8 +1,25 @@
-import { cn, Text } from "@repo/ui"
+import { cn, Icon, Text } from "@repo/ui"
 import { type CreateLinkProps, Link } from "@tanstack/react-router"
+import { ChevronsUpDown } from "lucide-react"
 import type { ReactNode } from "react"
 
 const linkClass = "inline-flex items-center min-w-0 px-2 py-1 rounded hover:bg-muted transition-colors cursor-pointer"
+
+/**
+ * Shared trigger style for the org and project switchers (both `Combobox`-based),
+ * matching the org switcher's original design — the reference both were unified to:
+ * same padding/radius/hover surface, same emoji sizing, same label color/weight,
+ * and the same chevron glyph (passed as `ComboboxTrigger`'s `icon` override, since
+ * its built-in default is a different single-chevron icon).
+ */
+export const breadcrumbSwitcherTriggerClassName =
+  "flex min-w-0 max-w-48 items-center gap-1.5 px-2 py-1 rounded hover:bg-muted transition-colors cursor-pointer"
+
+export const breadcrumbSwitcherEmojiClassName = "text-base leading-none shrink-0"
+
+export function BreadcrumbSwitcherChevron() {
+  return <Icon icon={ChevronsUpDown} size="sm" color="foregroundMuted" className="shrink-0" />
+}
 
 export type BreadcrumbLinkProps = Omit<CreateLinkProps, "children"> & {
   children: ReactNode
@@ -16,7 +33,7 @@ export type BreadcrumbLinkProps = Omit<CreateLinkProps, "children"> & {
 export function BreadcrumbLink({ className, children, ...props }: BreadcrumbLinkProps) {
   return (
     <Link {...props} className={cn(linkClass, className)}>
-      <Text.H5M color="foregroundMuted" className="truncate">
+      <Text.H5M color="foregroundMuted" ellipsis>
         {children}
       </Text.H5M>
     </Link>
@@ -37,6 +54,7 @@ export function BreadcrumbText({ children, className, variant = "muted" }: Bread
   return (
     <Text.H5M
       color={variant === "current" ? "foreground" : "foregroundMuted"}
+      ellipsis
       className={cn("px-2 py-1 min-w-0", className)}
     >
       {children}

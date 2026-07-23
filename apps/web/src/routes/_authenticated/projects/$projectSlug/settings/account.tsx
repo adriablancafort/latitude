@@ -1,7 +1,10 @@
 import { NOTIFICATION_GROUP_META, NOTIFICATION_GROUPS, type NotificationPreferences } from "@domain/shared"
 import {
+  Avatar,
   Button,
   FormWrapper,
+  GitHubIcon,
+  GoogleIcon,
   Icon,
   Input,
   Label,
@@ -16,44 +19,52 @@ import {
   TableSkeleton,
   Text,
   Tooltip,
+  useMountEffect,
   useToast,
 } from "@repo/ui"
 import { relativeTime, toTitle } from "@repo/utils"
 import { useForm } from "@tanstack/react-form"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createFileRoute, useRouter } from "@tanstack/react-router"
-import {
-  Gamepad2,
-  Loader2,
-  LogOut,
-  type LucideIcon,
-  Microchip,
-  Monitor,
-  RectangleGoggles,
-  TabletSmartphone,
-  Tv,
-  Watch,
-} from "lucide-react"
+import { Loader2, LogOut, type LucideIcon, Monitor, TabletSmartphone, Tv } from "lucide-react"
 import { useEffect, useState } from "react"
-import { useHasFeatureFlag } from "../../../../../domains/feature-flags/feature-flags.collection.ts"
+import { z } from "zod"
+import { minSeverityHint, SeveritySelector } from "../../../../../domains/alerts/severity-selector.tsx"
 import {
   getNotificationPreferences,
   updateNotificationPreferences,
 } from "../../../../../domains/notifications/notifications.functions.ts"
 import { deleteCurrentUser, updateUserName } from "../../../../../domains/sessions/session.functions.ts"
 import {
+  listUserAccounts,
+  SOCIAL_PROVIDER_IDS,
+  type SocialProviderId,
+  type UserAccountDto,
+  unlinkUserAccount,
+} from "../../../../../domains/sessions/user-accounts.functions.ts"
+import {
   listUserSessions,
   revokeAllOtherUserSessions,
   revokeUserSession,
   type UserSessionDto,
 } from "../../../../../domains/sessions/user-sessions.functions.ts"
+import { oauthLinkErrorMessage } from "../../../../../lib/auth/oauth-errors.ts"
 import { authClient } from "../../../../../lib/auth-client.ts"
 import { toUserMessage } from "../../../../../lib/errors.ts"
 import { createFormSubmitHandler, fieldErrorsAsStrings } from "../../../../../lib/form-server-action.ts"
 import { useAuthenticatedUser } from "../../../-route-data.ts"
 import { SettingsPage } from "./-components/settings-page.tsx"
 
+// Flash params from the `linkSocial` redirect round-trip: BA sends the user
+// back to `callbackURL` (`?linked=<provider>`) on success or appends
+// `?error=<code>` to `errorCallbackURL` on failure.
+const accountSearchParams = z.object({
+  linked: z.enum(SOCIAL_PROVIDER_IDS).optional(),
+  error: z.string().optional(),
+})
+
 export const Route = createFileRoute("/_authenticated/projects/$projectSlug/settings/account")({
+  validateSearch: accountSearchParams,
   component: AccountSettingsPage,
 })
 
@@ -127,20 +138,16 @@ const formatDeviceLine = (session: UserSessionDto): string => {
 }
 
 /**
- * UA-Parser device-type → lucide icon. Keys mirror the values
- * `UAParser().device.type` can return, plus our `"desktop"` fallback for the
- * undefined case. Anything we don't recognize falls back to the generic
+ * Bowser `platform.type` → lucide icon. Bowser only emits
+ * `desktop | mobile | tablet | tv`, with `"desktop"` as the fallback for
+ * the unset case. Anything we don't recognize falls back to the generic
  * `tablet-smartphone` so an unexpected value never breaks the row.
  */
 const DEVICE_ICONS: Readonly<Record<string, LucideIcon>> = {
   desktop: Monitor,
   mobile: TabletSmartphone,
   tablet: TabletSmartphone,
-  console: Gamepad2,
-  smarttv: Tv,
-  wearable: Watch,
-  xr: RectangleGoggles,
-  embedded: Microchip,
+  tv: Tv,
 }
 
 const deviceIconFor = (kind: string): LucideIcon => DEVICE_ICONS[kind] ?? TabletSmartphone
@@ -231,8 +238,176 @@ function RevokeAllOtherSessionsConfirmModal({ otherCount, onClose }: { otherCoun
   )
 }
 
+interface SocialProviderMeta {
+  readonly id: SocialProviderId
+  readonly label: string
+  readonly icon: React.ComponentType<{ className?: string }>
+}
+
+const SOCIAL_PROVIDERS: readonly SocialProviderMeta[] = [
+  { id: "google", label: "Google", icon: GoogleIcon },
+  { id: "github", label: "GitHub", icon: GitHubIcon },
+]
+
+const providerLabel = (id: SocialProviderId): string => SOCIAL_PROVIDERS.find((p) => p.id === id)?.label ?? id
+
+function DisconnectAccountConfirmModal({
+  provider,
+  account,
+  onClose,
+}: {
+  provider: SocialProviderMeta
+  account: UserAccountDto
+  onClose: () => void
+}) {
+  const { toast } = useToast()
+  const queryClient = useQueryClient()
+  const [disconnecting, setDisconnecting] = useState(false)
+
+  const handleConfirm = async () => {
+    setDisconnecting(true)
+    try {
+      await unlinkUserAccount({
+        data: { providerId: provider.id, accountId: account.accountId },
+      })
+      toast({ description: `${provider.label} disconnected` })
+      await queryClient.invalidateQueries({ queryKey: ["userAccounts"] })
+      onClose()
+    } catch (error) {
+      setDisconnecting(false)
+      toast({ variant: "destructive", description: toUserMessage(error) })
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onOpenChange={(open) => {
+        if (!open && !disconnecting) onClose()
+      }}
+      title={`Disconnect ${provider.label}`}
+      description={`You'll no longer be able to sign in with ${provider.label}. Email sign-in keeps working, and you can reconnect ${provider.label} at any time.`}
+      dismissible
+      footer={
+        <div className="flex flex-row items-center gap-2">
+          <Button variant="outline" onClick={onClose} disabled={disconnecting}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={() => void handleConfirm()} disabled={disconnecting}>
+            {disconnecting ? "Disconnecting..." : "Disconnect"}
+          </Button>
+        </div>
+      }
+    />
+  )
+}
+
+function ConnectedAccountsSection() {
+  const { toast } = useToast()
+  const { data, isLoading } = useQuery({
+    queryKey: ["userAccounts"],
+    queryFn: () => listUserAccounts(),
+  })
+  const [connecting, setConnecting] = useState<SocialProviderId | null>(null)
+  const [toDisconnect, setToDisconnect] = useState<{
+    provider: SocialProviderMeta
+    account: UserAccountDto
+  } | null>(null)
+
+  const handleConnect = async (provider: SocialProviderMeta) => {
+    if (connecting) return
+    setConnecting(provider.id)
+
+    // Full-page redirect to the provider; we come back to this page with a
+    // `?linked=` / `?error=` flash param (handled in AccountSettingsPage).
+    const { data: linkData, error } = await authClient.linkSocial({
+      provider: provider.id,
+      callbackURL: `${window.location.pathname}?linked=${provider.id}`,
+      errorCallbackURL: window.location.pathname,
+    })
+    if (error) {
+      toast({
+        variant: "destructive",
+        description: error.message ?? `Could not start connecting ${provider.label}`,
+      })
+      setConnecting(null)
+      return
+    }
+    // The BA client normally redirects on its own; this is a fallback. Keep
+    // the "Redirecting…" state — the page is about to unload either way.
+    if (linkData?.url) window.location.assign(linkData.url)
+  }
+
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <Text.H5 weight="semibold">Connected accounts</Text.H5>
+        <Text.H5 color="foregroundMuted">
+          Connect Google or GitHub to sign in with one click. Signing in with your email always keeps working
+        </Text.H5>
+      </div>
+      <div className="flex w-full flex-col gap-1">
+        {SOCIAL_PROVIDERS.map((provider) => {
+          const account = data?.find((a) => a.providerId === provider.id)
+          const profile = account?.profile ?? null
+          const ProviderIcon = provider.icon
+          return (
+            <div
+              key={provider.id}
+              className="flex w-full flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-muted/30 p-4"
+            >
+              <div className="flex flex-row items-center gap-3">
+                {profile ? (
+                  <Avatar name={profile.name ?? provider.label} imageSrc={profile.image} size="lg" />
+                ) : (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-background border border-border">
+                    <ProviderIcon />
+                  </div>
+                )}
+                <div className="flex flex-col">
+                  <div className="flex flex-row items-baseline gap-1.5">
+                    <Text.H5 weight="medium">{profile?.name ?? provider.label}</Text.H5>
+                    {profile?.name ? <Text.H6 color="foregroundMuted">· {provider.label}</Text.H6> : null}
+                  </div>
+                  <Text.H6 color="foregroundMuted">
+                    {isLoading
+                      ? "…"
+                      : account
+                        ? (profile?.email ?? `Connected ${relativeTime(account.createdAt)}`)
+                        : "Not connected"}
+                  </Text.H6>
+                </div>
+              </div>
+              {isLoading ? null : account ? (
+                <Button variant="destructive" onClick={() => setToDisconnect({ provider, account })}>
+                  Disconnect
+                </Button>
+              ) : (
+                <Button variant="outline" disabled={connecting !== null} onClick={() => void handleConnect(provider)}>
+                  {connecting === provider.id ? "Redirecting…" : "Connect"}
+                </Button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {toDisconnect ? (
+        <DisconnectAccountConfirmModal
+          provider={toDisconnect.provider}
+          account={toDisconnect.account}
+          onClose={() => setToDisconnect(null)}
+        />
+      ) : null}
+    </section>
+  )
+}
+
 function SessionsSection() {
-  const { data, isLoading } = useQuery({ queryKey: ["userSessions"], queryFn: () => listUserSessions() })
+  const { data, isLoading } = useQuery({
+    queryKey: ["userSessions"],
+    queryFn: () => listUserSessions(),
+  })
   const [sessionToRevoke, setSessionToRevoke] = useState<UserSessionDto | null>(null)
   const [revokeAllOpen, setRevokeAllOpen] = useState(false)
 
@@ -246,7 +421,7 @@ function SessionsSection() {
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-row items-center justify-between">
+      <div className="flex flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="flex flex-col gap-1">
           <Text.H5 weight="semibold">Sessions</Text.H5>
           <Text.H5 color="foregroundMuted">
@@ -339,16 +514,9 @@ function NotificationsSection() {
   const { toast } = useToast()
   const queryClient = useQueryClient()
 
-  // Hide the entire section when the org doesn't have the email channel
-  // enabled — toggles for an inactive channel would just confuse users.
-  // The notifications backend also gates the email send on this flag,
-  // so the UI mirrors what the worker actually does.
-  const emailNotificationsEnabled = useHasFeatureFlag("email-notifications")
-
   const { data, isLoading } = useQuery({
     queryKey: ["notificationPreferences"],
     queryFn: () => getNotificationPreferences(),
-    enabled: emailNotificationsEnabled,
   })
 
   // Scroll the targeted toggle into view when the page is opened with a
@@ -357,35 +525,43 @@ function NotificationsSection() {
   // directly on the row they came to flip. Runs once `isLoading` flips false
   // because the rows don't exist in the DOM until then.
   useEffect(() => {
-    if (isLoading || !emailNotificationsEnabled) return
+    if (isLoading) return
     const hash = window.location.hash.slice(1)
     if (!hash.startsWith("notifications-")) return
     const el = document.getElementById(hash)
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" })
-  }, [isLoading, emailNotificationsEnabled])
+  }, [isLoading])
 
   // Local prefs mirror server prefs; saves run in the background per change.
   // Missing entries are treated as "email on" so a fresh user sees every
   // toggle in the on position (matches the opt-out default).
   const prefs: NotificationPreferences = data?.preferences ?? {}
 
-  const setGroupEmail = async (group: (typeof NOTIFICATION_GROUPS)[number], enabled: boolean) => {
+  const patchGroup = async (
+    group: (typeof NOTIFICATION_GROUPS)[number],
+    patch: Partial<NonNullable<NotificationPreferences[(typeof NOTIFICATION_GROUPS)[number]]>>,
+  ) => {
     const next: NotificationPreferences = {
       ...prefs,
-      [group]: { ...(prefs[group] ?? {}), email: enabled },
+      [group]: { ...(prefs[group] ?? {}), ...patch },
     }
-    // Optimistic update so the toggle never lags behind the user's intent.
-    queryClient.setQueryData(["notificationPreferences"], { preferences: next })
+    // Optimistic update so the controls never lag behind the user's intent.
+    queryClient.setQueryData(["notificationPreferences"], {
+      preferences: next,
+    })
     try {
       await updateNotificationPreferences({ data: { preferences: next } })
     } catch (error) {
       // Roll back on failure.
-      queryClient.setQueryData(["notificationPreferences"], { preferences: prefs })
+      queryClient.setQueryData(["notificationPreferences"], {
+        preferences: prefs,
+      })
       toast({ variant: "destructive", description: toUserMessage(error) })
     }
   }
 
-  if (!emailNotificationsEnabled) return null
+  const setGroupEmail = (group: (typeof NOTIFICATION_GROUPS)[number], enabled: boolean) =>
+    patchGroup(group, { email: enabled })
 
   return (
     <section className="flex flex-col gap-4">
@@ -405,19 +581,37 @@ function NotificationsSection() {
             <div
               key={group}
               id={`notifications-${group}`}
-              className="flex w-full flex-row items-center justify-between gap-4 rounded-lg bg-muted/30 p-4 scroll-mt-8"
+              className="flex w-full flex-col gap-3 rounded-lg bg-muted/30 p-4 scroll-mt-8"
             >
-              <div className="flex flex-col gap-1">
-                <Label htmlFor={inputId}>{meta.label}</Label>
-                <Text.H6 color="foregroundMuted">{meta.description}</Text.H6>
+              <div className="flex w-full flex-row items-center justify-between gap-4">
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor={inputId}>{meta.label}</Label>
+                  <Text.H6 color="foregroundMuted">{meta.description}</Text.H6>
+                </div>
+                <Switch
+                  id={inputId}
+                  checked={enabled}
+                  disabled={isLoading}
+                  onCheckedChange={(checked) => void setGroupEmail(group, checked)}
+                  aria-label={`Toggle email notifications for ${meta.label}`}
+                />
               </div>
-              <Switch
-                id={inputId}
-                checked={enabled}
-                disabled={isLoading}
-                onCheckedChange={(checked) => void setGroupEmail(group, checked)}
-                aria-label={`Toggle email notifications for ${meta.label}`}
-              />
+              {group === "incidents" && enabled ? (
+                <div className="flex flex-row items-center justify-between gap-4 rounded-lg bg-muted/80 px-3 py-2">
+                  <div className="flex flex-row items-baseline gap-1.5">
+                    <Text.H6M>Severity</Text.H6M>
+                    <Text.H6 color="foregroundMuted">
+                      · {minSeverityHint(prefs.incidents?.emailMinSeverity ?? "low")}
+                    </Text.H6>
+                  </div>
+                  <SeveritySelector
+                    variant="bordered"
+                    value={prefs.incidents?.emailMinSeverity ?? "low"}
+                    onSelect={(minSeverity) => void patchGroup("incidents", { emailMinSeverity: minSeverity })}
+                    disabled={isLoading}
+                  />
+                </div>
+              ) : null}
             </div>
           )
         })}
@@ -430,7 +624,24 @@ function AccountSettingsPage() {
   const user = useAuthenticatedUser()
   const { toast } = useToast()
   const router = useRouter()
+  const search = Route.useSearch()
   const [deleteOpen, setDeleteOpen] = useState(false)
+
+  // Toast the result of a `linkSocial` round-trip, then strip the flash
+  // params so a refresh doesn't repeat the toast.
+  useMountEffect(() => {
+    if (search.linked) {
+      toast({ description: `${providerLabel(search.linked)} connected` })
+    } else if (search.error) {
+      toast({
+        variant: "destructive",
+        description: oauthLinkErrorMessage(search.error),
+      })
+    }
+    if (search.linked || search.error) {
+      void router.navigate({ to: Route.fullPath, search: {}, replace: true })
+    }
+  })
 
   const form = useForm({
     defaultValues: { name: user.name ?? "" },
@@ -489,6 +700,7 @@ function AccountSettingsPage() {
         </div>
       </form>
       <NotificationsSection />
+      <ConnectedAccountsSection />
       <SessionsSection />
       <div className="flex flex-col gap-4 rounded-lg border border-destructive/30 bg-destructive/5 p-6">
         <Text.H4 weight="bold" color="destructive">

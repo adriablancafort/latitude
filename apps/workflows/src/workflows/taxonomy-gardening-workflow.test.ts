@@ -1,41 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const { mockActivities } = vi.hoisted(() => {
+  const buildResult = {
+    observationsScanned: 7,
+    observationsAvailable: 7,
+    observationsSampled: 7,
+    sampleStrategy: "day_stratified_hash_round_robin",
+    sampleCap: 1500,
+    clustersBorn: 4,
+    clustersContinued: 1,
+    clustersDeprecated: 2,
+    leavesAssigned: 7,
+    maxDepthReached: 2,
+    lineage: ["birth"],
+    planKey: "org:oooooooooooooooooooooooo:taxonomy:gardenPlan:rrrrrrrrrrrrrrrrrrrrrrrr",
+  }
   const mockActivities = {
     startGardenTaxonomyRunActivity: vi.fn(async (input: Record<string, unknown>) => ({
       ...input,
       runId: "r".repeat(24),
       now: "2026-01-01T00:00:00.000Z",
       observationsScanned: 7,
+      observationsAvailable: 7,
+      observationsSampled: 0,
+      sampleStrategy: "day_stratified_hash_round_robin",
+      sampleCap: 1500,
     })),
-    sweepGardenTaxonomyNoiseActivity: vi.fn(async () => ({ noiseScanned: 2, clustersBorn: 1, lineage: ["birth"] })),
-    mergeGardenTaxonomyClustersActivity: vi.fn(async () => ({
-      clustersMerged: 1,
-      observationsReassigned: 3,
-      lineage: ["merge"],
-    })),
-    deprecateGardenTaxonomyClustersActivity: vi.fn(async () => ({ clustersDeprecated: 1, lineage: ["death"] })),
-    reassignGardenTaxonomyNoiseActivity: vi.fn(async () => ({ noiseScanned: 4, observationsReassigned: 2 })),
-    recurseGardenTaxonomyTreeActivity: vi.fn(async () => ({
-      nodesRecursed: 1,
-      childrenBorn: 2,
-      observationsMoved: 5,
-      lineage: ["split"],
-    })),
-    reconcileGardenTaxonomyCountsActivity: vi.fn(async () => ({ clustersDeprecated: 0, lineage: [] })),
+    planHierarchicalGardenTaxonomyActivity: vi.fn(async () => buildResult),
+    saveGardenTaxonomyClustersActivity: vi.fn(async () => ({ clustersSaved: 1 })),
+    reassignGardenTaxonomyObservationsActivity: vi.fn(async () => ({ observationsReassigned: 1 })),
+    deprecateGardenTaxonomyClustersActivity: vi.fn(async () => ({ clustersDeprecated: 1 })),
     planGardenTaxonomyNamingActivity: vi.fn(async () => ({
-      clusterIds: ["c".repeat(24)],
-      clustersScanned: 1,
+      clusterIds: ["c".repeat(24), "d".repeat(24)],
+      clusterIdsByDepth: [
+        { depth: 2, clusterIds: ["d".repeat(24)] },
+        { depth: 0, clusterIds: ["c".repeat(24)] },
+      ],
+      clustersScanned: 2,
     })),
-    assertGardenTaxonomyQualityActivity: vi.fn(async () => ({ clustersScanned: 1, findings: [] })),
-    nameGardenTaxonomyActivity: vi.fn(async () => ({ clustersNamed: 1, categoriesScanned: 1 })),
+    assertGardenTaxonomyQualityActivity: vi.fn(async () => ({ clustersScanned: 2, findings: [] })),
     nameTaxonomyClusterActivity: vi.fn(async () => ({ name: "Named cluster", description: "A named test cluster." })),
-    emitGardenTaxonomyLineageActivity: vi.fn(async () => undefined),
+    emitGardenTaxonomyLineageActivity: vi.fn(async () => ({ lineageEmitted: 1 })),
     completeGardenTaxonomyRunActivity: vi.fn(async (input: Record<string, unknown>) => ({
       ...input,
       status: "completed",
     })),
     failGardenTaxonomyRunActivity: vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: "failed" })),
+    cleanupGardenTaxonomyStagingActivity: vi.fn(async () => ({ stagingDeleted: 0 })),
   }
   return { mockActivities }
 })
@@ -44,66 +55,118 @@ vi.mock("@temporalio/workflow", () => ({
   CancellationScope: {
     nonCancellable: async <T>(fn: () => Promise<T>) => fn(),
   },
+  patched: vi.fn(() => true),
   proxyActivities: () => mockActivities,
   workflowInfo: () => ({ runId: "test-workflow-run-id" }),
 }))
 
+import { patched } from "@temporalio/workflow"
 import { gardenTaxonomyWorkflow } from "./taxonomy-gardening-workflow.ts"
 
-describe("taxonomy gardening workflows", () => {
+const globalInput = {
+  organizationId: "o".repeat(24),
+  projectId: "p".repeat(24),
+  dimension: "topic" as const,
+  trigger: "manual" as const,
+}
+
+const scopedInput = { ...globalInput, customBehaviorId: "b".repeat(24) }
+
+describe("taxonomy gardening workflow (divisive build)", () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it("runs dimension gardening as ordered idempotent activities", async () => {
-    const result = await gardenTaxonomyWorkflow({
-      organizationId: "o".repeat(24),
-      projectId: "p".repeat(24),
-      dimension: "topic",
-      trigger: "manual",
-    })
+  it("builds the tree once, names clusters deepest-first, and completes the run", async () => {
+    const result = await gardenTaxonomyWorkflow(globalInput)
 
-    expect(mockActivities.startGardenTaxonomyRunActivity).toHaveBeenCalledWith({
-      organizationId: "o".repeat(24),
-      projectId: "p".repeat(24),
-      dimension: "topic",
-      trigger: "manual",
-      workflowRunId: "test-workflow-run-id",
-    })
+    expect(mockActivities.planHierarchicalGardenTaxonomyActivity).toHaveBeenCalledTimes(1)
+    expect(mockActivities.saveGardenTaxonomyClustersActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ planKey: "org:oooooooooooooooooooooooo:taxonomy:gardenPlan:rrrrrrrrrrrrrrrrrrrrrrrr" }),
+    )
+    expect(mockActivities.reassignGardenTaxonomyObservationsActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ planKey: "org:oooooooooooooooooooooooo:taxonomy:gardenPlan:rrrrrrrrrrrrrrrrrrrrrrrr" }),
+    )
+    expect(mockActivities.deprecateGardenTaxonomyClustersActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ planKey: "org:oooooooooooooooooooooooo:taxonomy:gardenPlan:rrrrrrrrrrrrrrrrrrrrrrrr" }),
+    )
     expect(mockActivities.planGardenTaxonomyNamingActivity).toHaveBeenCalledWith(
       expect.objectContaining({ lineage: ["birth"] }),
     )
-    expect(mockActivities.planGardenTaxonomyNamingActivity).toHaveBeenCalledWith(
-      expect.objectContaining({ lineage: ["split"] }),
-    )
-    expect(mockActivities.nameTaxonomyClusterActivity).toHaveBeenCalledWith({
-      organizationId: "o".repeat(24),
-      projectId: "p".repeat(24),
-      clusterId: "c".repeat(24),
-    })
+
+    // Global names carry no customBehaviorId — byte-identical to the pre-unification input.
+    const nameCalls = mockActivities.nameTaxonomyClusterActivity.mock.calls as unknown as Array<
+      [{ readonly clusterId: string; readonly customBehaviorId?: string }]
+    >
+    expect(nameCalls.map((call) => call[0]?.clusterId)).toEqual(["d".repeat(24), "c".repeat(24)])
+    expect(nameCalls.every((call) => call[0] && !("customBehaviorId" in call[0]))).toBe(true)
+
     expect(mockActivities.completeGardenTaxonomyRunActivity).toHaveBeenCalledWith(
       expect.objectContaining({
-        observationsScanned: 7,
-        noiseScanned: 18,
-        clustersBorn: 9,
-        clustersMerged: 3,
-        clustersDeprecated: 3,
+        clustersBorn: 4,
+        clustersDeprecated: 2,
       }),
     )
     expect(result).toEqual(expect.objectContaining({ status: "completed" }))
   })
 
-  it("marks the run failed and propagates failed step activity so Temporal retry policy owns recovery", async () => {
-    mockActivities.mergeGardenTaxonomyClustersActivity.mockRejectedValueOnce(new Error("garden failed"))
+  it("threads the scope through the scoped naming loop", async () => {
+    await gardenTaxonomyWorkflow(scopedInput)
 
-    await expect(
-      gardenTaxonomyWorkflow({
-        organizationId: "o".repeat(24),
-        projectId: "p".repeat(24),
-        dimension: "topic",
-        trigger: "manual",
-      }),
-    ).rejects.toThrow("garden failed")
+    const nameCalls = mockActivities.nameTaxonomyClusterActivity.mock.calls as unknown as Array<
+      [{ readonly clusterId: string; readonly customBehaviorId?: string }]
+    >
+    expect(nameCalls.every((call) => call[0]?.customBehaviorId === "b".repeat(24))).toBe(true)
+  })
+
+  it("completes empty and skips save/deprecate on a scoped cold-start (plan built no tree)", async () => {
+    mockActivities.planHierarchicalGardenTaxonomyActivity.mockResolvedValueOnce({
+      observationsScanned: 3,
+      observationsAvailable: 3,
+      observationsSampled: 3,
+      sampleStrategy: "day_stratified_hash_round_robin",
+      sampleCap: 1500,
+      clustersBorn: 0,
+      clustersContinued: 0,
+      clustersDeprecated: 0,
+      leavesAssigned: 0,
+      maxDepthReached: 0,
+      lineage: [],
+      planKey: "org:oooooooooooooooooooooooo:taxonomy:gardenPlan:rrrrrrrrrrrrrrrrrrrrrrrr",
+    } as never)
+
+    const result = await gardenTaxonomyWorkflow(scopedInput)
+
+    expect(mockActivities.saveGardenTaxonomyClustersActivity).not.toHaveBeenCalled()
+    expect(mockActivities.reassignGardenTaxonomyObservationsActivity).not.toHaveBeenCalled()
+    expect(mockActivities.deprecateGardenTaxonomyClustersActivity).not.toHaveBeenCalled()
+    expect(mockActivities.planGardenTaxonomyNamingActivity).not.toHaveBeenCalled()
+    expect(mockActivities.completeGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ clustersBorn: 0, clustersDeprecated: 0 }),
+    )
+    expect(result).toEqual(expect.objectContaining({ status: "completed" }))
+  })
+
+  it("a post-build (naming) failure leaves the prior clusters active — no whole-tree wipe (#4036)", async () => {
+    mockActivities.nameTaxonomyClusterActivity.mockRejectedValueOnce(new Error("naming exploded"))
+
+    await expect(gardenTaxonomyWorkflow(scopedInput)).rejects.toThrow("naming exploded")
+
+    // The build already ran (save/reassign) and the normal pre-naming deprecate
+    // fired exactly once. The catch path only marks the run failed — it never
+    // deprecates the whole tree, so the just-built clusters stay active.
+    expect(mockActivities.saveGardenTaxonomyClustersActivity).toHaveBeenCalledTimes(1)
+    expect(mockActivities.deprecateGardenTaxonomyClustersActivity).toHaveBeenCalledTimes(1)
+    expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ error: "naming exploded" }),
+    )
+    expect(mockActivities.completeGardenTaxonomyRunActivity).not.toHaveBeenCalled()
+  })
+
+  it("marks the run failed when the build pass errors", async () => {
+    mockActivities.planHierarchicalGardenTaxonomyActivity.mockRejectedValueOnce(new Error("garden failed"))
+
+    await expect(gardenTaxonomyWorkflow(globalInput)).rejects.toThrow("garden failed")
 
     expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
       expect.objectContaining({ error: "garden failed" }),
@@ -111,19 +174,99 @@ describe("taxonomy gardening workflows", () => {
     expect(mockActivities.completeGardenTaxonomyRunActivity).not.toHaveBeenCalled()
   })
 
+  it("marks a scoped behavior failed when the START activity errors (no stuck generating)", async () => {
+    mockActivities.startGardenTaxonomyRunActivity.mockRejectedValueOnce(new Error("start exploded"))
+
+    await expect(gardenTaxonomyWorkflow(scopedInput)).rejects.toThrow("start exploded")
+
+    // Start runs inside the try and the catch fails from the raw input (not the
+    // never-returned start result), so a scoped start failure still marks the
+    // behavior failed rather than leaving it stuck `generating`.
+    expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ customBehaviorId: "b".repeat(24), error: "start exploded" }),
+    )
+    expect(mockActivities.planHierarchicalGardenTaxonomyActivity).not.toHaveBeenCalled()
+  })
+
+  it("carries the staging-swap patched marker and cleans up staging on a failure before reassignment", async () => {
+    mockActivities.saveGardenTaxonomyClustersActivity.mockRejectedValueOnce(new Error("save exploded"))
+
+    await expect(gardenTaxonomyWorkflow(globalInput)).rejects.toThrow("save exploded")
+
+    expect(patched).toHaveBeenCalledWith("taxonomy-gardening-staging-swap-v1")
+    // Reassignment never ran, so no observation points at the staging tree — it is
+    // safe to clean up the orphaned staging rows.
+    expect(mockActivities.reassignGardenTaxonomyObservationsActivity).not.toHaveBeenCalled()
+    expect(mockActivities.cleanupGardenTaxonomyStagingActivity).toHaveBeenCalledTimes(1)
+    expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ error: "save exploded" }),
+    )
+  })
+
+  it("does NOT delete staging once reassignment has run (it may already point observations there)", async () => {
+    // Reassignment repoints the live window onto the staging leaves; if the swap
+    // then fails, deleting staging would orphan those observations (#4121 review).
+    mockActivities.deprecateGardenTaxonomyClustersActivity.mockRejectedValueOnce(new Error("swap exploded"))
+
+    await expect(gardenTaxonomyWorkflow(globalInput)).rejects.toThrow("swap exploded")
+
+    expect(mockActivities.reassignGardenTaxonomyObservationsActivity).toHaveBeenCalledTimes(1)
+    expect(mockActivities.cleanupGardenTaxonomyStagingActivity).not.toHaveBeenCalled()
+    expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ error: "swap exploded" }),
+    )
+  })
+
+  it("skips staging cleanup when replaying an in-flight pre-change history (patched marker off)", async () => {
+    vi.mocked(patched).mockReturnValueOnce(false)
+    mockActivities.saveGardenTaxonomyClustersActivity.mockRejectedValueOnce(new Error("save exploded"))
+
+    await expect(gardenTaxonomyWorkflow(globalInput)).rejects.toThrow("save exploded")
+
+    // A pre-change history never staged a tree, so the new cleanup activity must
+    // not run — the marker reconciles the shape without changing old behavior.
+    expect(mockActivities.cleanupGardenTaxonomyStagingActivity).not.toHaveBeenCalled()
+    expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ error: "save exploded" }),
+    )
+  })
+
+  it("issues a mode-independent command sequence (replay-safe across off/shadow/enforced)", async () => {
+    await gardenTaxonomyWorkflow(globalInput)
+
+    // The workflow never reads the rollout mode: mode resolution, shadow compute,
+    // and fallback selection all live in the plan activity, and the reassign /
+    // deprecate / cleanup activities branch on the staged plan internally. So the
+    // recorded command sequence is identical whatever the resolved mode, which is
+    // what makes an in-flight history replay deterministically across a mode flip.
+    // This locks that no mode-conditional command was added to the workflow.
+    const names = Object.keys(mockActivities) as Array<keyof typeof mockActivities>
+    const ordered = names
+      .flatMap((name) => mockActivities[name].mock.invocationCallOrder.map((order) => ({ order, name })))
+      .sort((left, right) => left.order - right.order)
+      .map((entry) => entry.name)
+
+    expect(ordered).toEqual([
+      "startGardenTaxonomyRunActivity",
+      "planHierarchicalGardenTaxonomyActivity",
+      "saveGardenTaxonomyClustersActivity",
+      "reassignGardenTaxonomyObservationsActivity",
+      "deprecateGardenTaxonomyClustersActivity",
+      "planGardenTaxonomyNamingActivity",
+      "nameTaxonomyClusterActivity",
+      "nameTaxonomyClusterActivity",
+      "assertGardenTaxonomyQualityActivity",
+      "emitGardenTaxonomyLineageActivity",
+      "completeGardenTaxonomyRunActivity",
+    ])
+  })
+
   it("records a failed run in a non-cancellable cleanup scope when cancellation interrupts a step", async () => {
     const cancellation = new Error("cancelled")
     cancellation.name = "CancelledFailure"
-    mockActivities.reassignGardenTaxonomyNoiseActivity.mockRejectedValueOnce(cancellation)
+    mockActivities.planHierarchicalGardenTaxonomyActivity.mockRejectedValueOnce(cancellation)
 
-    await expect(
-      gardenTaxonomyWorkflow({
-        organizationId: "o".repeat(24),
-        projectId: "p".repeat(24),
-        dimension: "topic",
-        trigger: "manual",
-      }),
-    ).rejects.toThrow("cancelled")
+    await expect(gardenTaxonomyWorkflow(globalInput)).rejects.toThrow("cancelled")
 
     expect(mockActivities.failGardenTaxonomyRunActivity).toHaveBeenCalledWith(
       expect.objectContaining({ error: "cancelled" }),

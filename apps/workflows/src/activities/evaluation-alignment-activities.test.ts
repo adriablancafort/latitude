@@ -7,10 +7,10 @@ import {
   type EvaluationAlignmentExample,
   EvaluationAlignmentExamplesRepository,
   type EvaluationAlignmentExamplesRepositoryShape,
-  type EvaluationIssue,
-  EvaluationIssueRepository,
   EvaluationRepository,
   type EvaluationRepositoryShape,
+  type EvaluationSignal,
+  EvaluationSignalRepository,
   emptyEvaluationAlignment,
   evaluateBaselineDraftUseCase,
   evaluateIncrementalDraftUseCase,
@@ -24,12 +24,12 @@ import {
   ChSqlClient,
   EvaluationId,
   ExternalUserId,
-  IssueId,
   NotFoundError,
   OrganizationId,
   ProjectId,
   ScoreId,
   SessionId,
+  SignalId,
   SimulationId,
   SpanId,
   SqlClient,
@@ -39,6 +39,7 @@ import {
 import { createFakeChSqlClient } from "@domain/shared/testing"
 import { type TraceDetail, TraceRepository } from "@domain/spans"
 import { createFakeTraceRepository } from "@domain/spans/testing"
+import { QuickJsScriptRuntimeLive } from "@platform/sandbox-quickjs"
 import { silenceLoggerInTests } from "@repo/vitest-config/silence-logger"
 import { Effect, Layer } from "effect"
 import { describe, expect, it, vi } from "vitest"
@@ -92,6 +93,9 @@ vi.mock("@platform/ai", async () => {
   const { Effect, Layer } = (await vi.importActual("effect")) as typeof import("effect")
 
   return {
+    AIEmbedLive: {},
+    AIGenerateLive: {},
+    AIRerankLive: {},
     withAi: (_layer?: unknown, _redisClient?: unknown) => Effect.provide(Layer.succeed(AI, mockAi)),
   }
 })
@@ -106,11 +110,11 @@ silenceLoggerInTests()
 
 const organizationId = OrganizationId("o".repeat(24))
 const projectId = ProjectId("p".repeat(24))
-const issueId = IssueId("i".repeat(24))
+const signalId = SignalId("i".repeat(24))
 const evaluationId = EvaluationId("e".repeat(24))
 
-const ISSUE_NAME = "Tool output leakage"
-const ISSUE_DESCRIPTION = "Secrets are exposed in assistant tool output."
+const SIGNAL_NAME = "Tool output leakage"
+const SIGNAL_DESCRIPTION = "Secrets are exposed in assistant tool output."
 
 const inertSqlClient: SqlClientShape = {
   organizationId,
@@ -125,11 +129,13 @@ const sha1Hex = async (value: string): Promise<string> => {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
-const makeIssue = (): EvaluationIssue => ({
-  id: issueId,
+const makeSignal = (): EvaluationSignal => ({
+  id: signalId,
   projectId: projectId as string,
-  name: ISSUE_NAME,
-  description: ISSUE_DESCRIPTION,
+  name: SIGNAL_NAME,
+  description: SIGNAL_DESCRIPTION,
+  resolvedAt: null,
+  ignoredAt: null,
 })
 
 const makeEvaluation = (overrides: Partial<Evaluation> = {}): Evaluation =>
@@ -137,10 +143,10 @@ const makeEvaluation = (overrides: Partial<Evaluation> = {}): Evaluation =>
     id: evaluationId,
     organizationId,
     projectId,
-    issueId,
+    signalId,
     name: "Existing evaluation",
     description: "Existing evaluation description",
-    script: wrapPromptAsEvaluationScript("Evaluate the conversation for the issue."),
+    script: wrapPromptAsEvaluationScript("Evaluate the conversation for the signal."),
     trigger: defaultEvaluationTrigger(),
     alignment: {
       ...emptyEvaluationAlignment("hash-existing"),
@@ -154,12 +160,13 @@ const makeEvaluation = (overrides: Partial<Evaluation> = {}): Evaluation =>
     ...overrides,
   }) as Evaluation
 
-const makeIssueRepoLayer = () =>
-  Layer.succeed(EvaluationIssueRepository, {
+const makeSignalRepoLayer = () =>
+  Layer.succeed(EvaluationSignalRepository, {
     findById: (id) =>
-      String(id) === String(issueId)
-        ? Effect.succeed(makeIssue())
-        : Effect.fail(new NotFoundError({ entity: "EvaluationIssue", id: String(id) })),
+      String(id) === String(signalId)
+        ? Effect.succeed(makeSignal())
+        : Effect.fail(new NotFoundError({ entity: "EvaluationSignal", id: String(id) })),
+    claimReopenOnOccurrence: () => Effect.succeed(false),
   })
 
 const makeEvaluationRepoLayer = (overrides?: Partial<EvaluationRepositoryShape>) => {
@@ -174,12 +181,12 @@ const makeEvaluationRepoLayer = (overrides?: Partial<EvaluationRepositoryShape>)
         stored.set(evaluation.id, evaluation)
       }),
     listByProjectId: () => Effect.die("listByProjectId unused"),
-    listByIssueId: () => Effect.die("listByIssueId unused"),
-    listByIssueIds: () => Effect.die("listByIssueIds unused"),
+    listBySignalId: () => Effect.die("listBySignalId unused"),
+    listBySignalIds: () => Effect.die("listBySignalIds unused"),
     archive: () => Effect.die("archive unused"),
     unarchive: () => Effect.die("unarchive unused"),
     softDelete: () => Effect.die("softDelete unused"),
-    softDeleteByIssueId: () => Effect.die("softDeleteByIssueId unused"),
+    softDeleteBySignalId: () => Effect.die("softDeleteBySignalId unused"),
     ...overrides,
   }
   return { layer: Layer.succeed(EvaluationRepository, repo), stored }
@@ -212,12 +219,14 @@ const makeTraceDetail = (traceId: string, content: string): TraceDetail => ({
   costTotalMicrocents: 0,
   sessionId: SessionId("s".repeat(64)),
   userId: ExternalUserId("u".repeat(24)),
+  userEmail: "",
   simulationId: SimulationId(""),
   tags: [],
   metadata: {},
   models: [],
   providers: [],
   serviceNames: [],
+  agentNames: [],
   rootSpanId: SpanId("r".repeat(16)),
   rootSpanName: "root",
   systemInstructions: [],
@@ -259,11 +268,11 @@ describe("evaluation-alignment activities", () => {
       collectAlignmentExamplesUseCase({
         organizationId: String(organizationId),
         projectId: String(projectId),
-        issueId: String(issueId),
+        signalId: String(signalId),
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-            makeIssueRepoLayer(),
+            makeSignalRepoLayer(),
             makeAlignmentExamplesRepoLayer({
               listPositiveExamples: () => Effect.succeed([positiveExample]),
               listNegativeExamples: () => Effect.succeed([negativeExample]),
@@ -288,10 +297,10 @@ describe("evaluation-alignment activities", () => {
     const { calls } = createFakeAI()
 
     const result = await Effect.runPromise(
-      generateBaselineDraftUseCase({ issueName: ISSUE_NAME, issueDescription: ISSUE_DESCRIPTION }),
+      generateBaselineDraftUseCase({ signalName: SIGNAL_NAME, signalDescription: SIGNAL_DESCRIPTION }),
     )
 
-    const expectedPrompt = generateBaselinePromptText(ISSUE_NAME, ISSUE_DESCRIPTION)
+    const expectedPrompt = generateBaselinePromptText(SIGNAL_NAME, SIGNAL_DESCRIPTION)
     const expectedScript = wrapPromptAsEvaluationScript(expectedPrompt)
 
     expect(result.script).toBe(expectedScript)
@@ -306,7 +315,7 @@ describe("evaluation-alignment activities", () => {
         const hasLeakage = (input.prompt ?? "").includes("sk-live-123")
         return Effect.succeed({
           object: {
-            passed: !hasLeakage,
+            passed: hasLeakage,
             feedback: hasLeakage ? "Detected leaked token" : "No leakage detected",
           } as never,
           tokens: 10,
@@ -317,8 +326,8 @@ describe("evaluation-alignment activities", () => {
 
     const result = await Effect.runPromise(
       evaluateBaselineDraftUseCase({
-        issueName: ISSUE_NAME,
-        issueDescription: ISSUE_DESCRIPTION,
+        signalName: SIGNAL_NAME,
+        signalDescription: SIGNAL_DESCRIPTION,
         script: wrapPromptAsEvaluationScript(
           `Check if the conversation contains leaked secrets:\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
         ),
@@ -357,11 +366,11 @@ describe("evaluation-alignment activities", () => {
         judgeTelemetry: {
           organizationId: String(organizationId),
           projectId: String(projectId),
-          issueId: String(issueId),
+          signalId: String(signalId),
           evaluationId: String(evaluationId),
           jobId: "job-baseline",
         },
-      }).pipe(Effect.provide(aiLayer)),
+      }).pipe(Effect.provide(Layer.mergeAll(aiLayer, QuickJsScriptRuntimeLive))),
     )
 
     expect(result.confusionMatrix).toEqual({
@@ -394,21 +403,21 @@ describe("evaluation-alignment activities", () => {
       loadAlignmentStateUseCase({
         organizationId: String(organizationId),
         projectId: String(projectId),
-        issueId: String(issueId),
+        signalId: String(signalId),
         evaluationId: String(evaluationId),
-      }).pipe(Effect.provide(Layer.mergeAll(layer, makeIssueRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
+      }).pipe(Effect.provide(Layer.mergeAll(layer, makeSignalRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
     )
 
     expect(result).toEqual({
       evaluationId: String(evaluationId),
-      issueId: String(issueId),
-      issueName: ISSUE_NAME,
-      issueDescription: ISSUE_DESCRIPTION,
+      signalId: String(signalId),
+      signalName: SIGNAL_NAME,
+      signalDescription: SIGNAL_DESCRIPTION,
       name: "Existing evaluation",
       description: "Existing evaluation description",
       alignedAt: new Date("2026-04-01T00:00:00.000Z").toISOString(),
       draft: {
-        script: wrapPromptAsEvaluationScript("Evaluate the conversation for the issue."),
+        script: wrapPromptAsEvaluationScript("Evaluate the conversation for the signal."),
         evaluationHash: "hash-existing",
         trigger: defaultEvaluationTrigger(),
       },
@@ -423,10 +432,10 @@ describe("evaluation-alignment activities", () => {
 
     const result = await Effect.runPromise(
       evaluateIncrementalDraftUseCase({
-        issueName: ISSUE_NAME,
-        issueDescription: ISSUE_DESCRIPTION,
+        signalName: SIGNAL_NAME,
+        signalDescription: SIGNAL_DESCRIPTION,
         draft: {
-          script: wrapPromptAsEvaluationScript("Evaluate the conversation for the issue."),
+          script: wrapPromptAsEvaluationScript("Evaluate the conversation for the signal."),
           evaluationHash: "hash-existing",
           trigger: defaultEvaluationTrigger(),
         },
@@ -436,11 +445,11 @@ describe("evaluation-alignment activities", () => {
         judgeTelemetry: {
           organizationId: String(organizationId),
           projectId: String(projectId),
-          issueId: String(issueId),
+          signalId: String(signalId),
           evaluationId: String(evaluationId),
           jobId: "job-incremental",
         },
-      }).pipe(Effect.provide(aiLayer)),
+      }).pipe(Effect.provide(Layer.mergeAll(aiLayer, QuickJsScriptRuntimeLive))),
     )
 
     expect(result.strategy).toBe("no-op")
@@ -466,7 +475,7 @@ describe("evaluation-alignment activities", () => {
         const hasLeakage = (input.prompt ?? "").includes("sk-live-123")
         return Effect.succeed({
           object: {
-            passed: !hasLeakage,
+            passed: hasLeakage,
             feedback: hasLeakage ? "Detected leaked token" : "No leakage detected",
           } as never,
           tokens: 10,
@@ -477,8 +486,8 @@ describe("evaluation-alignment activities", () => {
 
     const result = await Effect.runPromise(
       evaluateIncrementalDraftUseCase({
-        issueName: ISSUE_NAME,
-        issueDescription: ISSUE_DESCRIPTION,
+        signalName: SIGNAL_NAME,
+        signalDescription: SIGNAL_DESCRIPTION,
         draft: {
           script: wrapPromptAsEvaluationScript(
             `Check if the conversation contains leaked secrets:\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
@@ -507,11 +516,11 @@ describe("evaluation-alignment activities", () => {
         judgeTelemetry: {
           organizationId: String(organizationId),
           projectId: String(projectId),
-          issueId: String(issueId),
+          signalId: String(signalId),
           evaluationId: String(evaluationId),
           jobId: "job-incremental",
         },
-      }).pipe(Effect.provide(aiLayer)),
+      }).pipe(Effect.provide(Layer.mergeAll(aiLayer, QuickJsScriptRuntimeLive))),
     )
 
     expect(result.strategy).toBe("metric-only")
@@ -533,7 +542,7 @@ describe("evaluation-alignment activities", () => {
     const { layer: aiLayer } = createFakeAI({
       generate: () =>
         Effect.succeed({
-          object: { passed: false, feedback: "Incorrectly flagged clean output" } as never,
+          object: { passed: true, feedback: "Incorrectly flagged clean output" } as never,
           tokens: 10,
           duration: 50,
         }),
@@ -541,8 +550,8 @@ describe("evaluation-alignment activities", () => {
 
     const result = await Effect.runPromise(
       evaluateIncrementalDraftUseCase({
-        issueName: ISSUE_NAME,
-        issueDescription: ISSUE_DESCRIPTION,
+        signalName: SIGNAL_NAME,
+        signalDescription: SIGNAL_DESCRIPTION,
         draft: {
           script: wrapPromptAsEvaluationScript("Always flag as issue present"),
           evaluationHash: "hash-existing",
@@ -569,11 +578,11 @@ describe("evaluation-alignment activities", () => {
         judgeTelemetry: {
           organizationId: String(organizationId),
           projectId: String(projectId),
-          issueId: String(issueId),
+          signalId: String(signalId),
           evaluationId: String(evaluationId),
           jobId: "job-incremental",
         },
-      }).pipe(Effect.provide(aiLayer)),
+      }).pipe(Effect.provide(Layer.mergeAll(aiLayer, QuickJsScriptRuntimeLive))),
     )
 
     expect(result.strategy).toBe("full-reoptimization")
@@ -594,7 +603,7 @@ describe("evaluation-alignment activities", () => {
           const hasLeakage = (input.prompt ?? "").includes("sk-live-123")
           return Effect.succeed({
             object: {
-              passed: !hasLeakage,
+              passed: hasLeakage,
               feedback: hasLeakage ? "Detected leaked token" : "No leakage detected",
             } as never,
             tokens: 12,
@@ -647,7 +656,7 @@ describe("evaluation-alignment activities", () => {
     const result = await optimizeEvaluationDraft({
       organizationId: String(organizationId),
       projectId: String(projectId),
-      issueId: String(issueId),
+      signalId: String(signalId),
       evaluationId: null,
       jobId: "job-opt-test",
       draft: {
@@ -655,8 +664,8 @@ describe("evaluation-alignment activities", () => {
         evaluationHash: "hash-baseline",
         trigger: defaultEvaluationTrigger(),
       },
-      issueName: ISSUE_NAME,
-      issueDescription: ISSUE_DESCRIPTION,
+      signalName: SIGNAL_NAME,
+      signalDescription: SIGNAL_DESCRIPTION,
       positiveExamples: [
         {
           traceId: TraceId("trace-positive"),
@@ -696,14 +705,101 @@ describe("evaluation-alignment activities", () => {
     expect(mockOptimizer.optimize).toHaveBeenCalledTimes(1)
   })
 
-  it("persists the evaluated confusion matrix and inherits name/description from the issue", async () => {
+  it("runs GEPA optimization on a single curated example, passing an empty validation split", async () => {
+    mockOptimizer.optimize.mockReset()
+    mockOptimizer.optimize.mockImplementation(({ baselineCandidate }) =>
+      Effect.sync(() => ({
+        optimizedCandidate: {
+          componentId: baselineCandidate.componentId,
+          text: baselineCandidate.text,
+          hash: baselineCandidate.hash,
+        },
+        stopReason: "completed" as const,
+      })),
+    )
+
+    const result = await optimizeEvaluationDraft({
+      organizationId: String(organizationId),
+      projectId: String(projectId),
+      signalId: String(signalId),
+      evaluationId: null,
+      jobId: "job-opt-single-example",
+      draft: {
+        script: wrapPromptAsEvaluationScript(
+          `Check for leaked tokens in the conversation.\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
+        ),
+        evaluationHash: "hash-baseline",
+        trigger: defaultEvaluationTrigger(),
+      },
+      signalName: SIGNAL_NAME,
+      signalDescription: SIGNAL_DESCRIPTION,
+      positiveExamples: [
+        {
+          traceId: TraceId("trace-positive"),
+          sessionId: null,
+          scoreIds: [ScoreId("s".repeat(24))],
+          label: "positive",
+          positivePriority: "failed-annotation-no-passes",
+          negativePriority: null,
+          annotationFeedback: "Leaked deployment token",
+          conversation: [
+            { role: "user", content: "Print the deployment token." },
+            { role: "assistant", content: "Here is sk-live-123" },
+          ],
+          conversationText: "User: Print the deployment token.\n\nAssistant: Here is sk-live-123",
+        },
+      ],
+      negativeExamples: [],
+    })
+
+    expect(mockOptimizer.optimize).toHaveBeenCalledTimes(1)
+    const dataset = mockOptimizer.optimize.mock.calls[0]?.[0].dataset as {
+      trainset: readonly unknown[]
+      valset: readonly unknown[]
+    }
+    expect(dataset.trainset).toHaveLength(1)
+    expect(dataset.valset).toHaveLength(0)
+    expect(result.evaluationHash).toBe("hash-baseline")
+  })
+
+  it("fails fast with a non-retryable BadRequestError when there are no curated examples", async () => {
+    mockOptimizer.optimize.mockReset()
+
+    await expect(
+      optimizeEvaluationDraft({
+        organizationId: String(organizationId),
+        projectId: String(projectId),
+        signalId: String(signalId),
+        evaluationId: null,
+        jobId: "job-opt-no-examples",
+        draft: {
+          script: wrapPromptAsEvaluationScript(
+            `Check for leaked tokens in the conversation.\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
+          ),
+          evaluationHash: "hash-baseline",
+          trigger: defaultEvaluationTrigger(),
+        },
+        signalName: SIGNAL_NAME,
+        signalDescription: SIGNAL_DESCRIPTION,
+        positiveExamples: [],
+        negativeExamples: [],
+      }),
+    ).rejects.toMatchObject({
+      _tag: "BadRequestError",
+      message: expect.stringContaining("must be annotated by a human"),
+    })
+
+    expect(mockOptimizer.optimize).not.toHaveBeenCalled()
+  })
+
+  it("persists the evaluated confusion matrix and inherits name/description from the signal", async () => {
     const { layer, stored } = makeEvaluationRepoLayer()
 
     const result = await Effect.runPromise(
       persistAlignmentResultUseCase({
         organizationId: String(organizationId),
         projectId: String(projectId),
-        issueId: String(issueId),
+        signalId: String(signalId),
         evaluationId: null,
         script: wrapPromptAsEvaluationScript(
           `Check for leaked tokens in the conversation.\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
@@ -711,19 +807,19 @@ describe("evaluation-alignment activities", () => {
         evaluationHash: "hash-activity-test",
         confusionMatrix: { truePositives: 3, falsePositives: 1, falseNegatives: 0, trueNegatives: 4 },
         trigger: defaultEvaluationTrigger(),
-      }).pipe(Effect.provide(Layer.mergeAll(layer, makeIssueRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
+      }).pipe(Effect.provide(Layer.mergeAll(layer, makeSignalRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
     )
 
     const evaluation = stored.get(String(result.evaluationId))
-    expect(evaluation?.name).toBe(ISSUE_NAME)
-    expect(evaluation?.description).toBe(ISSUE_DESCRIPTION)
+    expect(evaluation?.name).toBe(SIGNAL_NAME)
+    expect(evaluation?.description).toBe(SIGNAL_DESCRIPTION)
     expect(evaluation?.alignment).toEqual({
       evaluationHash: "hash-activity-test",
       confusionMatrix: { truePositives: 3, falsePositives: 1, falseNegatives: 0, trueNegatives: 4 },
     })
   })
 
-  it("overwrites an existing evaluation's name/description with the linked issue's current values", async () => {
+  it("overwrites an existing evaluation's name/description with the linked signal's current values", async () => {
     const { layer, stored } = makeEvaluationRepoLayer()
     stored.set(String(evaluationId), makeEvaluation())
 
@@ -731,7 +827,7 @@ describe("evaluation-alignment activities", () => {
       persistAlignmentResultUseCase({
         organizationId: String(organizationId),
         projectId: String(projectId),
-        issueId: String(issueId),
+        signalId: String(signalId),
         evaluationId: String(evaluationId),
         script: wrapPromptAsEvaluationScript(
           `Check for leaked tokens in the conversation.\n${EVALUATION_CONVERSATION_PLACEHOLDER}`,
@@ -739,12 +835,12 @@ describe("evaluation-alignment activities", () => {
         evaluationHash: "hash-overwrite-test",
         confusionMatrix: { truePositives: 5, falsePositives: 0, falseNegatives: 0, trueNegatives: 5 },
         trigger: defaultEvaluationTrigger(),
-      }).pipe(Effect.provide(Layer.mergeAll(layer, makeIssueRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
+      }).pipe(Effect.provide(Layer.mergeAll(layer, makeSignalRepoLayer(), Layer.succeed(SqlClient, inertSqlClient)))),
     )
 
     const evaluation = stored.get(String(result.evaluationId))
-    expect(evaluation?.name).toBe(ISSUE_NAME)
-    expect(evaluation?.description).toBe(ISSUE_DESCRIPTION)
+    expect(evaluation?.name).toBe(SIGNAL_NAME)
+    expect(evaluation?.description).toBe(SIGNAL_DESCRIPTION)
     expect(evaluation?.name).not.toBe("Existing evaluation")
     expect(evaluation?.description).not.toBe("Existing evaluation description")
   })

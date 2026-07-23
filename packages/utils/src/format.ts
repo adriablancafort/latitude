@@ -1,3 +1,5 @@
+import stringify from "fast-json-stable-stringify"
+
 const COUNT_UNITS = ["", "K", "M", "B", "T"]
 
 const countFractionFormatter = new Intl.NumberFormat("en-US", {
@@ -5,6 +7,35 @@ const countFractionFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 0,
   useGrouping: false,
 })
+
+const roundTo = (value: number, decimals: number): number => {
+  const factor = 10 ** decimals
+  return Math.round(value * factor) / factor
+}
+
+/**
+ * Rounding to the displayed precision can bump a value up to the next unit
+ * (e.g. `999_999` rendering as `"1000K"`), so promote to the next unit and
+ * divide by `threshold` when the rounded value reaches it.
+ */
+function promoteIfRounded({
+  value,
+  unitIndex,
+  maxUnitIndex,
+  threshold,
+  decimals,
+}: {
+  value: number
+  unitIndex: number
+  maxUnitIndex: number
+  threshold: number
+  decimals: number
+}): { value: number; unitIndex: number } {
+  if (roundTo(value, decimals) >= threshold && unitIndex < maxUnitIndex) {
+    return { value: value / threshold, unitIndex: unitIndex + 1 }
+  }
+  return { value, unitIndex }
+}
 
 /**
  * Format a large number into a compact human-readable string.
@@ -26,7 +57,15 @@ export function formatCount(count: number): string {
     unitIndex++
   }
 
-  const decimal = value < 10 ? 1 : 0
+  let decimal = value < 10 ? 1 : 0
+  ;({ value, unitIndex } = promoteIfRounded({
+    value,
+    unitIndex,
+    maxUnitIndex: COUNT_UNITS.length - 1,
+    threshold: 1000,
+    decimals: decimal,
+  }))
+  decimal = value < 10 ? 1 : 0
   return `${value.toFixed(decimal).replace(/\.0$/, "")}${COUNT_UNITS[unitIndex]}`
 }
 
@@ -44,6 +83,41 @@ export function formatPrice(price: number): string {
   const digits = Math.max(3, -Math.floor(Math.log10(price)) + 1)
   const s = price.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "")
   return `$${s}`
+}
+
+const percentageFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 0,
+  useGrouping: false,
+})
+
+/**
+ * Format a 0..1 ratio as a percentage string.
+ *
+ * Examples: `0.8` -> `"80%"`, `0.3333` -> `"33.3%"`, `1` -> `"100%"`, `0` -> `"0%"`
+ */
+export function formatPercentage(ratio: number): string {
+  return `${percentageFormatter.format(ratio * 100)}%`
+}
+
+/**
+ * Fraction of input tokens served from the provider's prompt cache:
+ * `cacheRead / (input + cacheRead + cacheCreate)`. Token counts are additive,
+ * so the denominator is the total input. Returns `null` when there are no
+ * input-side tokens — the rate is undefined, not 0, and should render as "—".
+ */
+export function cacheHitRate({
+  input,
+  cacheRead,
+  cacheCreate,
+}: {
+  input: number
+  cacheRead: number
+  cacheCreate: number
+}): number | null {
+  const totalInput = input + cacheRead + cacheCreate
+  if (totalInput <= 0) return null
+  return cacheRead / totalInput
 }
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"]
@@ -65,6 +139,13 @@ export function formatBytes(bytes: number): string {
     unitIndex++
   }
 
+  ;({ value, unitIndex } = promoteIfRounded({
+    value,
+    unitIndex,
+    maxUnitIndex: BYTE_UNITS.length - 1,
+    threshold: 1024,
+    decimals: 1,
+  }))
   return `${value.toFixed(1).replace(/\.0$/, "")} ${BYTE_UNITS[unitIndex]}`
 }
 
@@ -136,6 +217,18 @@ export function parseCHDate(value: string, { fallback }: { readonly fallback?: D
   return Number.isNaN(parsed.getTime()) ? (fallback ?? parsed) : parsed
 }
 
+/**
+ * Serialize a `Date` for a ClickHouse `DateTime`/`DateTime64` column, which
+ * store naive UTC and reject the ISO `Z` suffix. Inverse of {@link parseCHDate}.
+ * Overloaded so an optional date round-trips to `undefined` for callers that
+ * conditionally include the column.
+ */
+export function formatCHDate(date: Date): string
+export function formatCHDate(date: Date | undefined): string | undefined
+export function formatCHDate(date: Date | undefined): string | undefined {
+  return date === undefined ? undefined : date.toISOString().replace("Z", "")
+}
+
 const ZWSP_AND_BOM = /[\u200B-\u200D\uFEFF]/g
 
 /**
@@ -163,4 +256,29 @@ export function safeStringifyJson(value: unknown, fallback = ""): string {
   } catch {
     return String(value)
   }
+}
+
+/** Deterministic JSON serialization with sorted keys, so equal values stringify equal regardless of key order. */
+export function stableStringify(value: unknown): string {
+  return stringify(value)
+}
+
+/**
+ * Human caption for a chart's rendered time window, e.g. `"Jun 25 – Jul 1, 2026"`. Shown under
+ * histograms so a bounded window (e.g. the All-time charts, which render a recent slice anchored to
+ * the latest activity) reads clearly instead of being mistaken for the full selected scope. The year
+ * is omitted from the start when both ends fall in the same year. Returns `""` for unparseable input.
+ */
+export function formatChartWindowCaption(fromIso: string, toIso: string): string {
+  const from = new Date(fromIso)
+  const to = new Date(toIso)
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return ""
+  const sameYear = from.getFullYear() === to.getFullYear()
+  const fromLabel = from.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  })
+  const toLabel = to.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+  return `${fromLabel} – ${toLabel}`
 }

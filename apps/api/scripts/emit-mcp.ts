@@ -13,7 +13,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { OpenAPIHono, z } from "@hono/zod-openapi"
 import { MCP_INFO } from "../src/constants.ts"
-import { collectToolDescriptors } from "../src/mcp/index.ts"
+import { collectToolDescriptors } from "@repo/operations"
 import { registerRoutes } from "../src/routes/index.ts"
 import type { AppEnv } from "../src/types.ts"
 
@@ -41,6 +41,7 @@ const tools = collectToolDescriptors().map((tool) => ({
   // (rather than emitting `null`) for 204 / no-JSON-body routes so clients can
   // rely on `"outputSchema" in tool` to mean "structured output is available".
   ...(tool.output ? { outputSchema: z.toJSONSchema(tool.output.schema, { target: "draft-2020-12" }) } : {}),
+  annotations: tool.annotations,
 }))
 
 const manifest = { ...MCP_INFO, tools }

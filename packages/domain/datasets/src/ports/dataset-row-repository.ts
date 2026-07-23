@@ -1,6 +1,6 @@
 import type { ChSqlClient, DatasetId, DatasetRowId, RepositoryError, SortDirection, TraceId } from "@domain/shared"
 import { Context, type Effect } from "effect"
-import type { DatasetRow, InsertRowFieldValue, RowFieldValue } from "../entities/dataset-row.ts"
+import type { DatasetRow, InsertRowFieldValue } from "../entities/dataset-row.ts"
 import type { RowNotFoundError } from "../errors.ts"
 
 export interface DatasetRowRepositoryShape {
@@ -19,6 +19,7 @@ export interface DatasetRowRepositoryShape {
       readonly output?: InsertRowFieldValue
       readonly expectedOutput?: InsertRowFieldValue
       readonly metadata?: InsertRowFieldValue
+      readonly custom?: Record<string, InsertRowFieldValue>
     }[]
   }): Effect.Effect<readonly DatasetRowId[], RepositoryError, ChSqlClient>
 
@@ -73,10 +74,11 @@ export interface DatasetRowRepositoryShape {
     readonly datasetId: DatasetId
     readonly rowId: DatasetRowId
     readonly version: number
-    readonly input: RowFieldValue
-    readonly output: RowFieldValue
-    readonly expectedOutput: RowFieldValue
-    readonly metadata: RowFieldValue
+    readonly input: InsertRowFieldValue
+    readonly output: InsertRowFieldValue
+    readonly expectedOutput: InsertRowFieldValue
+    readonly metadata: InsertRowFieldValue
+    readonly custom: Record<string, InsertRowFieldValue>
   }): Effect.Effect<void, RepositoryError, ChSqlClient>
 
   deleteBatch(args: {

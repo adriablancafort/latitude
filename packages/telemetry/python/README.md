@@ -205,9 +205,28 @@ class Latitude:
         ...
 
     provider: TracerProvider
+    def get_tracer(self, scope: str, context: ContextOptions | None = None) -> Tracer: ...
     def flush(self) -> None: ...
     def shutdown(self) -> None: ...
 ```
+
+Use `get_tracer()` when a framework accepts an OpenTelemetry tracer directly:
+
+```python
+tracer = latitude.get_tracer(
+    "my-agent-framework",
+    {
+        "user_id": "user_123",
+        "session_id": "session_456",
+        "tags": ["support"],
+        "metadata": {"queue": "priority"},
+        "project": "support-agent",
+    },
+)
+```
+
+The scope is exported under `so.latitude.instrumentation.*`, and the optional context stamps every
+span started by that tracer with the same Latitude attributes accepted by `capture()`.
 
 `init_latitude()` remains available as a backwards-compatible wrapper that returns `{"provider", "flush", "shutdown"}`.
 
@@ -248,6 +267,14 @@ def capture(
 ) -> T:
     ...
 
+class CaptureScope:
+    def end(self, error: BaseException | None = None) -> None:
+        ...
+
+capture.start(name: str, options: ContextOptions | None = None) -> CaptureScope
+capture.end(scope: CaptureScope, error: BaseException | None = None) -> None
+capture.end(error: BaseException | None = None) -> None
+
 # ContextOptions:
 # {
 #     "name": str | None,        # Override the capture name
@@ -260,6 +287,25 @@ def capture(
 #     "project_slug": str | None, # DEPRECATED alias for `project`. Still accepted.
 # }
 ```
+
+Use lifecycle mode when callback wrapping does not fit the shape of your code:
+
+```python
+scope = capture.start(
+    "support-agent-turn",
+    {"user_id": user.id, "session_id": session.id, "tags": ["support"]},
+)
+
+try:
+    run_agent()
+except Exception as error:
+    capture.end(scope, error)
+    raise
+
+capture.end(scope)
+```
+
+You can also call `capture.end()` without a scope to end the currently active lifecycle capture.
 
 **Nested `capture()` behavior:**
 
@@ -276,7 +322,7 @@ Registers LLM auto-instrumentations against a specific tracer provider.
 # InstrumentationName = Literal[
 #   "openai", "openai-agents", "anthropic", "bedrock", "cohere",
 #   "langchain", "llamaindex", "togetherai", "vertexai", "aiplatform",
-#   "aleph_alpha", "crewai", "dspy", "google_generativeai", "groq",
+#   "aleph_alpha", "crewai", "google_adk", "google_generativeai", "groq",
 #   "haystack", "litellm", "mistralai", "ollama", "replicate",
 #   "sagemaker", "transformers", "watsonx",
 # ]
@@ -327,11 +373,12 @@ Set the integration's key on the `instrumentations` dict to the LLM SDK module t
 | `aiplatform`          | `google-cloud-aiplatform`   | `import google.cloud.aiplatform` → that module |
 | `aleph_alpha`         | `aleph-alpha-client`        | `import aleph_alpha_client`                 |
 | `crewai`              | `crewai`                    | `import crewai`                             |
-| `dspy`                | `dspy-ai`                   | `import dspy`                               |
-| `google_generativeai` | `google-generativeai`       | `from google import genai` → `genai`        |
+| DSPy¹                 | `dspy`                      | via litellm → `{"litellm": litellm}`        |
+| `google_adk`          | `google-adk`                | `import google.adk` → `google.adk`          |
+| `google_generativeai` | `google-genai`              | `from google import genai` → `genai`        |
 | `groq`                | `groq`                      | `import groq`                               |
 | `haystack`            | `haystack-ai`               | `import haystack`                           |
-| `litellm`             | `litellm`                   | `import litellm`                            |
+| `litellm`             | `litellm` (≥ 1.88)          | `import litellm`                            |
 | `mistralai`           | `mistralai`                 | `import mistralai`                          |
 | `ollama`              | `ollama`                    | `import ollama`                             |
 | `replicate`           | `replicate`                 | `import replicate`                          |

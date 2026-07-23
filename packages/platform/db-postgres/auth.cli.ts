@@ -12,6 +12,7 @@
  *
  * @see https://www.better-auth.com/docs/concepts/cli
  */
+import { sso } from "@better-auth/sso"
 import { stripe } from "@better-auth/stripe"
 import { betterAuth } from "better-auth"
 import { drizzleAdapter } from "better-auth/adapters/drizzle"
@@ -23,7 +24,7 @@ import Stripe from "stripe"
 const pool = new pg.Pool({ connectionString: "postgresql://localhost:5432/dummy" })
 const db = drizzle(pool)
 
-const stripeClient = new Stripe("sk_test_dummy", { apiVersion: "2026-03-25.dahlia" })
+const stripeClient = new Stripe("sk_test_dummy", { apiVersion: "2026-05-27.dahlia" })
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", usePlural: true }),
@@ -32,6 +33,7 @@ export const auth = betterAuth({
     organization(),
     magicLink({ sendMagicLink: async () => {} }),
     mcp({ loginPage: "/dummy" }),
+    sso({ domainVerification: { enabled: true } }),
     stripe({
       stripeClient,
       stripeWebhookSecret: "whsec_dummy",

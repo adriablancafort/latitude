@@ -17,7 +17,7 @@ import {
 import { relativeTime } from "@repo/utils"
 import { useForm } from "@tanstack/react-form"
 import { createFileRoute, notFound, useRouter } from "@tanstack/react-router"
-import { BellRingIcon, Flag, SparklesIcon } from "lucide-react"
+import { Flag, PresentationIcon } from "lucide-react"
 import { useMemo, useState } from "react"
 import {
   type AdminOrganizationFeatureFlagDto,
@@ -30,6 +30,7 @@ import {
   type AdminOrganizationBillingDto,
   type AdminOrganizationMemberDto,
   type AdminOrganizationProjectDto,
+  type AdminOrganizationSandboxDto,
   adminClearOrganizationBillingOverride,
   adminGetOrganization,
   adminGetOrganizationBilling,
@@ -45,8 +46,7 @@ import {
   type PropertiesStripEntry,
   StripeCustomerLink,
 } from "../-components/dashboard/index.ts"
-import { CreateDemoProjectButton } from "../-components/organization-actions/create-demo-project.tsx"
-import { ResetSystemMonitorsButton } from "../-components/organization-actions/reset-system-monitors.tsx"
+import { EnableShowcaseButton } from "../-components/organization-actions/enable-showcase.tsx"
 import { OrganizationActionRow, OrganizationActionsSection } from "../-components/organization-actions/section.tsx"
 import { MemberRoleBadge, PlatformStaffBadge } from "../-components/role-badges.tsx"
 import { ProjectRow, UserRow } from "../-components/rows/index.ts"
@@ -179,6 +179,8 @@ function BackofficeOrganizationDetailPage() {
         }
       />
 
+      <SandboxesSection sandboxes={organization.sandboxes} />
+
       <FeatureFlagsSection organizationId={organization.id} featureFlags={featureFlags} />
 
       <DashboardSplit
@@ -196,16 +198,14 @@ function BackofficeOrganizationDetailPage() {
 
       <OrganizationActionsSection>
         <OrganizationActionRow
-          icon={SparklesIcon}
-          title="Create demo project"
-          description="Spin up a fresh project on this org seeded with bootstrap content (datasets, evaluations, issues, ~30 days of telemetry). Runs in the background."
-          action={<CreateDemoProjectButton organizationId={organization.id} />}
-        />
-        <OrganizationActionRow
-          icon={BellRingIcon}
-          title="Reset system monitors"
-          description="Re-provision the three system monitors to their current definitions on every project in this org. Overwrites their titles, descriptions, and default alert condition values; preserves mute state and incident history."
-          action={<ResetSystemMonitorsButton organizationId={organization.id} />}
+          icon={PresentationIcon}
+          title="Showcase demo"
+          description={
+            organization.wantsShowcase
+              ? "This org opts into the shared read-only Showcase. The 'Latitude Demo' entry shows in every member's switcher (once a showcase is built)."
+              : "This org does not show the shared read-only Showcase. Enable it to surface the 'Latitude Demo' entry for the whole team."
+          }
+          action={<EnableShowcaseButton organizationId={organization.id} wantsShowcase={organization.wantsShowcase} />}
         />
       </OrganizationActionsSection>
 
@@ -620,5 +620,62 @@ function MemberRow({ member }: { member: AdminOrganizationMemberDto }) {
         </div>
       }
     />
+  )
+}
+
+/**
+ * Sandboxes (Test Mode) panel. A sandbox is an org under the hood, but it's
+ * deliberately excluded from the global org search — this panel is the one
+ * place staff can see every sandbox a customer org has spun up, active and
+ * archived alike, so the count and the archived ones are both shown.
+ */
+function SandboxesSection({ sandboxes }: { sandboxes: AdminOrganizationSandboxDto[] }) {
+  const activeCount = sandboxes.filter((s) => s.status === "active").length
+
+  return (
+    <DashboardSection
+      title="Sandboxes"
+      count={sandboxes.length}
+      aside={
+        sandboxes.length > 0 ? (
+          <Text.H6 color="foregroundMuted">
+            {activeCount} active · {sandboxes.length - activeCount} archived
+          </Text.H6>
+        ) : undefined
+      }
+    >
+      {sandboxes.length === 0 ? (
+        <Text.H6 color="foregroundMuted">This organization has no sandboxes.</Text.H6>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {sandboxes.map((sandbox) => (
+            <SandboxRow key={sandbox.organizationId} sandbox={sandbox} />
+          ))}
+        </div>
+      )}
+    </DashboardSection>
+  )
+}
+
+function SandboxRow({ sandbox }: { sandbox: AdminOrganizationSandboxDto }) {
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-background px-3 py-2">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Text.H5 weight="semibold" ellipsis>
+            {sandbox.name}
+          </Text.H5>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">/{sandbox.slug}</code>
+          <CopyButton value={sandbox.organizationId} tooltip="Copy sandbox org id" />
+        </div>
+        <Text.H6 color="foregroundMuted">
+          {sandbox.owner ? `Owner: ${sandbox.owner.email}` : "Owner: (unknown)"} · last active{" "}
+          {relativeTime(sandbox.lastActivityAt)} · created {relativeTime(sandbox.createdAt)}
+        </Text.H6>
+      </div>
+      <Badge variant={sandbox.status === "active" ? "outlineSuccessMuted" : "secondary"} noWrap>
+        {sandbox.status}
+      </Badge>
+    </div>
   )
 }

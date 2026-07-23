@@ -19,10 +19,10 @@ function buildDraftAnnotationScore(): Score {
     sessionId: null,
     traceId: null,
     spanId: null,
-    source: "annotation",
+    sourceType: "annotation",
     sourceId: "UI",
     simulationId: null,
-    issueId: null,
+    signalId: null,
     value: 0.2,
     passed: false,
     feedback: "The model hallucinated a date",
@@ -177,7 +177,7 @@ describe("publishAnnotationUseCase", () => {
   it("returns BadRequestError for non-annotation score", async () => {
     const customScore = {
       ...buildDraftAnnotationScore(),
-      source: "custom",
+      sourceType: "custom",
       sourceId: "batch-import",
       metadata: { reviewer: "test" },
     } as Score

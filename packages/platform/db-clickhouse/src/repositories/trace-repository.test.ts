@@ -1,4 +1,4 @@
-import { AI, AIError, type AIShape } from "@domain/ai"
+import { AI, AIError, type AIShape, EMBEDDING_DIMENSIONS } from "@domain/ai"
 import type { ChSqlClient } from "@domain/shared"
 import {
   bootstrapSeedScope,
@@ -10,7 +10,7 @@ import {
   SEED_PROJECT_ID,
   TraceId,
 } from "@domain/shared/seeding"
-import { TRACE_SEARCH_EMBEDDING_DIMENSIONS, TraceRepository, type TraceRepositoryShape } from "@domain/spans"
+import { TraceRepository, type TraceRepositoryShape } from "@domain/spans"
 import { setupTestClickHouse } from "@platform/testkit"
 import { Effect, Layer } from "effect"
 import { beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -25,7 +25,7 @@ import { TraceRepositoryLive } from "./trace-repository.ts"
 /** Mock AI layer that provides a fake embedding service for testing. */
 const mockAILayer = Layer.succeed(AI, {
   generate: () => Effect.fail(new AIError({ message: "Generate not implemented in mock" })),
-  embed: () => Effect.succeed({ embedding: new Array(TRACE_SEARCH_EMBEDDING_DIMENSIONS).fill(0.1) }),
+  embed: () => Effect.succeed({ embedding: new Array(EMBEDDING_DIMENSIONS).fill(0.1) }),
   rerank: () => Effect.fail(new AIError({ message: "Rerank not implemented in mock" })),
 } as AIShape)
 
@@ -82,9 +82,10 @@ function makeSpanRow({
     error_type: "",
     tags: [BASELINE_TEST_TAG],
     metadata: {},
-    operation: "",
+    operation: "chat",
     provider: "",
     model: "",
+    agent_name: "",
     response_model: "",
     tokens_input: tokensInput,
     tokens_output: tokensOutput,
@@ -121,6 +122,50 @@ const ch = setupTestClickHouse()
 
 const runCh = <A, E>(effect: Effect.Effect<A, E, ChSqlClient | AI>) =>
   Effect.runPromise(effect.pipe(Effect.provide(mockAILayer), Effect.provide(ChSqlClientLive(ch.client, ORG_ID))))
+
+// Ranked search reads message vectors from `message_embeddings` joined to
+// `trace_message_occurrences`. Seed both so fixture vectors are reachable; the
+// per-trace max-pool is preserved across messages.
+const insertSharedSemanticRows = (
+  rows: readonly {
+    readonly traceId: string
+    readonly contentHash: string
+    readonly embedding: readonly number[]
+    readonly startTime: Date
+    readonly messageIndex?: number
+    readonly role?: "user" | "assistant"
+  }[],
+) =>
+  Effect.gen(function* () {
+    yield* insertJsonEachRow(
+      ch.client,
+      "message_embeddings",
+      [...new Map(rows.map((r) => [r.contentHash, r] as const)).values()].map((r) => ({
+        organization_id: ORG_ID,
+        project_id: PROJECT_ID,
+        content_hash: r.contentHash,
+        embedding: [...r.embedding],
+        embedding_model: "voyage-4-large",
+        inserted_at: toClickHouseDateTime(r.startTime),
+      })),
+    )
+    yield* insertJsonEachRow(
+      ch.client,
+      "trace_message_occurrences",
+      rows.map((r) => ({
+        organization_id: ORG_ID,
+        project_id: PROJECT_ID,
+        trace_id: r.traceId,
+        message_index: r.messageIndex ?? 0,
+        content_hash: r.contentHash,
+        session_id: "",
+        start_time: toClickHouseDateTime(r.startTime),
+        role: r.role ?? "user",
+        is_output: 0,
+        indexed_at: toClickHouseDateTime(r.startTime),
+      })),
+    )
+  })
 
 describe("TraceRepository", () => {
   let repo: TraceRepositoryShape
@@ -183,6 +228,113 @@ describe("TraceRepository", () => {
       )
 
       expect(matches).toBe(false)
+    })
+  })
+
+  describe("tools filter (rollup column)", () => {
+    beforeEach(async () => {
+      // A tool-call span on TRACE_ID so the trace matches a tools filter.
+      const toolSpan: SpanRow = {
+        ...makeSpanRow({
+          traceId: TRACE_ID,
+          spanId: "1001a1b2c3d4e5f6",
+          startTime: new Date("2026-03-15T12:00:00Z"),
+          costTotalMicrocents: 0,
+          tokensInput: 0,
+          tokensOutput: 0,
+        }),
+        name: "execute_tool lookup_order",
+        operation: "execute_tool",
+        tool_name: "lookup_order",
+        tool_call_id: "call_1",
+      }
+      // A chat span defining a tool that is never called — listed under the
+      // definedTools filter, but NOT under tools: that filter means "at
+      // least one call", and its rollup only carries called tools.
+      const chatSpanWithDefs: SpanRow = {
+        ...makeSpanRow({
+          traceId: TRACE_ID,
+          spanId: "1002a1b2c3d4e5f6",
+          startTime: new Date("2026-03-15T12:00:00Z"),
+          costTotalMicrocents: 0,
+          tokensInput: 0,
+          tokensOutput: 0,
+        }),
+        name: "chat gpt-test",
+        operation: "chat",
+        tool_definitions: '[{"name":"defined_only_tool","description":"d","parameters":{}}]',
+      }
+      await Effect.runPromise(insertJsonEachRow(ch.client, "spans", [toolSpan, chatSpanWithDefs]))
+    })
+
+    it("matches traces that called the tool", async () => {
+      const matches = await runCh(
+        repo.matchesFiltersByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: TRACE_ID,
+          filters: { tools: [{ op: "in", value: ["lookup_order"] }] },
+        }),
+      )
+      expect(matches).toBe(true)
+    })
+
+    it("does not match traces without a call of the tool", async () => {
+      const matches = await runCh(
+        repo.matchesFiltersByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: TRACE_ID,
+          filters: { tools: [{ op: "in", value: ["some_other_tool"] }] },
+        }),
+      )
+      expect(matches).toBe(false)
+    })
+
+    it("lists only called tools for the multiselect", async () => {
+      const values = await runCh(
+        repo.distinctFilterValues({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          column: "tools",
+        }),
+      )
+      expect(values).toEqual(["lookup_order"])
+    })
+
+    it("matches traces that defined the tool, even without calls", async () => {
+      const matches = await runCh(
+        repo.matchesFiltersByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: TRACE_ID,
+          filters: { definedTools: [{ op: "in", value: ["defined_only_tool"] }] },
+        }),
+      )
+      expect(matches).toBe(true)
+    })
+
+    it("does not match definedTools for tools that were only called", async () => {
+      const matches = await runCh(
+        repo.matchesFiltersByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: TRACE_ID,
+          filters: { definedTools: [{ op: "in", value: ["lookup_order"] }] },
+        }),
+      )
+      expect(matches).toBe(false)
+    })
+
+    it("lists only defined tools for the definedTools multiselect", async () => {
+      const values = await runCh(
+        repo.distinctFilterValues({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          column: "definedTools",
+        }),
+      )
+      expect(values).toEqual(["defined_only_tool"])
     })
   })
 
@@ -328,6 +480,24 @@ describe("TraceRepository", () => {
     })
   })
 
+  describe("findSummaryByTraceId", () => {
+    it("loads trace orchestration fields without conversation content", async () => {
+      const summary = await runCh(
+        repo.findSummaryByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: TraceId(SEED_ANNOTATION_DEMO_TRACE_ID),
+        }),
+      )
+
+      expect(summary.traceId).toBe(SEED_ANNOTATION_DEMO_TRACE_ID)
+      expect(summary.projectId).toBe(PROJECT_ID)
+      expect(summary.startTime).toBeInstanceOf(Date)
+      expect(summary.rootSpanName).toBeTypeOf("string")
+      expect("outputMessages" in summary).toBe(false)
+    })
+  })
+
   describe("findByTraceId", () => {
     it("prepends system instructions as first message in allMessages", async () => {
       const detail = await runCh(
@@ -363,6 +533,128 @@ describe("TraceRepository", () => {
           expect(detail.allMessages[0]?.role).not.toBe("system")
         }
       }
+    })
+
+    it("loads conversation chunks with the same message assembly as trace detail", async () => {
+      const [detail, chunk] = await Promise.all([
+        runCh(
+          repo.findByTraceId({
+            organizationId: ORG_ID,
+            projectId: PROJECT_ID,
+            traceId: TraceId(SEED_ANNOTATION_DEMO_TRACE_ID),
+          }),
+        ),
+        runCh(
+          repo.findConversationChunk({
+            organizationId: ORG_ID,
+            projectId: PROJECT_ID,
+            traceId: TraceId(SEED_ANNOTATION_DEMO_TRACE_ID),
+            offset: 0,
+            limit: 100,
+          }),
+        ),
+      ])
+
+      expect(chunk.messages).toEqual(detail.allMessages)
+      expect(chunk.totalMessages).toBe(detail.allMessages.length)
+      expect(chunk.hasMore).toBe(false)
+    })
+
+    it("uses the newest ingested_at row when the same span_id is re-ingested", async () => {
+      const REINGEST_TRACE_ID = TraceId("99999999999999999999999999999999")
+      const startTime = new Date("2026-03-01T00:00:00.000Z")
+      const spanBase = makeSpanRow({
+        traceId: REINGEST_TRACE_ID as string,
+        spanId: "reingestspan1111",
+        startTime,
+        costTotalMicrocents: 0,
+        tokensInput: 0,
+        tokensOutput: 0,
+      })
+
+      await runCh(
+        insertJsonEachRow(ch.client, "spans", [
+          {
+            ...spanBase,
+            operation: "chat",
+            input_messages: '[{"role":"user","parts":[{"type":"text","content":"hi"}]}]',
+            output_messages: '[{"role":"assistant","parts":[{"type":"text","content":"older"}]}]',
+            ingested_at: "2026-03-01 00:00:00.000",
+          },
+          {
+            ...spanBase,
+            operation: "chat",
+            input_messages: '[{"role":"user","parts":[{"type":"text","content":"hi"}]}]',
+            output_messages: '[{"role":"assistant","parts":[{"type":"text","content":"newer"}]}]',
+            ingested_at: "2026-03-01 00:00:01.000",
+          },
+        ]),
+      )
+
+      const detail = await runCh(
+        repo.findByTraceId({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceId: REINGEST_TRACE_ID,
+        }),
+      )
+
+      const assistantMessage = detail.outputMessages.find((message) => message.role === "assistant")
+      expect(assistantMessage?.parts?.[0]).toMatchObject({ content: "newer" })
+    })
+
+    it("keeps same span_id rows from different traces when listing by trace ids", async () => {
+      const TRACE_A = TraceId("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+      const TRACE_B = TraceId("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+      const SHARED_SPAN_ID = "sharedspan000001"
+      const startTime = new Date("2026-03-02T00:00:00.000Z")
+
+      await runCh(
+        insertJsonEachRow(ch.client, "spans", [
+          {
+            ...makeSpanRow({
+              traceId: TRACE_A as string,
+              spanId: SHARED_SPAN_ID,
+              startTime,
+              costTotalMicrocents: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+            }),
+            operation: "chat",
+            input_messages: '[{"role":"user","parts":[{"type":"text","content":"from-a"}]}]',
+            output_messages: '[{"role":"assistant","parts":[{"type":"text","content":"reply-a"}]}]',
+            ingested_at: "2026-03-02 00:00:00.000",
+          },
+          {
+            ...makeSpanRow({
+              traceId: TRACE_B as string,
+              spanId: SHARED_SPAN_ID,
+              startTime: new Date(startTime.getTime() + 1_000),
+              costTotalMicrocents: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+            }),
+            operation: "chat",
+            input_messages: '[{"role":"user","parts":[{"type":"text","content":"from-b"}]}]',
+            output_messages: '[{"role":"assistant","parts":[{"type":"text","content":"reply-b"}]}]',
+            ingested_at: "2026-03-02 00:00:01.000",
+          },
+        ]),
+      )
+
+      const details = await runCh(
+        repo.listByTraceIds({
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          traceIds: [TRACE_A, TRACE_B],
+        }),
+      )
+
+      const byTraceId = new Map(details.map((detail) => [detail.traceId, detail] as const))
+      expect(byTraceId.get(TRACE_A)?.inputMessages[0]?.parts?.[0]).toMatchObject({ content: "from-a" })
+      expect(byTraceId.get(TRACE_A)?.outputMessages[0]?.parts?.[0]).toMatchObject({ content: "reply-a" })
+      expect(byTraceId.get(TRACE_B)?.inputMessages[0]?.parts?.[0]).toMatchObject({ content: "from-b" })
+      expect(byTraceId.get(TRACE_B)?.outputMessages[0]?.parts?.[0]).toMatchObject({ content: "reply-b" })
     })
   })
 
@@ -513,40 +805,10 @@ describe("TraceRepository", () => {
       )
 
       await Effect.runPromise(
-        insertJsonEachRow(ch.client, "trace_search_embeddings", [
-          {
-            organization_id: ORG_ID,
-            project_id: PROJECT_ID,
-            trace_id: HYBRID_TRACE,
-            chunk_index: 0,
-            start_time: toClickHouseDateTime(startTime),
-            content_hash: `${"f".repeat(63)}0`,
-            embedding_model: "voyage-4-large",
-            embedding: [...alignedEmbedding],
-            indexed_at: toClickHouseDateTime(startTime),
-          },
-          {
-            organization_id: ORG_ID,
-            project_id: PROJECT_ID,
-            trace_id: SEM_ONLY_TRACE,
-            chunk_index: 0,
-            start_time: toClickHouseDateTime(startTime),
-            content_hash: `${"f".repeat(63)}2`,
-            embedding_model: "voyage-4-large",
-            embedding: [...alignedEmbedding],
-            indexed_at: toClickHouseDateTime(startTime),
-          },
-          {
-            organization_id: ORG_ID,
-            project_id: PROJECT_ID,
-            trace_id: NOISE_TRACE,
-            chunk_index: 0,
-            start_time: toClickHouseDateTime(startTime),
-            content_hash: `${"f".repeat(63)}3`,
-            embedding_model: "voyage-4-large",
-            embedding: [...antiparallelEmbedding],
-            indexed_at: toClickHouseDateTime(startTime),
-          },
+        insertSharedSemanticRows([
+          { traceId: HYBRID_TRACE, contentHash: `${"f".repeat(63)}0`, embedding: alignedEmbedding, startTime },
+          { traceId: SEM_ONLY_TRACE, contentHash: `${"f".repeat(63)}2`, embedding: alignedEmbedding, startTime },
+          { traceId: NOISE_TRACE, contentHash: `${"f".repeat(63)}3`, embedding: antiparallelEmbedding, startTime },
         ]),
       )
     }
@@ -736,26 +998,20 @@ describe("TraceRepository", () => {
         ),
       )
 
-      const buildEmbeddingRow = (
-        traceId: TraceId,
-        chunkIndex: number,
-        embedding: number[],
-      ): Record<string, unknown> => ({
-        organization_id: ORG_ID,
-        project_id: PROJECT_ID,
-        trace_id: traceId,
-        chunk_index: chunkIndex,
-        start_time: toClickHouseDateTime(startTime),
-        content_hash: `${"a".repeat(60)}${traceId.slice(0, 2)}${chunkIndex.toString().padStart(2, "0")}`,
-        embedding_model: "voyage-4-large",
+      // Each former chunk becomes one occurrence message; max() over the
+      // trace's messages reproduces the chunk-rollup behavior.
+      const buildSharedRow = (traceId: TraceId, chunkIndex: number, embedding: number[]) => ({
+        traceId,
+        messageIndex: chunkIndex,
+        contentHash: `${"a".repeat(60)}${traceId.slice(0, 2)}${chunkIndex.toString().padStart(2, "0")}`,
         embedding,
-        indexed_at: toClickHouseDateTime(startTime),
+        startTime,
       })
 
       await Effect.runPromise(
-        insertJsonEachRow(ch.client, "trace_search_embeddings", [
-          ...rollupChunks.map((c) => buildEmbeddingRow(ROLLUP_TRACE, c.chunk_index, c.embedding)),
-          ...flatChunks.map((c) => buildEmbeddingRow(FLAT_TRACE, c.chunk_index, c.embedding)),
+        insertSharedSemanticRows([
+          ...rollupChunks.map((c) => buildSharedRow(ROLLUP_TRACE, c.chunk_index, c.embedding)),
+          ...flatChunks.map((c) => buildSharedRow(FLAT_TRACE, c.chunk_index, c.embedding)),
         ]),
       )
 
@@ -820,22 +1076,16 @@ describe("TraceRepository", () => {
       )
 
       await Effect.runPromise(
-        insertJsonEachRow(
-          ch.client,
-          "trace_search_embeddings",
+        insertSharedSemanticRows(
           traces.flatMap((traceId, traceIndex) =>
             [0, 1].map((chunkIndex) => ({
-              organization_id: ORG_ID,
-              project_id: PROJECT_ID,
-              trace_id: traceId,
-              chunk_index: chunkIndex,
-              start_time: toClickHouseDateTime(new Date(startTime.getTime() + traceIndex * 1000)),
-              content_hash: `${"c".repeat(60)}${traceIndex.toString().padStart(2, "0")}${chunkIndex
+              traceId,
+              messageIndex: chunkIndex,
+              contentHash: `${"c".repeat(60)}${traceIndex.toString().padStart(2, "0")}${chunkIndex
                 .toString()
                 .padStart(2, "0")}`,
-              embedding_model: "voyage-4-large",
-              embedding: [...alignedEmbedding],
-              indexed_at: toClickHouseDateTime(startTime),
+              embedding: alignedEmbedding,
+              startTime: new Date(startTime.getTime() + traceIndex * 1000),
             })),
           ),
         ),
@@ -934,6 +1184,15 @@ describe("TraceRepository", () => {
       expect(histogramSpanSum).toBe(metrics.spanCount.sum)
       expect(histogramTokenSum).toBe(metrics.tokensTotal.sum)
       expect(histogramCostSum).toBe(metrics.costTotalMicrocents.sum)
+
+      // tokenAnalytics is populated by the real aggregate SQL and the rate is
+      // token-weighted over the same filtered set.
+      const { tokenAnalytics } = metrics
+      if (tokenAnalytics.cacheHitRate !== null) {
+        const totalInput =
+          tokenAnalytics.inputTokens + tokenAnalytics.cacheReadTokens + tokenAnalytics.cacheCreateTokens
+        expect(tokenAnalytics.cacheHitRate).toBeCloseTo(tokenAnalytics.cacheReadTokens / totalInput)
+      }
     })
 
     // sortBy axis dispatch on the ranked search path: with searchQuery
@@ -984,19 +1243,12 @@ describe("TraceRepository", () => {
           ),
         )
         await Effect.runPromise(
-          insertJsonEachRow(
-            ch.client,
-            "trace_search_embeddings",
+          insertSharedSemanticRows(
             fixtures.map((f, i) => ({
-              organization_id: ORG_ID,
-              project_id: PROJECT_ID,
-              trace_id: f.traceId,
-              chunk_index: 0,
-              start_time: toClickHouseDateTime(new Date(baseTime.getTime() + f.offsetMs)),
-              content_hash: `${"f".repeat(63)}${i}`,
-              embedding_model: "voyage-4-large",
-              embedding: [...alignedEmbedding],
-              indexed_at: toClickHouseDateTime(baseTime),
+              traceId: f.traceId,
+              contentHash: `${"f".repeat(63)}${i}`,
+              embedding: alignedEmbedding,
+              startTime: new Date(baseTime.getTime() + f.offsetMs),
             })),
           ),
         )
@@ -1147,17 +1399,12 @@ describe("TraceRepository", () => {
           ]),
         )
         await Effect.runPromise(
-          insertJsonEachRow(ch.client, "trace_search_embeddings", [
+          insertSharedSemanticRows([
             {
-              organization_id: ORG_ID,
-              project_id: PROJECT_ID,
-              trace_id: subFloorTrace,
-              chunk_index: 0,
-              start_time: toClickHouseDateTime(baseTime),
-              content_hash: `${"f".repeat(63)}9`,
-              embedding_model: "voyage-4-large",
-              embedding: [...antiparallelEmbedding],
-              indexed_at: toClickHouseDateTime(baseTime),
+              traceId: subFloorTrace,
+              contentHash: `${"f".repeat(63)}9`,
+              embedding: antiparallelEmbedding,
+              startTime: baseTime,
             },
           ]),
         )

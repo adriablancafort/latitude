@@ -8,7 +8,9 @@ import {
   Icon,
   InfiniteTable,
   type InfiniteTableColumn,
+  type InfiniteTableSelection,
   Skeleton,
+  Slider,
   Tabs,
   TagList,
   Text,
@@ -16,24 +18,47 @@ import {
 } from "@repo/ui"
 import { formatCount, relativeTime } from "@repo/utils"
 import { useHotkeys } from "@tanstack/react-hotkeys"
-import { ArrowDownIcon, ArrowUpIcon, ChevronRightIcon, FlameIcon, MinusIcon, SparklesIcon, TagIcon } from "lucide-react"
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  BrainIcon,
+  ChevronRightIcon,
+  DatabaseIcon,
+  FlameIcon,
+  MinusIcon,
+  SparklesIcon,
+  TagIcon,
+  XIcon,
+} from "lucide-react"
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import {
+  addClusterSessionsToDatasetFunction,
+  type ClusterSource,
+  createDatasetFromClusterSessionsFunction,
+} from "../../../../../../domains/datasets/datasets.functions.ts"
 import {
   type BehaviourSegment,
   useBehaviourSessions,
   useClusterProfile,
 } from "../../../../../../domains/taxonomy/taxonomy.collection.ts"
 import type {
+  BehaviourMomentRangeRecord,
   BehaviourNodeRecord,
   BehaviourSessionFilter,
   BehaviourSessionRecord,
   BehaviourTimeRangeRecord,
+  BehaviourTrajectoryMetric,
 } from "../../../../../../domains/taxonomy/taxonomy.functions.ts"
 import {
   ListingLayout as Layout,
   listingLayoutIntrinsicScroll,
 } from "../../../../../../layouts/ListingLayout/index.tsx"
-import { useParamState } from "../../../../../../lib/hooks/useParamState.ts"
+import {
+  EMPTY_SELECTION,
+  type SelectionState,
+  useSelectableRows,
+} from "../../../../../../lib/hooks/useSelectableRows.ts"
+import { AddToDatasetModal } from "../../-components/add-to-dataset-modal.tsx"
 import { SessionDetailDrawer } from "../../-components/session-detail-drawer.tsx"
 import { BehavioursTrajectoryChart } from "./behaviours-trajectory-chart.tsx"
 
@@ -51,6 +76,61 @@ interface BehaviourTableRow {
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString()
 const signalLabel = (kind: string) => kind.replaceAll("_", " ").replace(/^./, (char) => char.toUpperCase())
+
+const signalChartColors = [
+  "hsl(var(--chart-1))",
+  "hsl(var(--chart-2))",
+  "hsl(var(--chart-3))",
+  "hsl(var(--chart-4))",
+  "hsl(var(--success))",
+  "hsl(var(--warning-muted-foreground))",
+] as const
+
+const signalColorAt = (index: number) => signalChartColors[index % signalChartColors.length]
+const metricLabel = (metric: BehaviourTrajectoryMetric) =>
+  metric === "churnRisk" ? "Churn risk" : metric === "wins" ? "Wins" : signalLabel(metric)
+
+const momentKindsForTrajectoryMetric = (metric: BehaviourTrajectoryMetric): readonly MomentKind[] => {
+  switch (metric) {
+    case "escalation":
+      return ["escalation"]
+    case "resolution":
+      return ["resolution"]
+    case "churnRisk":
+      return ["abandonment", "user_frustration"]
+    case "wins":
+      return ["resolution", "user_satisfaction"]
+    case "frequency":
+      return []
+  }
+}
+
+const selectedMomentRangeLabel = (range: BehaviourMomentRangeRecord) =>
+  `${metricLabel(range.metric)} moments in turns ${range.fromTurn + 1}${
+    range.toTurn === range.fromTurn ? "" : `-${range.toTurn + 1}`
+  }`
+
+const parseTurnBucket = (bucket: string): { readonly fromTurn: number; readonly toTurn: number } | undefined => {
+  const [rawStart, rawEnd] = bucket.split(":")
+  const fromTurn = Number(rawStart)
+  const toTurn = rawEnd === undefined ? fromTurn : Number(rawEnd)
+  if (!Number.isInteger(fromTurn) || !Number.isInteger(toTurn) || fromTurn < 0 || toTurn < fromTurn) return undefined
+  return { fromTurn, toTurn }
+}
+
+const findBehaviourPath = (
+  nodes: readonly BehaviourNodeRecord[],
+  clusterId: string,
+  ancestors: readonly string[] = [],
+): readonly string[] | undefined => {
+  for (const node of nodes) {
+    const path = [...ancestors, node.cluster.id]
+    if (node.cluster.id === clusterId) return path
+    const childPath = findBehaviourPath(node.children, clusterId, path)
+    if (childPath) return childPath
+  }
+  return undefined
+}
 
 const trendLabel = (status: BehaviourNodeRecord["trend"]["status"]): string => {
   switch (status) {
@@ -177,12 +257,20 @@ export function BehaviourDetailDrawer({
   parentName,
   projectId,
   timeRange,
+  momentRange,
+  momentRangeMaxTurn,
+  customBehaviorId,
+  onMomentRangeChange,
   onClose,
 }: {
   readonly node: BehaviourNodeRecord
   readonly parentName: string | null
   readonly projectId: string
   readonly timeRange: BehaviourTimeRangeRecord | undefined
+  readonly momentRange: BehaviourMomentRangeRecord | undefined
+  readonly momentRangeMaxTurn: number
+  readonly customBehaviorId?: string
+  readonly onMomentRangeChange: (range: BehaviourMomentRangeRecord | undefined, maxTurn?: number) => void
   readonly onClose: () => void
 }) {
   const cluster = node.cluster
@@ -190,17 +278,57 @@ export function BehaviourDetailDrawer({
   const [sessionOverlayId, setSessionOverlayId] = useState<string | null>(null)
   const [sessionOverlayMomentId, setSessionOverlayMomentId] = useState<string | null>(null)
   const [sessionPanelEntered, setSessionPanelEntered] = useState(false)
-  const { data: intelligence } = useClusterProfile(projectId, cluster.id, timeRange)
+  const [selectionState, setSelectionState] = useState<SelectionState<string>>(EMPTY_SELECTION)
+  const [addToDatasetOpen, setAddToDatasetOpen] = useState(false)
+  const { data: intelligence } = useClusterProfile(projectId, cluster.id, timeRange, customBehaviorId)
   const {
     data: behaviourSessionsData,
     isLoading: behaviourSessionsLoading,
     fetchNextPage: fetchNextBehaviourSessionsPage,
     hasNextPage: hasNextBehaviourSessionsPage,
     isFetchingNextPage: isFetchingNextBehaviourSessionsPage,
-  } = useBehaviourSessions(projectId, cluster.id, sessionFilter, timeRange)
+  } = useBehaviourSessions(projectId, cluster.id, sessionFilter, timeRange, momentRange, customBehaviorId)
   const behaviourSessions = behaviourSessionsData?.pages.flatMap((page) => page.sessions) ?? []
   const behaviourSessionHistogram = behaviourSessionsData?.pages[0]?.histogram ?? []
+  // A session row's identity is its (first) trace id — the unit a dataset row is
+  // built from. Selecting rows therefore selects trace ids directly.
+  const sessionRowKey = useCallback((session: BehaviourSessionRecord) => session.traceId || session.sessionId, [])
+  const sessionRowKeys = useMemo(() => behaviourSessions.map(sessionRowKey), [behaviourSessions, sessionRowKey])
+  // The histogram is computed over the full filtered set (no pagination), so its
+  // total is the count "Select all" stands for, not just the loaded page.
+  const totalSessionCount = useMemo(
+    () => behaviourSessionHistogram.reduce((sum, bucket) => sum + bucket.count, 0),
+    [behaviourSessionHistogram],
+  )
+  const sessionSelection = useSelectableRows<string>({
+    rowIds: sessionRowKeys,
+    totalRowCount: totalSessionCount,
+    controlledState: selectionState,
+    onStateChange: setSelectionState,
+  })
+  const clusterSource = useMemo<ClusterSource>(
+    () => ({
+      clusterId: cluster.id,
+      ...(sessionFilter !== "all" ? { filter: sessionFilter } : {}),
+      ...(momentRange
+        ? { momentRange: { metric: momentRange.metric, fromTurn: momentRange.fromTurn, toTurn: momentRange.toTurn } }
+        : {}),
+      ...(timeRange?.fromIso ? { timeFromIso: timeRange.fromIso } : {}),
+      ...(timeRange?.toIso ? { timeToIso: timeRange.toIso } : {}),
+      ...(customBehaviorId ? { customBehaviorId } : {}),
+    }),
+    [cluster.id, sessionFilter, momentRange, timeRange, customBehaviorId],
+  )
+  const datasetSelection = sessionSelection.bulkSelection
   const detectedSignals = intelligence?.topMoments ?? []
+  const activeMomentKinds = momentRange
+    ? momentKindsForTrajectoryMetric(momentRange.metric)
+    : sessionFilter === "all"
+      ? []
+      : [sessionFilter]
+  const hasSessionFilters = sessionFilter !== "all" || Boolean(momentRange)
+  const positiveSignals = detectedSignals.filter((signal) => signal.count > 0)
+  const signalColorByKind = new Map(positiveSignals.map((signal, index) => [signal.kind, signalColorAt(index)]))
   const sessionFilterOptions = detectedSignals
     .filter((signal): signal is { readonly kind: MomentKind; readonly count: number } =>
       (MOMENT_KINDS as readonly string[]).includes(signal.kind),
@@ -210,12 +338,27 @@ export function BehaviourDetailDrawer({
       id: signal.kind satisfies BehaviourSessionFilter,
       label: signalLabel(signal.kind),
       valueText: formatCount(signal.count),
+      color: signalColorByKind.get(signal.kind) ?? signalColorAt(0),
     }))
+  const showDetectedSignalsChart = positiveSignals.length > 1
   useEffect(() => {
     setSessionFilter("all")
     setSessionOverlayId(null)
     setSessionPanelEntered(false)
   }, [cluster.id, timeRange])
+
+  useEffect(() => {
+    if (!momentRange) return
+    setSessionFilter("all")
+    setSessionOverlayId(null)
+    setSessionPanelEntered(false)
+  }, [momentRange])
+
+  // The selection stands for a specific filtered set; drop it whenever that set
+  // changes so a stale "select all" can't carry into a different filter.
+  useEffect(() => {
+    setSelectionState(EMPTY_SELECTION)
+  }, [cluster.id, sessionFilter, momentRange, timeRange])
 
   const openSessionOverlay = (session: BehaviourSessionRecord) => {
     setSessionOverlayId(session.sessionId)
@@ -238,82 +381,141 @@ export function BehaviourDetailDrawer({
               {parentName ? <BehaviourBadge label={parentName} icon={TagIcon} /> : null}
               <BehaviourBadge label={`${formatCount(node.subtreeSessionCount)} sessions`} icon={TagIcon} />
               <BehaviourBadge label={trendLabel(node.trend.status)} icon={trendIcon(node.trend.status)} />
-              <BehaviourBadge label={`First seen ${node.firstSeenLabel.replaceAll("_", " ")}`} icon={SparklesIcon} />
+              {node.firstSeenLabel === "older" ? null : (
+                <BehaviourBadge label={`First seen ${node.firstSeenLabel.replaceAll("_", " ")}`} icon={SparklesIcon} />
+              )}
             </div>
+            <Text.H6 color="foregroundMuted">
+              First seen {formatDate(cluster.firstObservedAt)} · Last seen{" "}
+              {relativeTime(new Date(cluster.lastObservedAt))}
+            </Text.H6>
             <div className="flex flex-col gap-2">
               <Text.H2>{cluster.name}</Text.H2>
               <Text.H5 color="foregroundMuted">
-                {cluster.description || "This behaviour has not been named in detail yet."}
+                {cluster.description || "This behavior has not been named in detail yet."}
               </Text.H5>
-              <Text.H6 color="foregroundMuted">
-                First seen {formatDate(cluster.firstObservedAt)} · Last seen{" "}
-                {relativeTime(new Date(cluster.lastObservedAt))}
-              </Text.H6>
             </div>
           </div>
 
-          <section className="flex flex-col gap-4 border-border border-t pt-5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex flex-col gap-1">
-                <Text.H4>Conversation intelligence</Text.H4>
-                <Text.H6 color="foregroundMuted">
-                  Conversation intelligence summarizes session outcomes, detected signals, and activity patterns for
-                  this behaviour.
-                </Text.H6>
-              </div>
+          <div className="flex flex-col gap-2 pt-2">
+            <div className="flex flex-row items-center gap-2 text-muted-foreground">
+              <BrainIcon className="h-4 w-4" />
+              <Text.H6 color="foregroundMuted">Conversation intelligence</Text.H6>
+              <hr className="mx-2 flex-1 border-t-2 border-dashed border-border" />
             </div>
-            {intelligence ? (
-              <div className="flex flex-col gap-4">
-                <BehaviourSessionsHistogram isLoading={behaviourSessionsLoading} buckets={behaviourSessionHistogram} />
-                {detectedSignals.length > 1 ? (
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
-                    <DetectedSignalsChart signals={detectedSignals} />
-                  </div>
-                ) : null}
-                {sessionFilterOptions.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {sessionFilterOptions.map((option) => (
-                      <MetricButton
-                        key={option.id}
-                        active={sessionFilter === option.id}
-                        label={option.label}
-                        valueText={option.valueText}
-                        onClick={() => setSessionFilter((current) => (current === option.id ? "all" : option.id))}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <Text.H5>Associated sessions</Text.H5>
-                  </div>
-                  <Text.H6 color="foregroundMuted">
-                    {sessionFilter === "all"
-                      ? "All sessions for this behaviour"
-                      : `Sessions matching ${sessionFilter.replaceAll("_", " ")}`}
-                  </Text.H6>
-                  {behaviourSessionsLoading ? (
-                    <Skeleton className="h-16 rounded-xl" />
-                  ) : behaviourSessions.length ? (
-                    <BehaviourSessionsTable
-                      sessions={behaviourSessions}
-                      activeSessionId={sessionOverlayId ?? undefined}
-                      onSessionClick={openSessionOverlay}
-                      hasMore={hasNextBehaviourSessionsPage === true}
-                      isLoadingMore={isFetchingNextBehaviourSessionsPage}
-                      onLoadMore={() => void fetchNextBehaviourSessionsPage()}
+            <div className="flex flex-col gap-4 pt-2">
+              {intelligence ? (
+                <>
+                  <div className={cn("grid gap-2", showDetectedSignalsChart ? "grid-cols-2" : "grid-cols-1")}>
+                    <BehaviourSessionsHistogram
+                      isLoading={behaviourSessionsLoading}
+                      buckets={behaviourSessionHistogram}
+                      height={96}
                     />
-                  ) : (
-                    <Text.H5 color="foregroundMuted">No sessions match this filter.</Text.H5>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <Text.H5 color="foregroundMuted">Conversation intelligence is not available yet.</Text.H5>
-            )}
-          </section>
+                    {showDetectedSignalsChart ? <DetectedSignalsChart signals={detectedSignals} /> : null}
+                  </div>
+                  {sessionFilterOptions.length > 0 || hasSessionFilters ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {sessionFilterOptions.map((option) => (
+                        <MetricButton
+                          key={option.id}
+                          active={activeMomentKinds.includes(option.id)}
+                          label={option.label}
+                          valueText={option.valueText}
+                          color={option.color}
+                          onClick={() => {
+                            onMomentRangeChange(undefined)
+                            setSessionFilter((current) => (current === option.id && !momentRange ? "all" : option.id))
+                          }}
+                        />
+                      ))}
+                      {hasSessionFilters ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSessionFilter("all")
+                            onMomentRangeChange(undefined)
+                          }}
+                        >
+                          <Icon icon={XIcon} size="xs" />
+                          Clear filters
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-col gap-2 pt-4">
+                    <Text.H5>Associated sessions</Text.H5>
+                    {momentRange ? (
+                      <TurnRangeSlider
+                        range={momentRange}
+                        maxTurn={momentRangeMaxTurn}
+                        onChange={onMomentRangeChange}
+                      />
+                    ) : null}
+                    <Text.H6 color="foregroundMuted">
+                      {momentRange
+                        ? selectedMomentRangeLabel(momentRange)
+                        : sessionFilter === "all"
+                          ? "All sessions for this behavior"
+                          : `Sessions matching ${sessionFilter.replaceAll("_", " ")}`}
+                    </Text.H6>
+                    {sessionSelection.selectedCount > 0 ? (
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setAddToDatasetOpen(true)}>
+                          <Icon icon={DatabaseIcon} size="xs" />
+                          Add to dataset ({sessionSelection.selectedCount.toLocaleString()})
+                        </Button>
+                      </div>
+                    ) : null}
+                    {behaviourSessionsLoading ? (
+                      <Skeleton className="h-16 rounded-xl" />
+                    ) : behaviourSessions.length ? (
+                      <BehaviourSessionsTable
+                        sessions={behaviourSessions}
+                        activeRowKey={
+                          behaviourSessions.find((session) => session.sessionId === sessionOverlayId)?.traceId ||
+                          (sessionOverlayId ?? undefined)
+                        }
+                        getRowKey={sessionRowKey}
+                        selection={sessionSelection}
+                        onSessionClick={openSessionOverlay}
+                        hasMore={hasNextBehaviourSessionsPage === true}
+                        isLoadingMore={isFetchingNextBehaviourSessionsPage}
+                        onLoadMore={() => void fetchNextBehaviourSessionsPage()}
+                      />
+                    ) : (
+                      <Text.H5 color="foregroundMuted">No sessions match this filter.</Text.H5>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <Text.H5 color="foregroundMuted">Conversation intelligence is not available yet.</Text.H5>
+              )}
+            </div>
+          </div>
         </div>
       </DetailDrawer>
+      {datasetSelection ? (
+        <AddToDatasetModal
+          open={addToDatasetOpen}
+          onOpenChange={setAddToDatasetOpen}
+          projectId={projectId}
+          itemLabel="session"
+          selectedCount={sessionSelection.selectedCount}
+          onAddToExisting={(datasetId) =>
+            addClusterSessionsToDatasetFunction({
+              data: { projectId, datasetId, cluster: clusterSource, selection: datasetSelection },
+            })
+          }
+          onCreateNew={(name) =>
+            createDatasetFromClusterSessionsFunction({
+              data: { projectId, name, cluster: clusterSource, selection: datasetSelection },
+            })
+          }
+          onSuccess={sessionSelection.clearSelections}
+        />
+      ) : null}
       {sessionOverlayId !== null ? (
         <>
           <button
@@ -347,16 +549,77 @@ export function BehaviourDetailDrawer({
   )
 }
 
+function TurnRangeSlider({
+  range,
+  maxTurn,
+  onChange,
+}: {
+  readonly range: BehaviourMomentRangeRecord
+  readonly maxTurn: number
+  readonly onChange: (range: BehaviourMomentRangeRecord, maxTurn: number) => void
+}) {
+  const sliderMax = Math.max(maxTurn, range.toTurn, 1)
+  const committedValue = [range.fromTurn, range.toTurn] as const
+  const [draftValue, setDraftValue] = useState<readonly [number, number]>(committedValue)
+
+  useEffect(() => {
+    setDraftValue(committedValue)
+  }, [range.fromTurn, range.toTurn])
+
+  const [draftFrom, draftTo] = draftValue
+
+  const normalizeRange = (values: readonly number[]) => {
+    const first = values[0] ?? range.fromTurn
+    const second = values[1] ?? range.toTurn
+    const fromTurn = Math.max(0, Math.min(first, second))
+    const toTurn = Math.min(sliderMax, Math.max(first, second))
+    return [fromTurn, toTurn] as const
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg bg-secondary px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <Text.H6 color="foregroundMuted">Turn range</Text.H6>
+        <Text.H6B className="tabular-nums">
+          {draftFrom + 1}
+          {draftTo === draftFrom ? "" : `-${draftTo + 1}`}
+        </Text.H6B>
+      </div>
+      <Slider
+        aria-label="Selected turn range"
+        min={0}
+        max={sliderMax}
+        step={1}
+        minStepsBetweenThumbs={0}
+        value={[draftFrom, draftTo]}
+        onValueChange={(values) => setDraftValue(normalizeRange(values))}
+        onValueCommit={(values) => {
+          const [fromTurn, toTurn] = normalizeRange(values)
+          onChange({ ...range, fromTurn, toTurn }, sliderMax)
+        }}
+      />
+      <div className="flex items-center justify-between text-muted-foreground text-xs tabular-nums">
+        <span>1</span>
+        <span>{sliderMax + 1}</span>
+      </div>
+    </div>
+  )
+}
+
 function BehaviourSessionsTable({
   sessions,
-  activeSessionId,
+  activeRowKey,
+  getRowKey,
+  selection,
   onSessionClick,
   hasMore,
   isLoadingMore,
   onLoadMore,
 }: {
   readonly sessions: readonly BehaviourSessionRecord[]
-  readonly activeSessionId: string | undefined
+  readonly activeRowKey: string | undefined
+  readonly getRowKey: (session: BehaviourSessionRecord) => string
+  readonly selection: InfiniteTableSelection
   readonly onSessionClick: (session: BehaviourSessionRecord) => void
   readonly hasMore: boolean
   readonly isLoadingMore: boolean
@@ -382,10 +645,10 @@ function BehaviourSessionsTable({
       },
       {
         key: "signals",
-        header: "Detected signals",
+        header: "Moments",
         width: 220,
         render: (session) =>
-          session.momentKinds.length > 0 ? session.momentKinds.join(", ").replaceAll("_", " ") : "no detected signals",
+          session.momentKinds.length > 0 ? session.momentKinds.join(", ").replaceAll("_", " ") : "-",
       },
       {
         key: "sessionId",
@@ -402,11 +665,12 @@ function BehaviourSessionsTable({
       <InfiniteTable
         data={sessions}
         columns={columns}
-        getRowKey={(session) => session.sessionId}
+        getRowKey={getRowKey}
+        selection={selection}
         onRowClick={onSessionClick}
         getRowAriaLabel={(session) => `Open session ${session.sessionId} in the session panel`}
         rowInteractionRole="button"
-        {...(activeSessionId ? { activeRowKey: activeSessionId } : {})}
+        {...(activeRowKey ? { activeRowKey } : {})}
         scrollAreaLayout="intrinsic"
         className="max-h-[min(28rem,50vh)]"
         infiniteScroll={{ hasMore, isLoadingMore, onLoadMore }}
@@ -424,38 +688,34 @@ function MetricButton({
   active,
   label,
   valueText,
+  color,
   onClick,
 }: {
   readonly active: boolean
   readonly label: string
   readonly valueText: string
+  readonly color: string
   readonly onClick: () => void
 }) {
   return (
     <button
       type="button"
       className={cn(
-        "inline-flex min-w-0 items-center justify-between gap-2 rounded-full border px-3 py-1.5 text-left hover:bg-muted/40",
+        "inline-flex min-w-0 items-center gap-2 rounded-full border px-3 py-1.5 text-left hover:bg-muted/40",
         active ? "border-primary bg-primary/10" : "border-border/60 bg-muted/20",
       )}
       onClick={onClick}
     >
-      <Text.H6 noWrap ellipsis>
+      <span className="size-2 shrink-0 rounded-full" style={{ background: color }} />
+      <Text.H6 noWrap ellipsis className="min-w-0 flex-1">
         {label}
       </Text.H6>
-      <Text.H6 color={active ? "foreground" : "foregroundMuted"}>{valueText}</Text.H6>
+      <Text.H6 color={active ? "foreground" : "foregroundMuted"} className="shrink-0">
+        {valueText}
+      </Text.H6>
     </button>
   )
 }
-
-const signalChartColors = [
-  "hsl(var(--chart-1))",
-  "hsl(var(--chart-2))",
-  "hsl(var(--chart-3))",
-  "hsl(var(--chart-4))",
-  "hsl(var(--success))",
-  "hsl(var(--warning-muted-foreground))",
-] as const
 
 const polarToCartesian = (center: number, radius: number, angleInDegrees: number) => {
   const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180
@@ -477,6 +737,17 @@ const describePieSlice = (center: number, radius: number, startAngle: number, en
   ].join(" ")
 }
 
+function ChartPanelHeader({ title, subtitle }: { readonly title: string; readonly subtitle?: string }) {
+  return (
+    <div className="shrink-0 p-2 pb-1">
+      <Text.H6 color="foregroundMuted">{title}</Text.H6>
+      <div className="mt-0.5 min-h-[1.25rem]">
+        {subtitle ? <Text.H6 className="tabular-nums">{subtitle}</Text.H6> : null}
+      </div>
+    </div>
+  )
+}
+
 function DetectedSignalsChart({
   signals,
 }: {
@@ -489,43 +760,32 @@ function DetectedSignalsChart({
     const startAngle = cursor
     const endAngle = cursor + (signal.count / total) * 360
     cursor = endAngle
-    return { signal, startAngle, endAngle, color: signalChartColors[index % signalChartColors.length] }
+    return { signal, startAngle, endAngle, color: signalColorAt(index) }
   })
 
   return (
-    <div className="flex items-center justify-center gap-5">
-      <svg className="size-40 shrink-0" viewBox="0 0 160 160" role="img" aria-label="Detected signal distribution">
-        <circle cx="80" cy="80" r="78" className="fill-muted" />
-        {slices.map((slice) => (
-          <Tooltip
-            key={slice.signal.kind}
-            asChild
-            trigger={
-              <path
-                d={describePieSlice(80, 78, slice.startAngle, slice.endAngle)}
-                fill={slice.color}
-                className="cursor-default outline-none transition-opacity hover:opacity-80 focus:opacity-80"
-                tabIndex={0}
-              />
-            }
-          >
-            {`${slice.signal.kind.replaceAll("_", " ")}: ${formatCount(slice.signal.count)} sessions`}
-          </Tooltip>
-        ))}
-      </svg>
-      <div className="flex min-w-0 flex-col gap-1">
-        <Text.H6 color="foregroundMuted">Detected signals</Text.H6>
-        {visibleSignals.map((signal, index) => (
-          <div key={signal.kind} className="flex min-w-0 items-center gap-2">
-            <span
-              className="size-2 shrink-0 rounded-full"
-              style={{ background: signalChartColors[index % signalChartColors.length] }}
-            />
-            <Text.H6 noWrap ellipsis>
-              {signal.kind.replaceAll("_", " ")} · {formatCount(signal.count)}
-            </Text.H6>
-          </div>
-        ))}
+    <div className="flex h-full flex-col rounded-lg bg-secondary">
+      <ChartPanelHeader title="Moments" />
+      <div className="flex flex-1 items-center justify-center px-2 pb-2">
+        <svg className="size-24 shrink-0" viewBox="0 0 160 160" role="img" aria-label="Moment distribution">
+          <circle cx="80" cy="80" r="78" className="fill-muted" />
+          {slices.map((slice) => (
+            <Tooltip
+              key={slice.signal.kind}
+              asChild
+              trigger={
+                <path
+                  d={describePieSlice(80, 78, slice.startAngle, slice.endAngle)}
+                  fill={slice.color}
+                  className="cursor-default outline-none transition-opacity hover:opacity-80 focus:opacity-80"
+                  tabIndex={0}
+                />
+              }
+            >
+              {`${slice.signal.kind.replaceAll("_", " ")}: ${formatCount(slice.signal.count)} sessions`}
+            </Tooltip>
+          ))}
+        </svg>
       </div>
     </div>
   )
@@ -545,9 +805,11 @@ function formatSessionHistogramTooltip(startTime: string, count: number) {
 function BehaviourSessionsHistogram({
   isLoading,
   buckets,
+  height = 140,
 }: {
   readonly isLoading: boolean
   readonly buckets: readonly { readonly startTime: string; readonly count: number }[]
+  readonly height?: number
 }) {
   const total = buckets.reduce((sum, bucket) => sum + bucket.count, 0)
   const data = useMemo(
@@ -561,29 +823,24 @@ function BehaviourSessionsHistogram({
   )
 
   return (
-    <div className="flex flex-col rounded-lg bg-secondary p-2">
-      <div className="flex items-center justify-between gap-3 px-2 py-2">
-        <div className="flex flex-col gap-1">
-          <Text.H6 color="foregroundMuted">Session activity</Text.H6>
-          <Text.H5 className="tabular-nums">{formatCount(total)} sessions</Text.H5>
-        </div>
-      </div>
+    <div className="flex h-full flex-col rounded-lg bg-secondary">
+      <ChartPanelHeader title="Session activity" subtitle={`${formatCount(total)} sessions`} />
       {isLoading ? (
-        <div className="px-2 py-3">
-          <HistogramSkeleton height={140} />
+        <div className="px-2 pb-2">
+          <HistogramSkeleton height={height} />
         </div>
       ) : data.length === 0 || data.every((bucket) => bucket.value === 0) ? (
-        <div className="flex min-h-[80px] items-center justify-center px-2 py-3">
+        <div className="flex min-h-[80px] flex-1 items-center justify-center px-2 pb-2">
           <Text.H6 color="foregroundMuted">No sessions in this time window</Text.H6>
         </div>
       ) : (
-        <div className="px-2 py-3">
+        <div className="px-2 pb-2">
           <BarChart
             data={data}
-            height={140}
+            height={height}
             showYAxis={false}
             xAxisLabelFontSize={10}
-            ariaLabel="Behaviour sessions over time"
+            ariaLabel="Behavior sessions over time"
             formatTooltip={(category, value) => formatSessionHistogramTooltip(category, value)}
           />
         </div>
@@ -597,22 +854,35 @@ export function BehavioursView({
   projectId,
   isLoading,
   segment,
-  activeBehaviourId,
+  behaviourPath,
   timeFilter,
   timeRange,
+  momentRange,
+  customBehaviorId,
   onSegmentChange,
-  onActiveBehaviourChange,
+  onBehaviourPathChange,
+  onMomentRangeChange,
 }: {
   readonly topics: readonly BehaviourNodeRecord[]
   readonly projectId: string
   readonly isLoading: boolean
-  readonly segment: BehaviourSegment
-  readonly activeBehaviourId: string | undefined
+  /** Global-only chrome, like `timeFilter`: pass `segment` + `onSegmentChange`
+   * to show the segment tabs; omit them (e.g. a scoped tree, whose trends are
+   * neutral) to hide them. */
+  readonly segment?: BehaviourSegment
+  readonly behaviourPath: readonly string[]
+  /** Slot for the global time-window picker; scoped trees pass `null` (fixed 7d). */
   readonly timeFilter: ReactNode
   readonly timeRange: BehaviourTimeRangeRecord | undefined
-  readonly onSegmentChange: (segment: BehaviourSegment) => void
-  readonly onActiveBehaviourChange: (behaviourId: string | undefined) => void
+  readonly momentRange: BehaviourMomentRangeRecord | undefined
+  /** Data scope only: reads the behavior's scoped clusters/sessions/trajectory.
+   * It does not drive chrome — visible controls are chosen by the caller. */
+  readonly customBehaviorId?: string
+  readonly onSegmentChange?: (segment: BehaviourSegment) => void
+  readonly onBehaviourPathChange: (path: readonly string[]) => void
+  readonly onMomentRangeChange: (range: BehaviourMomentRangeRecord | undefined, maxTurn?: number) => void
 }) {
+  const activeBehaviourId = behaviourPath.at(-1)
   const expandableKeys = useMemo(() => {
     const keys = new Set<string>()
     const walk = (nodes: readonly BehaviourNodeRecord[]) => {
@@ -624,47 +894,64 @@ export function BehavioursView({
     walk(topics)
     return keys
   }, [topics])
-  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(new Set())
-  // The drill path lives in the URL with push-history semantics so the
-  // browser back/forward buttons step through chart selections instead of
-  // leaving the page.
-  const [dotChartPathParam, setDotChartPathParam] = useParamState("behaviourPath", "", { history: "push" })
-  const dotChartPath: readonly string[] = useMemo(
-    () => (dotChartPathParam ? dotChartPathParam.split(".") : []),
-    [dotChartPathParam],
-  )
+  const defaultCollapsedKeys = useMemo(() => {
+    const keys = new Set<string>()
+    const walk = (nodes: readonly BehaviourNodeRecord[], depth: number) => {
+      for (const node of nodes) {
+        if (depth > 0 && node.children.length > 0) keys.add(node.cluster.id)
+        walk(node.children, depth + 1)
+      }
+    }
+    walk(topics, 0)
+    return keys
+  }, [topics])
+  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(() => defaultCollapsedKeys)
+
+  useEffect(() => {
+    setCollapsedKeys((previous) => {
+      const next = new Set([...previous].filter((key) => expandableKeys.has(key)))
+      for (const key of defaultCollapsedKeys) next.add(key)
+      return next.size === previous.size && [...next].every((key) => previous.has(key)) ? previous : next
+    })
+  }, [defaultCollapsedKeys, expandableKeys])
 
   // Chart clicks drive the table selection too: the path tail becomes the
   // active behaviour (highlighted row + detail drawer). Clearing the path
   // closes the drawer.
   const handleDotChartPathChange = useCallback(
     (path: readonly string[]) => {
-      setDotChartPathParam(path.join("."))
-      onActiveBehaviourChange(path.length > 0 ? path[path.length - 1] : undefined)
+      onBehaviourPathChange(path)
+      onMomentRangeChange(undefined)
     },
-    [setDotChartPathParam, onActiveBehaviourChange],
+    [onBehaviourPathChange, onMomentRangeChange],
   )
 
-  // The dot chart selection narrows the table to the deepest *drilled*
-  // subtree. A selected leaf at the path tail only drives the behaviour
-  // selection — its siblings stay visible rather than filtering the table
-  // down to a single row. A stale path (e.g. after a segment change drops
-  // the node) falls back to the full tree instead of an empty table.
-  const tableTopics: readonly BehaviourNodeRecord[] = useMemo(() => {
-    let nodes = topics
-    let subtreeRoot: BehaviourNodeRecord | undefined
-    for (const id of dotChartPath) {
-      const node = nodes.find((candidate) => candidate.cluster.id === id)
-      if (!node) return topics
-      if (node.children.length > 0) {
-        subtreeRoot = node
-        nodes = node.children
+  const handleDotChartPointSelect = useCallback(
+    ({
+      path,
+      axis,
+      metric,
+      bucket,
+      maxTurn,
+    }: {
+      readonly path: readonly string[]
+      readonly axis: "day" | "turn"
+      readonly metric: BehaviourTrajectoryMetric
+      readonly bucket: string
+      readonly maxTurn: number
+    }) => {
+      onBehaviourPathChange(path)
+      if (axis !== "turn") {
+        onMomentRangeChange(undefined)
+        return
       }
-    }
-    return subtreeRoot ? [subtreeRoot] : topics
-  }, [topics, dotChartPath])
 
-  // The visible rows are a depth-first walk that stops at collapsed nodes.
+      const turnRange = parseTurnBucket(bucket)
+      onMomentRangeChange(turnRange ? { metric, ...turnRange } : undefined, maxTurn)
+    },
+    [onBehaviourPathChange, onMomentRangeChange],
+  )
+
   const rows: readonly BehaviourTableRow[] = useMemo(() => {
     const out: BehaviourTableRow[] = []
     const walk = (nodes: readonly BehaviourNodeRecord[], depth: number) => {
@@ -673,9 +960,9 @@ export function BehavioursView({
         if (node.children.length > 0 && !collapsedKeys.has(node.cluster.id)) walk(node.children, depth + 1)
       }
     }
-    walk(tableTopics, 0)
+    walk(topics, 0)
     return out
-  }, [tableTopics, collapsedKeys])
+  }, [topics, collapsedKeys])
 
   const activeAncestorKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -706,10 +993,15 @@ export function BehavioursView({
   const setActiveByOffset = useCallback(
     (offset: number) => {
       const next = rows[activeIndex + offset]
-      if (next) onActiveBehaviourChange(next.node.cluster.id)
-      else if (activeIndex === -1 && rows[0]) onActiveBehaviourChange(rows[0].node.cluster.id)
+      if (next) {
+        onBehaviourPathChange(findBehaviourPath(topics, next.node.cluster.id) ?? [next.node.cluster.id])
+        onMomentRangeChange(undefined)
+      } else if (activeIndex === -1 && rows[0]) {
+        onBehaviourPathChange(findBehaviourPath(topics, rows[0].node.cluster.id) ?? [rows[0].node.cluster.id])
+        onMomentRangeChange(undefined)
+      }
     },
-    [activeIndex, rows, onActiveBehaviourChange],
+    [activeIndex, rows, topics, onBehaviourPathChange, onMomentRangeChange],
   )
 
   useHotkeys([
@@ -733,7 +1025,7 @@ export function BehavioursView({
   const columns: InfiniteTableColumn<BehaviourTableRow>[] = [
     {
       key: "behaviour",
-      header: "Behaviour",
+      header: "Behavior",
       width: 420,
       minWidth: 300,
       render: (row) => (
@@ -753,7 +1045,7 @@ export function BehavioursView({
     },
     {
       key: "signals",
-      header: "Signals",
+      header: "Moments",
       width: 240,
       render: (row) => {
         const signals = row.node.intelligence.signals.filter((signal) => signal.rate > 0)
@@ -796,20 +1088,19 @@ export function BehavioursView({
         <Layout.ActionsRow>
           <Layout.ActionRowItem>
             {timeFilter}
-            <Tabs
-              variant="bordered"
-              size="sm"
-              options={segmentOptions.map((option) => ({ id: option.id, label: option.label }))}
-              active={segment}
-              onSelect={(value) => onSegmentChange(value)}
-            />
-            {dotChartPath.length > 0 ? (
-              // Resets the drill filter without touching the behaviour selection.
-              <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => setDotChartPathParam("")}>
-                Clear filter
-              </Button>
-            ) : null}
+            {momentRange ? <BehaviourBadge label={selectedMomentRangeLabel(momentRange)} icon={TagIcon} /> : null}
           </Layout.ActionRowItem>
+          {onSegmentChange ? (
+            <Layout.ActionRowItem>
+              <Tabs
+                variant="bordered"
+                size="sm"
+                options={segmentOptions.map((option) => ({ id: option.id, label: option.label }))}
+                active={segment ?? "all"}
+                onSelect={(value) => onSegmentChange(value)}
+              />
+            </Layout.ActionRowItem>
+          ) : null}
         </Layout.ActionsRow>
       </Layout.Actions>
       <Layout.Body>
@@ -825,9 +1116,11 @@ export function BehavioursView({
               <BehavioursTrajectoryChart
                 projectId={projectId}
                 topics={topics}
-                selectedPath={dotChartPath}
+                selectedPath={behaviourPath}
                 timeRange={timeRange}
+                {...(customBehaviorId ? { customBehaviorId } : {})}
                 onSelectPath={handleDotChartPathChange}
+                onSelectPoint={handleDotChartPointSelect}
               />
               <InfiniteTable
                 {...listingLayoutIntrinsicScroll.infiniteTable}
@@ -851,10 +1144,15 @@ export function BehavioursView({
                       return next
                     })
                   }
-                  onActiveBehaviourChange(row.node.cluster.id === activeBehaviourId ? undefined : row.node.cluster.id)
+                  onBehaviourPathChange(
+                    row.node.cluster.id === activeBehaviourId
+                      ? []
+                      : (findBehaviourPath(topics, row.node.cluster.id) ?? [row.node.cluster.id]),
+                  )
+                  onMomentRangeChange(undefined)
                 }}
                 {...(activeBehaviourId ? { activeRowKey: activeBehaviourId, activeRowAutoScroll: true } : {})}
-                blankSlate="No behaviours match the current filters"
+                blankSlate="No behaviors match the current filters"
               />
             </>
           )}

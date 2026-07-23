@@ -1,10 +1,20 @@
-import { Button, cn, Icon, Popover, PopoverTrigger } from "@repo/ui"
+import { Button, cn, Icon, Popover, PopoverTrigger, useMountEffect } from "@repo/ui"
 import { CircleHelpIcon, SearchIcon, XIcon } from "lucide-react"
 import { useState } from "react"
 import { useSearchSegments } from "../../../../../lib/hooks/useSearchSegments.ts"
 import { SearchSyntaxLegendContent } from "./search-syntax-legend.tsx"
 
 export const SEARCH_QUERY_MAX_LENGTH = 500
+
+const PLACEHOLDER_ROTATION_MS = 4000
+const PLACEHOLDER_TYPEWRITER_STEP_MS = 18
+const SEMANTIC_SEARCH_PLACEHOLDERS = [
+  "Try: users asking for refunds after failed payments",
+  "Try: customers confused about pricing or plans",
+  "Try: users reporting login problems",
+  "Try: customers asking to cancel their subscription",
+  "Try: users asking how to reset their password",
+] as const
 
 /**
  * Segmented search box (semantic words + literal/phrase pills) shared by the project
@@ -13,9 +23,12 @@ export const SEARCH_QUERY_MAX_LENGTH = 500
 export function SearchInput({
   initialValue,
   onSubmit,
+  placeholder,
 }: {
   readonly initialValue: string
   readonly onSubmit: (value: string) => void
+  /** Static placeholder for the first semantic segment. Omit to cycle the animated semantic hints. */
+  readonly placeholder?: string
 }) {
   const {
     segments,
@@ -30,16 +43,52 @@ export function SearchInput({
   } = useSearchSegments(initialValue, onSubmit, SEARCH_QUERY_MAX_LENGTH)
 
   const [legendOpen, setLegendOpen] = useState(false)
+  const [semanticPlaceholder, setSemanticPlaceholder] = useState<string>(placeholder ?? SEMANTIC_SEARCH_PLACEHOLDERS[0])
   const active = segments.some((segment) => segment.text.length > 0) || legendOpen
+
+  useMountEffect(() => {
+    if (placeholder !== undefined) return
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return
+    }
+
+    let placeholderIndex = 0
+    let rotationTimeout: number | undefined
+    let typewriterInterval: number | undefined
+
+    const showNextPlaceholder = () => {
+      placeholderIndex = (placeholderIndex + 1) % SEMANTIC_SEARCH_PLACEHOLDERS.length
+      const nextPlaceholder = SEMANTIC_SEARCH_PLACEHOLDERS[placeholderIndex] ?? SEMANTIC_SEARCH_PLACEHOLDERS[0]
+      let visibleCharacters = 0
+
+      setSemanticPlaceholder("")
+      typewriterInterval = window.setInterval(() => {
+        visibleCharacters += 1
+        setSemanticPlaceholder(nextPlaceholder.slice(0, visibleCharacters))
+
+        if (visibleCharacters >= nextPlaceholder.length) {
+          window.clearInterval(typewriterInterval)
+          rotationTimeout = window.setTimeout(showNextPlaceholder, PLACEHOLDER_ROTATION_MS)
+        }
+      }, PLACEHOLDER_TYPEWRITER_STEP_MS)
+    }
+
+    rotationTimeout = window.setTimeout(showNextPlaceholder, PLACEHOLDER_ROTATION_MS)
+
+    return () => {
+      window.clearTimeout(rotationTimeout)
+      window.clearInterval(typewriterInterval)
+    }
+  })
 
   return (
     <div
       data-active={active ? "" : undefined}
-      className="group/search flex h-full min-w-0 flex-1 items-center bg-transparent pl-1"
+      className="group/search flex h-full min-w-0 flex-1 items-center bg-transparent pl-1.5"
     >
       <Popover open={legendOpen} onOpenChange={setLegendOpen}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="Search syntax help">
+          <Button variant="ghost" size="icon-xs" aria-label="Search syntax help">
             <Icon
               icon={SearchIcon}
               size="sm"
@@ -63,12 +112,11 @@ export function SearchInput({
           }}
         />
       </Popover>
-      <div className="no-scrollbar flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-3 pl-1 text-sm">
+      <div className="no-scrollbar flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-2 pl-1.5 text-sm">
         {segments.map((segment, index) => {
           const isSemantic = segment.kind === "semantic"
           const label = segment.kind === "literal" ? "Literal" : "Phrase"
-          const placeholder =
-            isSemantic && index === 0 ? 'Search by meaning, "literal text" or `ordered token phrase`' : ""
+          const segmentPlaceholder = isSemantic && index === 0 ? semanticPlaceholder : ""
           return (
             <span
               key={segment.id}
@@ -111,7 +159,7 @@ export function SearchInput({
                     focusAdjacentSegment(segment, "next")
                   }
                 }}
-                placeholder={placeholder}
+                placeholder={segmentPlaceholder}
                 maxLength={SEARCH_QUERY_MAX_LENGTH}
                 className={cn(
                   "bg-transparent outline-none field-sizing-content placeholder:text-muted-foreground h-5",

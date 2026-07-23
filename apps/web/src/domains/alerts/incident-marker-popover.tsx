@@ -1,28 +1,22 @@
+import { SEVERITY_COLOR } from "@domain/shared"
 import { Popover, PopoverAnchor, PopoverContent, Text } from "@repo/ui"
 import { Link } from "@tanstack/react-router"
 import { ChevronRightIcon } from "lucide-react"
 import { useRef } from "react"
 import type { AlertIncidentRecord } from "./alerts.functions.ts"
-import { formatIncidentKindLabel, INCIDENT_SEVERITY_COLOR, SEVERITY_LABELS } from "./incident-markers.ts"
+import { formatIncidentKindLabel, SEVERITY_LABELS } from "./incident-markers.ts"
 
 /**
- * Popover anchored at a chart-bucket point, listing every incident touching that bucket. Issue
- * rows link to the issue drawer (`?issueId=…`); saved-search rows link to their monitor
+ * Popover anchored at a chart-bucket point, listing every incident touching that bucket. Signal
+ * rows link to the issue page (`/signals/<id>`); saved-search rows link to their monitor
  * (`?monitorSlug=…`). The popover is consumer-owned — the chart surfaces the bucket anchor; this
  * component renders the list and the navigation links.
- *
- * `preserveSearchParams=true` is for the issues analytics panel (popover is on the issues page
- * itself), where lifecycle, time filter and sort search params should survive the row-click
- * navigation. `false` (default) ships a fresh `{ issueId }` search — used by the traces
- * overview popover, which navigates cross-route. The `to` is always the absolute issues path
- * either way; only the search-params merge behavior differs.
  */
 interface IncidentMarkerPopoverProps {
   readonly open: boolean
   readonly anchor: { readonly clientX: number; readonly clientY: number } | null
   readonly incidents: readonly AlertIncidentRecord[]
   readonly projectSlug: string
-  readonly preserveSearchParams?: boolean
   readonly onOpenChange: (open: boolean) => void
   /**
    * Optional hover-card grace handlers — wired to the popover content so a consumer can
@@ -52,7 +46,7 @@ function formatTiming(incident: AlertIncidentRecord): string {
 const ROW_CLASS = "flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent focus-visible:bg-accent outline-none"
 
 /**
- * One incident row. Issue incidents link to the issue drawer; saved-search incidents link to their
+ * One incident row. Signal incidents link to the issue page; saved-search incidents link to their
  * monitor (and fall back to a non-interactive row when the monitor alert was deleted). The primary
  * label is the issue name for issues and the saved search name for saved searches, followed (saved
  * search only) by the humanised condition and the "Created by monitor X" attribution.
@@ -60,24 +54,26 @@ const ROW_CLASS = "flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent
 function IncidentRow({
   incident,
   projectSlug,
-  preserveSearchParams,
   onNavigate,
 }: {
   readonly incident: AlertIncidentRecord
   readonly projectSlug: string
-  readonly preserveSearchParams: boolean
   readonly onNavigate: () => void
 }) {
-  const isSavedSearch = incident.sourceType === "savedSearch"
-  const primaryLabel = isSavedSearch ? incident.savedSearchName : incident.issueName
-  const navigable = !isSavedSearch || Boolean(incident.monitorSlug)
+  // Signals link to the issue; everything else with a monitor (saved-search AND
+  // unified target-on-monitor incidents) links to that monitor's page.
+  const isSignal = incident.sourceType === "signal"
+  const signalTarget = isSignal ? incident.signalSlug : null
+  const monitorTarget = !isSignal && incident.monitorSlug !== null ? incident.monitorSlug : null
+  const primaryLabel = isSignal ? incident.signalName : incident.savedSearchName
+  const navigable = signalTarget !== null || monitorTarget !== null
 
   const body = (
     <>
       <span
         aria-hidden
         className="mt-1 inline-block size-2 shrink-0 rounded-full"
-        style={{ background: INCIDENT_SEVERITY_COLOR[incident.severity] }}
+        style={{ background: SEVERITY_COLOR[incident.severity] }}
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -91,12 +87,12 @@ function IncidentRow({
               {primaryLabel}
             </Text.H6>
           ) : null}
-          {isSavedSearch && incident.conditionSummary ? (
+          {!isSignal && incident.conditionSummary ? (
             <Text.H6 color="foregroundMuted" className="min-w-0 truncate">
               {incident.conditionSummary}
             </Text.H6>
           ) : null}
-          {isSavedSearch && incident.monitorName ? (
+          {!isSignal && incident.monitorName ? (
             <Text.H6 color="foregroundMuted" className="min-w-0 truncate">
               Created by monitor <b>{incident.monitorName}</b>
             </Text.H6>
@@ -110,15 +106,11 @@ function IncidentRow({
     </>
   )
 
-  if (isSavedSearch) {
-    if (!incident.monitorSlug) {
-      return <div className="flex items-start gap-2 px-2 py-1.5">{body}</div>
-    }
+  if (signalTarget !== null) {
     return (
       <Link
-        to="/projects/$projectSlug/monitors"
-        params={{ projectSlug }}
-        search={{ monitorSlug: incident.monitorSlug }}
+        to="/projects/$projectSlug/signals/$signalSlug"
+        params={{ projectSlug, signalSlug: signalTarget }}
         onClick={onNavigate}
         className={ROW_CLASS}
       >
@@ -127,21 +119,20 @@ function IncidentRow({
     )
   }
 
-  return (
-    <Link
-      to="/projects/$projectSlug/issues"
-      params={{ projectSlug }}
-      search={
-        preserveSearchParams
-          ? (prev: Record<string, unknown>) => ({ ...prev, issueId: incident.sourceId })
-          : { issueId: incident.sourceId }
-      }
-      onClick={onNavigate}
-      className={ROW_CLASS}
-    >
-      {body}
-    </Link>
-  )
+  if (monitorTarget !== null) {
+    return (
+      <Link
+        to="/projects/$projectSlug/monitors/$monitorSlug"
+        params={{ projectSlug, monitorSlug: monitorTarget }}
+        onClick={onNavigate}
+        className={ROW_CLASS}
+      >
+        {body}
+      </Link>
+    )
+  }
+
+  return <div className="flex items-start gap-2 px-2 py-1.5">{body}</div>
 }
 
 export function IncidentMarkerPopover({
@@ -149,7 +140,6 @@ export function IncidentMarkerPopover({
   anchor,
   incidents,
   projectSlug,
-  preserveSearchParams = false,
   onOpenChange,
   onContentMouseEnter,
   onContentMouseLeave,
@@ -195,12 +185,7 @@ export function IncidentMarkerPopover({
         <ul className="flex flex-col">
           {incidents.map((incident) => (
             <li key={incident.id}>
-              <IncidentRow
-                incident={incident}
-                projectSlug={projectSlug}
-                preserveSearchParams={preserveSearchParams}
-                onNavigate={() => onOpenChange(false)}
-              />
+              <IncidentRow incident={incident} projectSlug={projectSlug} onNavigate={() => onOpenChange(false)} />
             </li>
           ))}
         </ul>

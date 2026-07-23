@@ -103,6 +103,30 @@ export interface InfiniteTableSharedProps<T> {
   onToggleExpand?: (row: T) => void
   /** Hide the horizontal separator rendered after expanded sub-rows. */
   hideExpandedRowSeparator?: boolean
+  /**
+   * Stable group key per row. Rows are bucketed by key into one contiguous
+   * section per group (header rendered by `renderGroupHeader`), so `data` need
+   * not arrive grouped. Headers live outside the data array: they are not
+   * selectable, not clickable, and invisible to `getRowKey`/selection. Requires
+   * `renderGroupHeader`.
+   *
+   * Headers are viewport-pinned on both axes: they render at the container's
+   * visible width and stick to its left edge under horizontal scrolling, and
+   * the active group's header is mirrored in a sticky overlay below the thead
+   * while its own row is scrolled out of view (so the current group stays
+   * labelled). Header content should therefore tolerate an opaque
+   * `bg-background` behind it when pinned.
+   */
+  getRowGroup?: (row: T) => string
+  /** Renders the content of an injected group header row (see `getRowGroup`). */
+  renderGroupHeader?: (groupKey: string) => ReactNode
+  /**
+   * Fixed section order for grouping. Sections render in this order regardless
+   * of where each group first appears in `data`; row order *within* a section
+   * still follows `data`. Groups present in `data` but absent here render last,
+   * in first-appearance order. Without it, sections follow first-appearance.
+   */
+  groupOrder?: readonly string[]
 }
 
 export type InfiniteTableProps<T> =

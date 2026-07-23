@@ -1,5 +1,6 @@
 """Tests for tracer access via Latitude bootstrap."""
 
+import json
 import logging
 from unittest.mock import patch
 
@@ -8,8 +9,10 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import Tracer
 
 from latitude_telemetry import Latitude, init_latitude
+from latitude_telemetry.constants import ATTRIBUTES, SCOPE_LATITUDE
 from latitude_telemetry.sdk._deprecation import reset_project_slug_deprecation_warning_for_testing
 
 
@@ -51,6 +54,68 @@ class TestTracerAccess:
         with tracer.start_as_current_span("test-span") as span:
             assert span is not None
             span.set_attribute("test.key", "test-value")
+
+    def test_get_tracer_prefixes_latitude_scope(self):
+        latitude_exporter = InMemorySpanExporter()
+        lat = Latitude(
+            api_key="test-api-key",
+            project="test-project",
+            disable_batch=True,
+            tracer_provider=TracerProvider(),
+            exporter=latitude_exporter,
+        )
+
+        tracer = lat.get_tracer("cloudflare-think")
+        assert isinstance(tracer, Tracer)
+
+        with tracer.start_as_current_span("ai-call"):
+            pass
+
+        lat.flush()
+
+        spans = latitude_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].instrumentation_scope.name == f"{SCOPE_LATITUDE}.cloudflare-think"
+
+        lat.shutdown()
+
+    def test_get_tracer_stamps_latitude_context_on_spans(self):
+        latitude_exporter = InMemorySpanExporter()
+        lat = Latitude(
+            api_key="test-api-key",
+            project="test-project",
+            disable_batch=True,
+            tracer_provider=TracerProvider(),
+            exporter=latitude_exporter,
+        )
+
+        tracer = lat.get_tracer(
+            "cloudflare-think",
+            {
+                "user_id": "user-1",
+                "session_id": "session-1",
+                "tags": ["think", "tool"],
+                "metadata": {"turn": 1},
+                "project": "project-override",
+            },
+        )
+        span = tracer.start_span("ai-call")
+        span.end()
+        with tracer.start_as_current_span("active-ai-call"):
+            pass
+        lat.flush()
+
+        spans = {span.name: span for span in latitude_exporter.get_finished_spans()}
+        assert set(spans) == {"ai-call", "active-ai-call"}
+        for finished_span in spans.values():
+            attrs = finished_span.attributes
+            assert attrs[ATTRIBUTES.user_id] == "user-1"
+            assert attrs[ATTRIBUTES.session_id] == "session-1"
+            assert json.loads(attrs[ATTRIBUTES.tags]) == ["think", "tool"]
+            assert json.loads(attrs[ATTRIBUTES.metadata]) == {"turn": 1}
+            assert attrs[ATTRIBUTES.project] == "project-override"
+
+        lat.shutdown()
 
     def test_init_latitude_keeps_dict_compatibility(self):
         """Test that init_latitude keeps the previous dict return shape."""
@@ -190,4 +255,21 @@ class TestProjectArgRename:
             )
 
         assert not any("deprecated" in r.message for r in caplog.records)
+        lat.shutdown()
+
+    def test_get_tracer_project_slug_logs_get_tracer_deprecation(self, caplog):
+        with (
+            patch("latitude_telemetry.telemetry.latitude_span_processor.create_exporter"),
+            caplog.at_level(logging.WARNING, logger="latitude_telemetry.sdk._deprecation"),
+        ):
+            lat = Latitude(
+                api_key="test-api-key",
+                project="my-project",
+                disable_batch=True,
+                tracer_provider=TracerProvider(),
+            )
+            lat.get_tracer("test", {"project_slug": "legacy-slug"})
+
+        assert any("`project_slug` on get_tracer() is deprecated" in r.message for r in caplog.records)
+        assert not any("`project_slug` on capture() is deprecated" in r.message for r in caplog.records)
         lat.shutdown()

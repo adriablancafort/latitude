@@ -1,5 +1,5 @@
 """
-Test OpenAI Responses API instrumentation against local Latitude instance.
+OpenAI Responses API — Latitude telemetry example.
 
 Required env vars:
 - LATITUDE_API_KEY
@@ -9,7 +9,9 @@ Required env vars:
 Install: uv add openai
 """
 
+import json
 import os
+import uuid
 
 import openai
 from openai import OpenAI
@@ -23,59 +25,93 @@ latitude = Latitude(
     disable_batch=True,
 )
 
+PROVIDER = "openai-responses"
+MODEL = "gpt-5.5"
+# gpt-5.5 is a reasoning model — budget for reasoning + the answer.
+MAX_TOKENS = 2000
+# `instructions` is the out-of-band system field — verify it lands in systemInstructions.
+SYSTEM = "You are a helpful assistant participating in a telemetry QA test. Keep answers concise."
+SESSION_ID = f"{PROVIDER}-{uuid.uuid4().hex[:8]}"
 
-@capture(
-    "test-openai-responses",
-    {
-        "tags": ["python", "openai", "responses"],
-        "session_id": "example",
-        "user_id": "user_123",
-        "metadata": {"test_type": "responses", "environment": "local"},
-    },
-)
-def test_openai_responses():
-    client = OpenAI()
+client = OpenAI()
 
+
+def _ctx(scenario: str, *extra_tags: str) -> dict:
+    return {
+        "tags": ["example", PROVIDER, "openai-responses-py", *extra_tags],
+        "session_id": SESSION_ID,
+        "user_id": "example-user",
+        "metadata": {"scenario": scenario, "environment": "local"},
+    }
+
+
+def chat() -> str:
     response = client.responses.create(
-        model="gpt-4o-mini",
+        model=MODEL,
+        instructions=SYSTEM,
         input="Say 'Hello from OpenAI Responses!' in exactly 5 words.",
-        max_output_tokens=50,
+        max_output_tokens=MAX_TOKENS,
     )
-
     return response.output_text
 
 
-@capture(
-    "test-openai-responses-streaming",
-    {
-        "tags": ["python", "openai", "responses", "stream"],
-        "session_id": "example",
-        "user_id": "user_123",
-        "metadata": {"test_type": "responses-stream", "environment": "local"},
-    },
-)
-def test_openai_responses_streaming():
-    client = OpenAI()
-
-    stream = client.responses.create(
-        model="gpt-4o-mini",
-        input="Say 'Hello from OpenAI Responses stream!' in exactly 6 words.",
-        max_output_tokens=50,
-        stream=True,
-    )
-
+def stream() -> str:
     chunks: list[str] = []
-    for event in stream:
-        # `event.type` is the discriminant of the streaming event union; comparing
-        # it directly (rather than via `getattr`) lets pyright narrow `event` to
-        # `ResponseTextDeltaEvent`, which carries the `delta: str` field.
+    for event in client.responses.create(
+        model=MODEL,
+        instructions=SYSTEM,
+        input="Say 'Hello from OpenAI Responses stream!' in exactly 6 words.",
+        max_output_tokens=MAX_TOKENS,
+        stream=True,
+    ):
         if event.type == "response.output_text.delta":
             chunks.append(event.delta)
-
     return "".join(chunks)
 
 
+def tool_conversation() -> str:
+    tools = [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get the current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        }
+    ]
+    input_list: list = [
+        {
+            "role": "user",
+            "content": "What's the weather in San Francisco? Use get_weather, then answer in one short sentence.",
+        }
+    ]
+
+    first = client.responses.create(
+        model=MODEL, instructions=SYSTEM, input=input_list, tools=tools, max_output_tokens=MAX_TOKENS
+    )
+    input_list += first.output
+    for item in first.output:
+        if item.type == "function_call":
+            input_list.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": json.dumps({"city": "San Francisco", "temperatureC": 21, "conditions": "sunny"}),
+                }
+            )
+
+    second = client.responses.create(
+        model=MODEL, instructions=SYSTEM, input=input_list, tools=tools, max_output_tokens=MAX_TOKENS
+    )
+    return second.output_text
+
+
 if __name__ == "__main__":
-    test_openai_responses()
-    test_openai_responses_streaming()
+    capture("openai-responses-chat-capture", chat, _ctx("chat"))
+    capture("openai-responses-stream-capture", stream, _ctx("stream", "stream"))
+    capture("openai-responses-tools-capture", tool_conversation, _ctx("tools", "tools"))
+
     latitude.flush()

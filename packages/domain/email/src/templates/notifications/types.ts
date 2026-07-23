@@ -1,9 +1,8 @@
-import type { FeatureFlagRepository } from "@domain/feature-flags"
-import type { IssueRepository } from "@domain/issues"
 import type { NOTIFICATION_KIND_META, NotificationKind, RenderNotificationEmailError } from "@domain/notifications"
-import type { SavedSearchRepository } from "@domain/saved-searches"
 import type { SqlClient } from "@domain/shared"
+import type { SignalRepository } from "@domain/signals"
 import type { WrappedReportRepository } from "@domain/spans"
+import type { UserRepository } from "@domain/users"
 import type { Effect } from "effect"
 import type { z } from "zod"
 import type { RenderedEmail } from "../types.ts"
@@ -55,11 +54,15 @@ export interface NotificationEmailRenderContext {
  * `never` and stay as trivial `Effect.tryPromise(() => template(...))`.
  */
 export type RenderDepsByKind = {
-  readonly "incident.event": IssueRepository | SavedSearchRepository | SqlClient
-  readonly "incident.opened": IssueRepository | SavedSearchRepository | SqlClient
-  readonly "incident.closed": IssueRepository | SavedSearchRepository | SqlClient
-  readonly "wrapped.report": WrappedReportRepository | FeatureFlagRepository | SqlClient
+  readonly "incident.event": SignalRepository | UserRepository | SqlClient
+  readonly "incident.opened": SignalRepository | UserRepository | SqlClient
+  readonly "incident.closed": SignalRepository | UserRepository | SqlClient
+  readonly "wrapped.report": WrappedReportRepository | SqlClient
   readonly "custom.message": never
+  readonly "issue.assigned": SignalRepository | UserRepository | SqlClient
+  readonly "signal.discovered": SignalRepository | SqlClient
+  readonly "signal.regressed": SignalRepository | SqlClient
+  readonly "destination.quarantined": never
 }
 
 export type RenderDepsFor<K extends NotificationKind> = RenderDepsByKind[K]
@@ -67,8 +70,8 @@ export type RenderDepsFor<K extends NotificationKind> = RenderDepsByKind[K]
 /**
  * Per-kind renderer signature. The renderer is an `Effect` so it can pull
  * whichever services it needs from the worker's layer — wrapped fetches
- * the report row, incident kinds live-resolve the issue's display name
- * since the payload only carries `sourceId`. Each renderer's `R` channel
+ * the report row, incident kinds live-resolve the signal display name
+ * when the payload is signal-sourced. Each renderer's `R` channel
  * is typed per kind via `RenderDepsFor<K>`; the worker provides the union
  * as one layer.
  */

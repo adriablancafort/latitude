@@ -1,49 +1,18 @@
-import type { AlertIncidentKind, AlertSeverity } from "@domain/alerts"
-import { ALERT_INCIDENT_KIND_LABEL } from "@domain/shared"
+import type { AlertSeverity } from "@domain/incidents"
+import { INCIDENT_NOTIFICATION_KEY_LABEL, type IncidentNotificationKey, SEVERITY_COLOR } from "@domain/shared"
 import type { BarChartOverlay, BarChartOverlayArea, BarChartOverlayLine } from "@repo/ui"
 import type { AlertIncidentRecord } from "./alerts.functions.ts"
-
-/**
- * Severity → Tailwind-aligned chart colors. We don't read these from CSS variables because the
- * `<canvas>` chart layer can't resolve `hsl(var(...))` — eCharts needs concrete strings. Keep
- * these in rough sync with the `Status` variants used elsewhere (warning ≈ amber, destructive ≈
- * red) so the histogram markers feel like the same family as the issue lifecycle badges.
- *
- * Exported so non-eCharts callers (e.g., the SVG-style `IssueTrendBar`) reuse the same palette.
- */
-export const INCIDENT_SEVERITY_COLOR: Record<AlertSeverity, string> = {
-  low: "hsl(217 91% 60%)",
-  medium: "hsl(38 92% 50%)",
-  high: "hsl(0 84% 60%)",
-}
-
-/**
- * Concrete hex equivalents of {@link INCIDENT_SEVERITY_COLOR}, for renderers that can't rely on
- * CSS `hsl()` parsing. usvg (the SVG parser behind the server-side Resvg incident-trend PNG)
- * does not reliably parse the space-separated `hsl(H S% L%)` syntax used above, so the hand-built
- * SVG markup references these instead. Values are the same Tailwind-500 colors (blue/amber/red).
- */
-export const INCIDENT_SEVERITY_HEX: Record<AlertSeverity, string> = {
-  low: "#3b82f6",
-  medium: "#f59e0b",
-  high: "#ef4444",
-}
 
 type TopSymbol = NonNullable<BarChartOverlayLine["topSymbol"]>
 
 // Markers are paint-only — interactivity lives at the bucket level via the histogram's hover
 // popover, not on the marker itself. Sizes are picked so each kind reads distinctly at a
 // glance against a busy bar chart background.
-const KIND_TOP_SYMBOL: Record<AlertIncidentKind, TopSymbol> = {
-  "issue.new": { shape: "circle", size: 9 },
-  "issue.regressed": { shape: "diamond", size: 10 },
-  // Escalating typically renders as an area, but we still render a tiny tick at the start so a
-  // 1-bucket escalation that snaps to a single cell stays visible.
-  "issue.escalating": { shape: "rect", size: 7 },
-  // Unused until M7 wires saved-search firing; shapes mirror the issue analogues.
-  "savedSearch.match": { shape: "triangle", size: 9 },
-  "savedSearch.threshold": { shape: "diamond", size: 10 },
-  "savedSearch.escalating": { shape: "rect", size: 7 },
+const KIND_TOP_SYMBOL: Record<IncidentNotificationKey, TopSymbol> = {
+  "monitor.match": { shape: "triangle", size: 9 },
+  "monitor.threshold": { shape: "diamond", size: 10 },
+  "monitor.escalating": { shape: "rect", size: 7 },
+  "signal.escalating": { shape: "rect", size: 7 },
 }
 
 export const SEVERITY_LABELS: Record<AlertSeverity, string> = {
@@ -222,8 +191,8 @@ export function buildIncidentMarkers({
     for (const incident of bucketIncidents) {
       lines.push({
         categoryIndex: bucketIndex,
-        color: INCIDENT_SEVERITY_COLOR[incident.severity],
-        dashed: incident.kind === "issue.regressed",
+        color: SEVERITY_COLOR[incident.severity],
+        dashed: false,
         topSymbol: KIND_TOP_SYMBOL[incident.kind],
       })
     }
@@ -233,7 +202,7 @@ export function buildIncidentMarkers({
     areas.push({
       startCategoryIndex: range.startIndex,
       endCategoryIndex: range.endIndex,
-      color: INCIDENT_SEVERITY_COLOR[range.incident.severity],
+      color: SEVERITY_COLOR[range.incident.severity],
       opacity: 0.16,
     })
   }
@@ -245,6 +214,6 @@ export function buildIncidentMarkers({
   }
 }
 
-export function formatIncidentKindLabel(kind: AlertIncidentKind): string {
-  return ALERT_INCIDENT_KIND_LABEL[kind]
+export function formatIncidentKindLabel(kind: IncidentNotificationKey): string {
+  return INCIDENT_NOTIFICATION_KEY_LABEL[kind]
 }

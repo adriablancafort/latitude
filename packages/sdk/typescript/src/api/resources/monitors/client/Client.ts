@@ -7,7 +7,7 @@ import * as core from "../../../../core/index.js";
 import * as environments from "../../../../environments.js";
 import { handleNonStatusCodeError } from "../../../../errors/handleNonStatusCodeError.js";
 import * as errors from "../../../../errors/index.js";
-import * as LatitudeApi from "../../../index.js";
+import * as Latitude from "../../../index.js";
 
 export declare namespace MonitorsClient {
     export type Options = BaseClientOptions;
@@ -18,7 +18,7 @@ export declare namespace MonitorsClient {
 export class MonitorsClient {
     protected readonly _options: NormalizedClientOptionsWithAuth<MonitorsClient.Options>;
 
-    constructor(options: MonitorsClient.Options) {
+    constructor(options: MonitorsClient.Options = {}) {
         this._options = normalizeClientOptionsWithAuth(options);
     }
 
@@ -26,33 +26,29 @@ export class MonitorsClient {
      * Returns the project's monitors, system monitors first, then by most recent activity.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {LatitudeApi.MonitorsListRequest} request
+     * @param {Latitude.ListMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
-     *     await client.monitors.list("projectSlug", {
-     *         cursor: "cursor",
-     *         limit: 1,
-     *         search: "search"
-     *     })
+     *     await client.monitors.list("projectSlug")
      */
     public list(
         projectSlug: string,
-        request: LatitudeApi.MonitorsListRequest = {},
+        request: Latitude.ListMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.PaginatedMonitors> {
+    ): core.HttpResponsePromise<Latitude.PaginatedMonitors> {
         return core.HttpResponsePromise.fromPromise(this.__list(projectSlug, request, requestOptions));
     }
 
     private async __list(
         projectSlug: string,
-        request: LatitudeApi.MonitorsListRequest = {},
+        request: Latitude.ListMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.PaginatedMonitors>> {
+    ): Promise<core.WithRawResponse<Latitude.PaginatedMonitors>> {
         const { cursor, limit, search } = request;
         const _queryParams: Record<string, unknown> = {
             cursor,
@@ -69,12 +65,11 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: { ..._queryParams, ...requestOptions?.queryParams },
             queryString: core.url
                 .queryBuilder()
                 .addMany(_queryParams)
@@ -87,28 +82,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.PaginatedMonitors, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.PaginatedMonitors, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -125,41 +114,42 @@ export class MonitorsClient {
     }
 
     /**
-     * Creates a monitor with one or more saved-search alerts. The slug is derived from `name`.
+     * Creates a monitor with one rule. The slug is derived from `name`.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {LatitudeApi.CreateMonitorBody} request
+     * @param {Latitude.CreateMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.create("projectSlug", {
-     *         name: "name",
-     *         alerts: [{
-     *                 kind: "savedSearch.match",
-     *                 source: {
-     *                     type: "issue",
-     *                     id: "id"
-     *                 }
-     *             }]
+     *         body: {
+     *             trigger: "match",
+     *             name: "name",
+     *             target: {
+     *                 type: "savedSearch"
+     *             },
+     *             severity: "low"
+     *         }
      *     })
      */
     public create(
         projectSlug: string,
-        request: LatitudeApi.CreateMonitorBody,
+        request: Latitude.CreateMonitorsRequest,
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
+    ): core.HttpResponsePromise<Latitude.Monitor> {
         return core.HttpResponsePromise.fromPromise(this.__create(projectSlug, request, requestOptions));
     }
 
     private async __create(
         projectSlug: string,
-        request: LatitudeApi.CreateMonitorBody,
+        request: Latitude.CreateMonitorsRequest,
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
+    ): Promise<core.WithRawResponse<Latitude.Monitor>> {
+        const { body: _body } = request;
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -170,15 +160,15 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors`,
             ),
             method: "POST",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
-            body: request,
+            body: _body,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -186,28 +176,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Monitor, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -220,6 +204,97 @@ export class MonitorsClient {
             _response.rawResponse,
             "POST",
             "/v1/projects/{projectSlug}/monitors",
+        );
+    }
+
+    /**
+     * Returns live monitors matching the supplied target type and/or filter subset.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {Latitude.ListMonitorsForTargetBody} request
+     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.monitors.listForTarget("projectSlug", {
+     *         filterSetContains: {
+     *             "key": [{
+     *                     op: "eq",
+     *                     value: "value"
+     *                 }]
+     *         }
+     *     })
+     */
+    public listForTarget(
+        projectSlug: string,
+        request: Latitude.ListMonitorsForTargetBody,
+        requestOptions?: MonitorsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.MonitorList> {
+        return core.HttpResponsePromise.fromPromise(this.__listForTarget(projectSlug, request, requestOptions));
+    }
+
+    private async __listForTarget(
+        projectSlug: string,
+        request: Latitude.ListMonitorsForTargetBody,
+        requestOptions?: MonitorsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.MonitorList>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/for-target`,
+            ),
+            method: "POST",
+            headers: _headers,
+            contentType: "application/json",
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            requestType: "json",
+            body: request,
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.MonitorList, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "POST",
+            "/v1/projects/{projectSlug}/monitors/for-target",
         );
     }
 
@@ -228,11 +303,12 @@ export class MonitorsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
+     * @param {Latitude.GetMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.get("projectSlug", "monitorSlug")
@@ -240,16 +316,18 @@ export class MonitorsClient {
     public get(
         projectSlug: string,
         monitorSlug: string,
+        request: Latitude.GetMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
-        return core.HttpResponsePromise.fromPromise(this.__get(projectSlug, monitorSlug, requestOptions));
+    ): core.HttpResponsePromise<Latitude.Monitor> {
+        return core.HttpResponsePromise.fromPromise(this.__get(projectSlug, monitorSlug, request, requestOptions));
     }
 
     private async __get(
         projectSlug: string,
         monitorSlug: string,
+        _request: Latitude.GetMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
+    ): Promise<core.WithRawResponse<Latitude.Monitor>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -260,12 +338,12 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -273,28 +351,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Monitor, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -311,14 +383,15 @@ export class MonitorsClient {
     }
 
     /**
-     * Deletes a monitor and its alerts. System monitors cannot be deleted.
+     * Deletes a monitor. System monitors cannot be deleted.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
+     * @param {Latitude.DeleteMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.delete("projectSlug", "monitorSlug")
@@ -326,14 +399,16 @@ export class MonitorsClient {
     public delete(
         projectSlug: string,
         monitorSlug: string,
+        request: Latitude.DeleteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
     ): core.HttpResponsePromise<void> {
-        return core.HttpResponsePromise.fromPromise(this.__delete(projectSlug, monitorSlug, requestOptions));
+        return core.HttpResponsePromise.fromPromise(this.__delete(projectSlug, monitorSlug, request, requestOptions));
     }
 
     private async __delete(
         projectSlug: string,
         monitorSlug: string,
+        _request: Latitude.DeleteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
     ): Promise<core.WithRawResponse<void>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
@@ -346,12 +421,12 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}`,
             ),
             method: "DELETE",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -365,17 +440,14 @@ export class MonitorsClient {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -392,17 +464,17 @@ export class MonitorsClient {
     }
 
     /**
-     * Updates a monitor's name and description. System monitors cannot be edited.
+     * Updates a monitor's metadata and incident severity. Target, trigger, metric, and conditions are fixed after creation. System monitor edits are restricted.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {LatitudeApi.UpdateMonitorBody} request
+     * @param {Latitude.UpdateMonitorBody} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.ForbiddenError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.ForbiddenError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.update("projectSlug", "monitorSlug")
@@ -410,18 +482,18 @@ export class MonitorsClient {
     public update(
         projectSlug: string,
         monitorSlug: string,
-        request: LatitudeApi.UpdateMonitorBody = {},
+        request: Latitude.UpdateMonitorBody = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
+    ): core.HttpResponsePromise<Latitude.Monitor> {
         return core.HttpResponsePromise.fromPromise(this.__update(projectSlug, monitorSlug, request, requestOptions));
     }
 
     private async __update(
         projectSlug: string,
         monitorSlug: string,
-        request: LatitudeApi.UpdateMonitorBody = {},
+        request: Latitude.UpdateMonitorBody = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
+    ): Promise<core.WithRawResponse<Latitude.Monitor>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -432,13 +504,13 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}`,
             ),
             method: "PATCH",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -448,33 +520,24 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Monitor, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 403:
-                    throw new LatitudeApi.ForbiddenError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.ForbiddenError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -487,480 +550,6 @@ export class MonitorsClient {
             _response.rawResponse,
             "PATCH",
             "/v1/projects/{projectSlug}/monitors/{monitorSlug}",
-        );
-    }
-
-    /**
-     * Returns the monitor's alerts.
-     *
-     * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
-     *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     *
-     * @example
-     *     await client.monitors.listAlerts("projectSlug", "monitorSlug")
-     */
-    public listAlerts(
-        projectSlug: string,
-        monitorSlug: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.MonitorAlertList> {
-        return core.HttpResponsePromise.fromPromise(this.__listAlerts(projectSlug, monitorSlug, requestOptions));
-    }
-
-    private async __listAlerts(
-        projectSlug: string,
-        monitorSlug: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.MonitorAlertList>> {
-        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
-        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
-            _authRequest.headers,
-            this._options?.headers,
-            requestOptions?.headers,
-        );
-        const _response = await core.fetcher({
-            url: core.url.join(
-                (await core.Supplier.get(this._options.baseUrl)) ??
-                    (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
-                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/alerts`,
-            ),
-            method: "GET",
-            headers: _headers,
-            queryParameters: requestOptions?.queryParams,
-            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
-            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
-            abortSignal: requestOptions?.abortSignal,
-            fetchFn: this._options?.fetch,
-            logging: this._options.logging,
-        });
-        if (_response.ok) {
-            return { data: _response.body as LatitudeApi.MonitorAlertList, rawResponse: _response.rawResponse };
-        }
-
-        if (_response.error.reason === "status-code") {
-            switch (_response.error.statusCode) {
-                case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                default:
-                    throw new errors.LatitudeApiError({
-                        statusCode: _response.error.statusCode,
-                        body: _response.error.body,
-                        rawResponse: _response.rawResponse,
-                    });
-            }
-        }
-
-        return handleNonStatusCodeError(
-            _response.error,
-            _response.rawResponse,
-            "GET",
-            "/v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts",
-        );
-    }
-
-    /**
-     * Adds a saved-search alert to a monitor and returns the updated monitor. System monitors cannot gain alerts.
-     *
-     * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {LatitudeApi.CreateMonitorAlertBody} request
-     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
-     *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.ForbiddenError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     *
-     * @example
-     *     await client.monitors.createAlert("projectSlug", "monitorSlug", {
-     *         kind: "savedSearch.match",
-     *         source: {
-     *             type: "issue",
-     *             id: "id"
-     *         }
-     *     })
-     */
-    public createAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        request: LatitudeApi.CreateMonitorAlertBody,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
-        return core.HttpResponsePromise.fromPromise(
-            this.__createAlert(projectSlug, monitorSlug, request, requestOptions),
-        );
-    }
-
-    private async __createAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        request: LatitudeApi.CreateMonitorAlertBody,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
-        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
-        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
-            _authRequest.headers,
-            this._options?.headers,
-            requestOptions?.headers,
-        );
-        const _response = await core.fetcher({
-            url: core.url.join(
-                (await core.Supplier.get(this._options.baseUrl)) ??
-                    (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
-                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/alerts`,
-            ),
-            method: "POST",
-            headers: _headers,
-            contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
-            requestType: "json",
-            body: request,
-            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
-            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
-            abortSignal: requestOptions?.abortSignal,
-            fetchFn: this._options?.fetch,
-            logging: this._options.logging,
-        });
-        if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
-        }
-
-        if (_response.error.reason === "status-code") {
-            switch (_response.error.statusCode) {
-                case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 403:
-                    throw new LatitudeApi.ForbiddenError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                default:
-                    throw new errors.LatitudeApiError({
-                        statusCode: _response.error.statusCode,
-                        body: _response.error.body,
-                        rawResponse: _response.rawResponse,
-                    });
-            }
-        }
-
-        return handleNonStatusCodeError(
-            _response.error,
-            _response.rawResponse,
-            "POST",
-            "/v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts",
-        );
-    }
-
-    /**
-     * Returns a single monitor alert by id.
-     *
-     * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {string} alertId - Monitor-alert identifier.
-     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
-     *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     *
-     * @example
-     *     await client.monitors.getAlert("projectSlug", "monitorSlug", "alertId")
-     */
-    public getAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.MonitorAlert> {
-        return core.HttpResponsePromise.fromPromise(this.__getAlert(projectSlug, monitorSlug, alertId, requestOptions));
-    }
-
-    private async __getAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.MonitorAlert>> {
-        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
-        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
-            _authRequest.headers,
-            this._options?.headers,
-            requestOptions?.headers,
-        );
-        const _response = await core.fetcher({
-            url: core.url.join(
-                (await core.Supplier.get(this._options.baseUrl)) ??
-                    (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
-                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/alerts/${core.url.encodePathParam(alertId)}`,
-            ),
-            method: "GET",
-            headers: _headers,
-            queryParameters: requestOptions?.queryParams,
-            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
-            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
-            abortSignal: requestOptions?.abortSignal,
-            fetchFn: this._options?.fetch,
-            logging: this._options.logging,
-        });
-        if (_response.ok) {
-            return { data: _response.body as LatitudeApi.MonitorAlert, rawResponse: _response.rawResponse };
-        }
-
-        if (_response.error.reason === "status-code") {
-            switch (_response.error.statusCode) {
-                case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                default:
-                    throw new errors.LatitudeApiError({
-                        statusCode: _response.error.statusCode,
-                        body: _response.error.body,
-                        rawResponse: _response.rawResponse,
-                    });
-            }
-        }
-
-        return handleNonStatusCodeError(
-            _response.error,
-            _response.rawResponse,
-            "GET",
-            "/v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts/{alertId}",
-        );
-    }
-
-    /**
-     * Removes an alert from a monitor. A monitor must keep at least one alert; system monitors' alerts cannot be removed.
-     *
-     * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {string} alertId - Monitor-alert identifier.
-     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
-     *
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     *
-     * @example
-     *     await client.monitors.deleteAlert("projectSlug", "monitorSlug", "alertId")
-     */
-    public deleteAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<void> {
-        return core.HttpResponsePromise.fromPromise(
-            this.__deleteAlert(projectSlug, monitorSlug, alertId, requestOptions),
-        );
-    }
-
-    private async __deleteAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<void>> {
-        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
-        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
-            _authRequest.headers,
-            this._options?.headers,
-            requestOptions?.headers,
-        );
-        const _response = await core.fetcher({
-            url: core.url.join(
-                (await core.Supplier.get(this._options.baseUrl)) ??
-                    (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
-                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/alerts/${core.url.encodePathParam(alertId)}`,
-            ),
-            method: "DELETE",
-            headers: _headers,
-            queryParameters: requestOptions?.queryParams,
-            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
-            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
-            abortSignal: requestOptions?.abortSignal,
-            fetchFn: this._options?.fetch,
-            logging: this._options.logging,
-        });
-        if (_response.ok) {
-            return { data: undefined, rawResponse: _response.rawResponse };
-        }
-
-        if (_response.error.reason === "status-code") {
-            switch (_response.error.statusCode) {
-                case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                default:
-                    throw new errors.LatitudeApiError({
-                        statusCode: _response.error.statusCode,
-                        body: _response.error.body,
-                        rawResponse: _response.rawResponse,
-                    });
-            }
-        }
-
-        return handleNonStatusCodeError(
-            _response.error,
-            _response.rawResponse,
-            "DELETE",
-            "/v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts/{alertId}",
-        );
-    }
-
-    /**
-     * Updates an alert and returns the updated monitor. On system monitors only the condition may change; on your own monitors any field may.
-     *
-     * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {string} alertId - Monitor-alert identifier.
-     * @param {LatitudeApi.UpdateMonitorAlertBody} request
-     * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
-     *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.ForbiddenError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     *
-     * @example
-     *     await client.monitors.updateAlert("projectSlug", "monitorSlug", "alertId")
-     */
-    public updateAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        request: LatitudeApi.UpdateMonitorAlertBody = {},
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
-        return core.HttpResponsePromise.fromPromise(
-            this.__updateAlert(projectSlug, monitorSlug, alertId, request, requestOptions),
-        );
-    }
-
-    private async __updateAlert(
-        projectSlug: string,
-        monitorSlug: string,
-        alertId: string,
-        request: LatitudeApi.UpdateMonitorAlertBody = {},
-        requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
-        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
-        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
-            _authRequest.headers,
-            this._options?.headers,
-            requestOptions?.headers,
-        );
-        const _response = await core.fetcher({
-            url: core.url.join(
-                (await core.Supplier.get(this._options.baseUrl)) ??
-                    (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
-                `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/alerts/${core.url.encodePathParam(alertId)}`,
-            ),
-            method: "PATCH",
-            headers: _headers,
-            contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
-            requestType: "json",
-            body: request,
-            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
-            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
-            abortSignal: requestOptions?.abortSignal,
-            fetchFn: this._options?.fetch,
-            logging: this._options.logging,
-        });
-        if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
-        }
-
-        if (_response.error.reason === "status-code") {
-            switch (_response.error.statusCode) {
-                case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 403:
-                    throw new LatitudeApi.ForbiddenError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
-                default:
-                    throw new errors.LatitudeApiError({
-                        statusCode: _response.error.statusCode,
-                        body: _response.error.body,
-                        rawResponse: _response.rawResponse,
-                    });
-            }
-        }
-
-        return handleNonStatusCodeError(
-            _response.error,
-            _response.rawResponse,
-            "PATCH",
-            "/v1/projects/{projectSlug}/monitors/{monitorSlug}/alerts/{alertId}",
         );
     }
 
@@ -969,25 +558,22 @@ export class MonitorsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
-     * @param {LatitudeApi.MonitorsListIncidentsRequest} request
+     * @param {Latitude.ListIncidentsMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
-     *     await client.monitors.listIncidents("projectSlug", "monitorSlug", {
-     *         cursor: "cursor",
-     *         limit: 1
-     *     })
+     *     await client.monitors.listIncidents("projectSlug", "monitorSlug")
      */
     public listIncidents(
         projectSlug: string,
         monitorSlug: string,
-        request: LatitudeApi.MonitorsListIncidentsRequest = {},
+        request: Latitude.ListIncidentsMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.PaginatedMonitorIncidents> {
+    ): core.HttpResponsePromise<Latitude.PaginatedMonitorIncidents> {
         return core.HttpResponsePromise.fromPromise(
             this.__listIncidents(projectSlug, monitorSlug, request, requestOptions),
         );
@@ -996,9 +582,9 @@ export class MonitorsClient {
     private async __listIncidents(
         projectSlug: string,
         monitorSlug: string,
-        request: LatitudeApi.MonitorsListIncidentsRequest = {},
+        request: Latitude.ListIncidentsMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.PaginatedMonitorIncidents>> {
+    ): Promise<core.WithRawResponse<Latitude.PaginatedMonitorIncidents>> {
         const { cursor, limit } = request;
         const _queryParams: Record<string, unknown> = {
             cursor,
@@ -1014,12 +600,11 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/incidents`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: { ..._queryParams, ...requestOptions?.queryParams },
             queryString: core.url
                 .queryBuilder()
                 .addMany(_queryParams)
@@ -1032,31 +617,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return {
-                data: _response.body as LatitudeApi.PaginatedMonitorIncidents,
-                rawResponse: _response.rawResponse,
-            };
+            return { data: _response.body as Latitude.PaginatedMonitorIncidents, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -1077,11 +653,12 @@ export class MonitorsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
+     * @param {Latitude.MuteMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.mute("projectSlug", "monitorSlug")
@@ -1089,16 +666,18 @@ export class MonitorsClient {
     public mute(
         projectSlug: string,
         monitorSlug: string,
+        request: Latitude.MuteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
-        return core.HttpResponsePromise.fromPromise(this.__mute(projectSlug, monitorSlug, requestOptions));
+    ): core.HttpResponsePromise<Latitude.Monitor> {
+        return core.HttpResponsePromise.fromPromise(this.__mute(projectSlug, monitorSlug, request, requestOptions));
     }
 
     private async __mute(
         projectSlug: string,
         monitorSlug: string,
+        _request: Latitude.MuteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
+    ): Promise<core.WithRawResponse<Latitude.Monitor>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -1109,12 +688,12 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/mute`,
             ),
             method: "POST",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -1122,28 +701,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Monitor, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -1164,11 +737,12 @@ export class MonitorsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} monitorSlug - Monitor slug (human-readable identifier within the project).
+     * @param {Latitude.UnmuteMonitorsRequest} request
      * @param {MonitorsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.monitors.unmute("projectSlug", "monitorSlug")
@@ -1176,16 +750,18 @@ export class MonitorsClient {
     public unmute(
         projectSlug: string,
         monitorSlug: string,
+        request: Latitude.UnmuteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Monitor> {
-        return core.HttpResponsePromise.fromPromise(this.__unmute(projectSlug, monitorSlug, requestOptions));
+    ): core.HttpResponsePromise<Latitude.Monitor> {
+        return core.HttpResponsePromise.fromPromise(this.__unmute(projectSlug, monitorSlug, request, requestOptions));
     }
 
     private async __unmute(
         projectSlug: string,
         monitorSlug: string,
+        _request: Latitude.UnmuteMonitorsRequest = {},
         requestOptions?: MonitorsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Monitor>> {
+    ): Promise<core.WithRawResponse<Latitude.Monitor>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -1196,12 +772,12 @@ export class MonitorsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/monitors/${core.url.encodePathParam(monitorSlug)}/unmute`,
             ),
             method: "POST",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -1209,28 +785,22 @@ export class MonitorsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Monitor, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Monitor, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,

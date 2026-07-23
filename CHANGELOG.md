@@ -2,6 +2,1429 @@
 
 ## Unreleased
 
+## v0.3.65 - 2026-07-23
+
+### Ingestion
+
+- Protected trace ingestion memory by rejecting payloads over 32 MiB and limiting each ingest process to 64 MiB across 16 in-flight payloads; capacity exhaustion now returns a retryable response (ref: #4195).
+
+## v0.3.64 - 2026-07-22
+
+### Taxonomy
+
+- Added storage and a lazy extraction engine for custom taxonomy facets, caching one-sentence session projections and embedding clear answers. Facets remain unavailable in the app and are not yet connected to taxonomy gardening (refs: #4186, #4192).
+
+### Flaggers
+
+- Stopped frustration, jailbreaking, and NSFW flaggers from running on first-level flagger-generated sessions, and rejected annotation matches based only on nested source material to prevent false signals in Latitude's own flagger telemetry (ref: #4149).
+
+### Traces
+
+- Validated trace and span IDs before affected ClickHouse reads so malformed values return validation errors instead of 500s (ref: #4151).
+
+### Signals
+
+- Restored signal links from email, Slack, and in-app notifications after signal detail pages moved to slugs, including compatibility with previously delivered links that used signal IDs (ref: #4193).
+
+## v0.3.63 - 2026-07-22
+
+### App
+
+- Refreshed authenticated navigation with a collapsible sidebar, reorganized search and usage controls, and improved organization and project switchers. Project switches no longer reload the page, and project slugs can be copied from the header (ref: #4185).
+
+### Telemetry
+
+- Released TypeScript Telemetry 4.0.0 with opt-in provider instrumentation subpaths so consumers only bundle the integrations they import. This breaking release replaced the `instrumentations` object map with an array of factory-created instances and made registration failures observable through `latitude.ready` (refs: #4178, #4189).
+
+### Session intelligence
+
+- Made session-intelligence backfills continue after individual session failures, report completed and failed counts with bounded failed-session IDs, and keep new analysis payloads out of Temporal history (ref: #4190).
+
+## v0.3.62 - 2026-07-22
+
+### Memory
+
+- Shipped Memory observability to every organization by removing the `memoryObservability` feature flag; the Memory page and its surfaces are now public (ref: #4180).
+- Exposed memory observability reads across the public API, MCP, TypeScript/Python SDKs (9.6.0), and CLI (7.6.0): store roll-ups and snapshots (point-in-time and diff), per-record bodies with version history and change diffs, record read/user listings, and per-session and per-trace memory footprints (ref: #4157).
+
+### Signals
+
+- Added agent-dispatch history to the signal detail page (ref: #4182).
+
+### Sessions
+
+- Validated session moment labels with a contextual MiniMax classification pass, with tenant-safe classifier retries (ref: #4167).
+
+### Telemetry
+
+- Added a Prime Intellect telemetry export package for shipping Prime Intellect traces to Latitude (ref: #4164).
+- Fixed Claude Code memory-directory resolution when running inside a git worktree so auto-memory spans still attribute to the right project (ref: #4176).
+
+### Traces
+
+- Added drag-to-resize to the span detail panel in the Spans tab (ref: #4165).
+
+### Chore
+
+- Refreshed the bundled models.dev catalog data (ref: #4087).
+- Added a DNS record for the `jobs` subdomain (ref: #4177).
+
+## v0.3.61 - 2026-07-22
+
+### Signals
+
+- Restored the manual resolve/ignore lifecycle that the monitors-incidents consolidation had collapsed into mute, with regression detection: a new occurrence on a resolved signal reopens it and emits a `signal.regressed` notification (assignee-first, in-app + email + Slack). Mute now only gates notification fan-out and agent dispatch, ignoring auto-mutes, and the Archived tab lists resolved-or-ignored signals (ref: #4132).
+- Switched signal slugs to short JIRA-style `LAT-XY9Z` codes with slug-addressed detail pages (`/signals/$signalSlug`); slugs are assigned once at creation and never regenerated. Experiment top-signals now expose the slug as their `key` across the public API, MCP, and web so an agent can feed it straight into the signal tools (ref: #4154).
+- Used occurrence timestamps in the signals seen column (ref: #4145).
+
+### Flaggers
+
+- Fixed the `process deterministic-flaggers` job failing for every project in production: a forward-incompatible flagger row (from the new-slug backfill migration running ahead of the app deploy) made the whole batch throw. Unrecognized rows are now skipped with a warning, making staged rollouts of new flagger strategies safe regardless of migration/deploy ordering (ref: #4129).
+- Stopped undeclared-tool false positives from truncated Claude Code toolsets: all tool names are preserved when capping oversized schemas, and a call whose response succeeded no longer flags as undeclared (ref: #4141).
+
+### Telemetry
+
+- Added memory-operation spans for Claude Code's own persistent auto memory: Read/Write/Edit tools targeting the auto-memory directory now emit `gen_ai.memory.*` spans (search/upsert/update) into the same ledger and Memory-page surfaces as the SDK memory helper, gated by `LATITUDE_CLAUDE_CODE_MEMORY` (default on) (ref: #4140).
+
+### Traces
+
+- Classified nested Vercel AI SDK wrappers as `agent_step` (excluded from the cost/token rollup, not an agent-graph candidate) while a trace-root wrapper stays `invoke_agent`, fixing false subagent detection and overstated single-response spans (ref: #4147).
+
+### Memory
+
+- Added an onboarding empty state to the Memory page (ref: #4152).
+
+### Taxonomy
+
+- Averaged `crossSampleAri` over all 45 leave-one-tenth-out fold pairs for a reproducible, order-robust metric and re-derived the stability floor (0.8 → 0.75); calibration/offline only, the production shadow path is unaffected (ref: #4156).
+- Fixed the shadow-span Datadog config to target `resource_name` (ref: #4148).
+
+## v0.3.60 - 2026-07-21
+
+### API
+
+- Added a `sessions` endpoint group mirroring `traces`, mounted under `/v1/projects/{projectSlug}/sessions`: list sessions (filters + semantic query, cursor-paginated), session analytics (per-metric totals/medians with a 12h bucket series), session detail, the session's traces, and session-scoped signals (list and by-slug). Session `filters` match the web session UI via a new `SessionFilterSet` that adds the session-only `moments`/`topics` fields with taxonomy topic-subtree expansion. Exposed across HTTP, MCP, and the TypeScript/Python SDKs (9.4.0) and CLI (7.4.0) (ref: #4133).
+
+## v0.3.59 - 2026-07-20
+
+### Memory observability
+
+- Added memory-operation spans to the TypeScript and Python SDKs (both bumped to 3.7.0): OTEL GenAI memory operations (create/update/upsert/delete/search and store create/delete) with `gen_ai.memory.*` attributes, latency/error capture, and opt-in record-content capture (ref: #4128).
+- Added record change diffs to memory spans and a collapsible "Memory changes" section on session and trace detail: per-record before/after diffs grouped by store, with GitHub-style context folding and an "Open in Memory" deep link to the full record (ref: #4127).
+
+### Taxonomy
+
+- Added adaptive taxonomy clustering with `off`/`shadow`/`enforced` modes and a per-org `adaptiveTaxonomyClustering` flag; shadow mode computes the adaptive tree alongside static for comparison without changing persisted taxonomy, with bounded APM telemetry for a fleet-wide static-vs-adaptive view. Enabled in shadow mode on production; a no-op for staging and self-hosted deployments (ref: #4123).
+
+### Ingestion
+
+- Fixed a malformed or missing `traceId` crashing an entire span batch: invalid spans are now rejected individually via the existing partial-success path, both on transform and on the sampling-key fallback (ref: #4101).
+
+### Flaggers
+
+- Removed the old per-trace flagger pipeline, drained since the move to session-level flagging (ref: #4126).
+
+## v0.3.58 - 2026-07-20
+
+### Flaggers
+
+- Moved automatic issue detection from per-trace to per-session: flaggers now judge the full conversation once a session settles and its semantic analysis has run, in two passes — free deterministic screening on every session, LLM classification only for session×flagger pairs that earn it (ref: #4078).
+- Added a shared hint catalog (tool errors, tool loops, cost/latency/token outliers vs the project baseline, semantic moment labels, and tuned text patterns): sessions with fired hints skip sampling and go straight to the LLM under per-flagger rate budgets, and all hints are shown to the classifier as leads. Positive signals (user satisfaction, resolution) never trigger and only shrink the sampled budget.
+- Added three flaggers: Bluffing (assistant proceeds past a failed tool call as if it succeeded), PII leakage (assistant output exposes personal data), and Incompletion (a task objectively not delivered, judged only on responses the user has reacted to). Tool call errors now also flags calls to tools missing from the declared toolset. New flagger rows are backfilled for existing projects, and the flagger enums are exposed through the public API and SDKs.
+- Deduplicated flags by anchored-message content hash so session re-screens, model re-wording, and context compaction never duplicate a flag or a charge; one flagger can still flag several distinct parts of a long conversation.
+- The old per-trace flagger pipeline remains registered drain-only and is removed in a follow-up once production has drained it.
+
+### Conversation intelligence
+
+- Added `user_correction` and `stalling` moment kinds; sessions re-analyze on their next trace after the detector version bump (ref: #4078).
+
+## v0.3.57 - 2026-07-20
+
+### Memory observability
+
+- Added memory record history and JSON diff views so changes to a record can be reviewed directly from the Memory page (ref: #4120).
+
+### Taxonomy
+
+- Added adaptive taxonomy gardening with staged observation swaps, full-window reassignment, and lineage updates to keep generated taxonomy clusters current (ref: #4121).
+
+### Telemetry
+
+- Rejected oversized OTLP trace and span IDs before ClickHouse insertion so invalid telemetry is handled cleanly at ingestion (ref: #4020).
+
+### Traces
+
+- Deduped ClickHouse reads for memory ledger rows and latest output trace IDs when duplicate span rows exist (refs: #4100, #4122).
+
+### Agent dispatch
+
+- Skipped dispatch work gracefully when the related organization or incident has already been deleted (ref: #4099).
+
+## v0.3.56 - 2026-07-20
+
+### Memory observability
+
+- Added the project Memory page with store lists, record detail views, access views, and per-user memory store visibility (ref: #4083).
+
+### Experiments
+
+- Improved experiment creation and analysis with expanded presets, autofilled filter builders, metric tooltips, and updated experiment metric schemas in the API and SDKs (ref: #4085).
+
+### Monitors
+
+- Fixed recommended tool failure monitor creation by sharing preset and alert-form handling between tool and user monitor flows (ref: #4088).
+
+### Taxonomy
+
+- Reworked taxonomy clustering around a pure relative divisive builder for more consistent hierarchical taxonomy generation (ref: #4084).
+
+### Telemetry
+
+- Stripped orphan tool responses after input message truncation so telemetry exports do not retain invalid tool-only context (ref: #4044).
+- Updated the Hermes telemetry plugin to stop exporting empty conversation placeholders while preserving tool-only assistant turns (ref: #4089).
+
+### Traces
+
+- Rejected `gtePercentile` on every trace filter field except `duration`, `ttft`, and `cost`, so invalid filters return 400 instead of 500 (ref: #4086).
+
+### Security
+
+- Patched dependency advisories for Hono CORS, protobufjs denial of service, Next.js, Undici, ws, shell-quote, tmp, and form-data (refs: #4091, #4092, #4093, #4094, #4095, #4096, #4097, #4098).
+
+### Documentation
+
+- Added the self-healing agents documentation overview page (ref: #3951).
+
+## v0.3.55 - 2026-07-17
+
+### Evaluations
+
+- Truncated live-evaluation judge prompts to fit the model's context window so large sessions no longer fail both primary and Bedrock fallback calls (ref: #4081).
+
+### Signals
+
+- Prevented late signal-generation progress writes from overwriting the terminal done/error result and leaving the UI stuck pending (ref: #3943).
+
+### Agent dispatch
+
+- Scoped Cursor/Claude/Linear/Webhook connect from a project's integrations page to project overrides instead of org-wide dispatch defaults (ref: #3984).
+
+### Organizations
+
+- Stopped claimed temporary organizations from being reaped after claim failed to clear `expires_at` on upsert (ref: #3841).
+
+### Traces
+
+- Deduped span rows in session conversation and trace message queries, and stopped false onboarding gates when spans were duplicated (refs: #4005, #3986).
+
+### Memory observability
+
+- Re-keyed memory tables and APIs on `store_id` alone, dropping the derived `scope` field and the SDK `latitude.memory.scope` attribute (ref: #4074).
+
+## v0.3.54 - 2026-07-16
+
+### Navigation
+
+- Preserved project and organization names beginning with digits, `#`, or `*` instead of rendering their first character as an emoji in navigation and command palettes (ref: #4063).
+
+## v0.3.53 - 2026-07-16
+
+### Memory observability
+
+- Added per-record memory footprints to session and trace details, showing read, added, and removed tokens with a hover breakdown grouped by memory store (ref: #4053).
+
+### Billing
+
+- Charged deterministic live-evaluation scans at 1 credit instead of 30; evaluations that call `llm()` remain at 30 credits (ref: #4055).
+
+## v0.3.52 - 2026-07-16
+
+### Custom Behaviors
+
+- Unified global and custom-behavior taxonomy gardening into one workflow: scoped gardening with global-parity trends, auto-gardening on create, and custom behaviors merged into the Behaviours view (refs: #4037, #4052).
+
+### Traces
+
+- Validated trace filter fields at the API boundary and added an `endTime` filter (ref: #4021).
+
+### Signals
+
+- Skipped markdown links when validating flagger output schemas (ref: #4038).
+
+### Claude Code telemetry
+
+- Installed the Stop hook with `@latest` so it self-updates (ref: #4049).
+
+### Reliability
+
+- Raised the production web service minimum capacity (ref: #4045).
+
+### Documentation
+
+- Fixed the Detection Methods documentation page.
+
+## v0.3.51 - 2026-07-15
+
+### Experiments
+
+- Added project-scoped Experiments: a container that compares up to 10 variants (each a filter set, search query, and time range) against a baseline across every session, user, tool, signal, and behaviour metric Latitude computes, with a variant-comparison table, shared population editors, and list/create/rename/delete/import flows (ref: #4017).
+- Let users create experiments straight from a saved search, added a "Compare this search" toggle and Monitor/Compare row actions to the saved-search UI, and added creation presets (A/B test, versions, seasonal, failures, outliers) to the experiment create modal (ref: #4034).
+
+### Signals
+
+- Introduced a session-end trigger so signal matching and conversation analysis run once per session after it settles, collapsing a session's trace-ends into a single firing against its latest trace instead of dispatching per trace (ref: #4040).
+- Moved the signal edit button beside the signal title (ref: #4039).
+
+### Custom Behaviors
+
+- Wired up the Generate flow for custom behaviors and the per-behavior scoped taxonomy tree, added a generation status indicator, and added entry points to create a custom behavior from the Sessions view or a saved search (ref: #4027).
+
+### Memory observability
+
+- Added ingest support for GenAI memory operation spans and a git-style, content-addressed memory ledger that materializes memory events into ClickHouse at the settled trace boundary, with point-in-time snapshot reconstruction (groundwork, refs: #4035, #4041).
+
+### Claude Code telemetry
+
+- Recovered subagent spans that were previously lost for parallel subagents and on the final llm_request of a turn (ref: #4028).
+- Made the Hermes plugin flush on session end and split its api_request and llm_call hooks (refs: #4029, #4030).
+
+### Authentication
+
+- Protected magic links from being consumed by email link scanners (ref: #4026).
+
+### Reliability
+
+- Tolerated non-array OTLP span attributes during ingest instead of failing (ref: #4031).
+
+## v0.3.50 - 2026-07-14
+
+### Subagent visibility
+
+- Detected Claude Code subagents by classifying interaction spans as agent invocations, so the agent graph roots each turn on a real boundary and surfaces Task subagents with proper names (ref: #4022).
+
+### Spans
+
+- Colored the span-tree waterfall bars by operation: agent invocations use the accent color, chat spans a muted accent, and successful tool calls green, with errored spans still red (ref: #4023).
+
+### Custom Behaviors
+
+- Added the project custom-behaviors authoring UI (list, create/edit modal, live eligible-session preview, active-filter summaries), gated behind a feature flag and hidden by default until the Generate flow ships (ref: #4018).
+
+### Reliability
+
+- Bounded ClickHouse memory usage for project span queries to prevent out-of-memory failures (ref: #4019).
+
+## v0.3.49 - 2026-07-14
+
+### Subagent visibility
+
+- Added agent breakdowns and nested conversation cards that show subagent handoffs, activity, costs, duration, models, and runs, with in-place navigation between parent and subagent conversations (ref: #4014).
+
+### Organization members
+
+- Let owners and admins choose whether an invited organization member joins as a member or admin (ref: #4013).
+
+### Custom Behaviors
+
+- Added scoped taxonomy gardening for custom behaviors, building and refreshing behavior-specific trees from matching session samples without changing the global taxonomy (ref: #4010).
+
+### Reliability
+
+- Prevented annotation formatting from failing when malformed GenAI messages are missing their parts (ref: #4011).
+
+## v0.3.48 - 2026-07-13
+
+### Monitors
+
+- Made monitor targets and incident conditions immutable after creation across the web, API, CLI, and SDKs. Existing monitors can still update their name, description, and severity (ref: #3947).
+
+### Notifications
+
+- Routed signal notifications to the assigned user when present and kept targeted notifications out of shared Slack channels (ref: #4009).
+
+### Claude Code Wrapped
+
+- Added skill usage totals, top skills, and per-workspace skill breakdowns to Claude Code Wrapped reports and emails (ref: #3978).
+
+### Reliability
+
+- Fixed classifier flaggers producing truncated structured output that could fail JSON parsing (ref: #3910).
+- Fixed trace, session, and session-intelligence time filters for timestamps containing timezone offsets (ref: #4007).
+- Fixed newly created datasets temporarily hiding their imported rows (ref: #4006).
+
+### API and ingestion
+
+- Raised public API and trace-ingestion rate limits to support higher normal throughput (ref: 1deab1b9f, ebff4940f).
+- Rejected OAuth access tokens as soon as their user no longer belongs to the authorized organization (ref: #3917).
+
+### Models
+
+- Refreshed the bundled models.dev model catalog (ref: #3987).
+
+## v0.3.47 - 2026-07-13
+
+### Traces
+
+- Defaulted Sessions/Traces and Tools/Signals/Users time filters to All time, with bounded chart windows so older project data is visible without expensive trend scans (ref: #3955).
+- Fixed "Clear dates" so it removes date bounds instead of restoring the previous default window, and stopped showing false onboarding states for projects that only have older traces (ref: #3955).
+- Added session-wide span links in the Conversation tab so messages and tool calls can jump to spans from earlier traces in the same session (ref: #3965).
+- Reduced ClickHouse memory usage for trace detail reads by loading trace summaries separately from source-span message content (ref: ad54c4154).
+
+### Telemetry
+
+- Released `@latitude-data/telemetry` 3.6.0 with `createCodemodeTelemetry()` for Cloudflare Think Codemode tracing, including nested tool-call spans, capture/redaction options, and error recording (ref: #3956).
+- Updated the Cloudflare Think telemetry guide and example app for Codemode tracing and local verification (ref: #3956).
+
+### Models
+
+- Refreshed the bundled models.dev model catalog (ref: #3983).
+
+## v0.3.46 - 2026-07-10
+
+### Traces
+
+- Added a session-wide grouped Spans tab in the session detail drawer (ref: #3962).
+- Fixed the "Waiting for your first trace" screen getting stuck on projects that have only older traces (or a backfilled `first_trace_at`): the onboarding now confirms emptiness with an unwindowed trace count instead of trusting the best-effort `first_trace_at` flag (ref: #3964).
+
+## v0.3.45 - 2026-07-10
+
+### Traces
+
+- Stopped showing the "Waiting for your first trace" onboarding for projects whose traces all predate the default 30-day window. They now open the normal Sessions/Traces view with the time filter available, so the range can be widened to reveal older data (ref: #3961).
+
+### Behaviours
+
+- Removed the breadcrumb row (Back button + topic-path chips) above the behaviours trajectory chart (ref: #3958).
+
+### Models
+
+- Refreshed the bundled models.dev model catalog (ref: #3957).
+
+## v0.3.44 - 2026-07-09
+
+### Agent Dispatch
+
+- Added org-default dispatch configuration with per-project overrides: dispatch repos now resolve from an org-wide default that any project can override or reset, replacing the single flat config (ref: #3952).
+
+### Signals
+
+- Showed freshly created signals immediately even before they have any occurrences (ref: #3945).
+- Removed the ghost modal left behind after confirming a mute-signal action (ref: #3946).
+- Removed the redundant "Me" option from assignee selectors (ref: #3948).
+
+## v0.3.43 - 2026-07-09
+
+### Monitors
+
+- Gave threshold monitors an open/close incident lifecycle: a sustained breach now opens a single incident and dedups until a 30-minute exit dwell closes it, instead of emailing on every ~5-minute sweep. Editing a monitor with an open incident now evicts the stale incident (ref: #3949).
+
+### Showcase
+
+- Flipped onboarding to the shared read-only showcase: new orgs get only their real empty default project and land on `/projects/lat-demo` when the showcase resolves, with a fallback to their own default project. Retired the old per-signup/claim demo-project seeding machinery (ref: #3940).
+
+## v0.3.42 - 2026-07-09
+
+### Signals
+
+- Generated signals with a research agent instead of a fixed prompt loop, giving richer investigation output (ref: #3922).
+
+### Agent Dispatch
+
+- Skipped agent dispatch for user-created signals on `signal.discovered` so only auto-discovered signals trigger dispatch (ref: #3925).
+- Improved the signal dispatch prompt fallback (ref: #3913).
+
+### Notifications
+
+- Enriched signal discovery notification messages (ref: #3937).
+
+### Evaluations
+
+- Surfaced GEPA optimization failures and added support for single-example signals (ref: #3935).
+
+### Showcase
+
+- Added read-only UI variance and org-wide showcase dismissal (S6) (ref: #3918).
+- Added a backoffice showcase section for managing the demo project (S7) (ref: #3919).
+- Scoped project-section Postgres domains onto `withScopedPostgres` (ref: #3909).
+
+### API
+
+- Restored `getApiKey` as a tool and converted all handler-form operations to execute-form (ref: #3938, #3934).
+- Rejected `gtePercentile` on span row filters and fractional values on integer ClickHouse filter fields (ref: #3839, #3924).
+
+### Performance
+
+- Reused instruction extractions across similar system prompts, normalized the instruction-extractor cache key, and raised the verbatim threshold to cut flagger work (ref: #3928, #3926).
+
+### Web
+
+- Optimized the public design system (ref: #3929).
+
+### Telemetry
+
+- Tracked self-hosted deployments in PostHog.
+
+### Infra
+
+- Tuned production ECS memory and autoscaling.
+
+### Maintenance
+
+- Updated bundled models.dev data, refreshed the knip configuration, and bumped `@temporalio/*` to 1.17.5 for a workflow isolation fix (ref: #3895, #3921).
+
+## v0.3.41 - 2026-07-07
+
+### Agent Dispatch
+
+- Enabled dispatching agents directly from monitor incidents, building the dispatch context and prompt from incident data.
+
+### Showcase
+
+- Added a reserved-slug loader and client-collection merge for the showcase project, tightening org-scope resolution across web data domains (ref: #3897).
+
+### API
+
+- Extracted API operation definitions into a transport-neutral `@repo/operations` package shared across HTTP, MCP, SDK, and CLI consumers (ref: #3890).
+
+### Docs
+
+- Documented manual signal creation and aligned the "Issues" terminology to "Signals" across the public docs (ref: #3906).
+
+## v0.3.40 - 2026-07-07
+
+### Search
+
+- Removed the legacy trace-search chunk embedding path and its feature flag, making semantic trace search and highlights use shared message embeddings exclusively (ref: #3904).
+
+### Web
+
+- Kept empty or loading trace lists on the animated connection blank slate so unconnected projects consistently guide users toward instrumentation, even after onboarding has been marked complete (ref: #3905).
+
+### Agent Dispatch
+
+- Updated Cursor dispatch to the v1 agents API payload, deterministic Cursor agent IDs, and immediate config cache updates after connecting a Cursor integration (ref: #3907).
+
+## v0.3.39 - 2026-07-07
+
+### Showcase
+
+- Added automated showcase project regeneration, atomic project swaps, daily cron scheduling, stale-project retirement, and self-healing cleanup so the demo project can refresh safely without leaving old generated projects behind (ref: #3887, #3898).
+
+### Telemetry
+
+- Added Pydantic AI telemetry onboarding, docs, and provider icon support for users instrumenting Python agents with Latitude (ref: #3893).
+
+### Reliability
+
+- Hardened flagger execution so prompt-too-long model failures are treated as no-match results and malformed message parts are skipped instead of crashing flagger runs (ref: #3889, #3874).
+- Serialized concurrent claim-token redemption to prevent duplicate organization-claim races (ref: #3899).
+
+### Web
+
+- Fixed searchable selects and rich-text interactions inside modals, including the members role modal, so popovers and editor focus remain usable while dialogs are open (ref: #3901, #3903).
+- Removed the agent-dispatch feature flag now that manual dispatch is generally available (ref: #3877).
+
+### Maintenance
+
+- Updated CI, Docker build, npm, Python telemetry, and OpenTelemetry dependency versions used by the workspace and release pipelines (ref: #3775, #3853, #3854, #3856, #3857, #3858, #3859, #3860, #3861, #3862, #3864, #3865).
+
+## v0.3.38 - 2026-07-06
+
+### Signals
+
+- Added a "Send to agent" action on the signal detail page, letting users copy an investigation prompt for local coding agents or manually dispatch the signal to configured cloud integrations such as Cursor Cloud, Claude Code Cloud, Linear, and webhooks (ref: #3845).
+
+### Agent Dispatch
+
+- Added the manual dispatch trigger path for signals, including prompt generation, per-send idempotency keys, dispatch-history labeling, project/config validation, and typed failure results for manual cloud sends (ref: #3845).
+
+### Web
+
+- Polished the integration settings and shared select/modal primitives used by agent-dispatch flows, including searchable selects inside modals, keyboard navigation helpers, provider icons for Cursor/Codex, and copyable dispatch-history errors (ref: #3845).
+
+## v0.3.37 - 2026-07-06
+
+### API and SDK
+
+- **Breaking:** collapsed the four lossy `TraceDetail` message fields (`systemInstructions`, `inputMessages`, `outputMessages`, `allMessages`) into a single `conversation` field on the `getTrace` endpoint. Real multi-turn agent traces showed `inputMessages` only captured the first turn and `outputMessages` only the last, dropping every intermediate turn and tool call, while `allMessages` was already a strict superset; it is now renamed `conversation`. Per-span message fields are unchanged. `openapi.json`, `mcp.json`, the TypeScript SDK (8.0.0), Python SDK (8.0.0), and CLI (6.0.0) were regenerated and bumped as breaking (ref: #3884).
+
+### Signals
+
+- Stopped semantic-similarity live and preview evaluations from persisting permanent false negatives: they now gate on real session embeddings for the active model and skip cleanly (without recording a failure) when vectors are missing, instead of scoring against absent message occurrences (ref: #3872).
+- Reworked the describe-signal generation UX around a new WebGL shader-animated `AgentTextarea` — a pulsing brand-color border with a pools-and-tide loading fill that keeps the textarea's own background in both themes, tuned for typing latency. "Generate signal" and "Configure manually" moved to the modal footer, the prompt stretches to full body height, and staged progress is mocked across the ~30s run until the worker streams real step events (ref: #3882).
+
+### Web
+
+- Re-enabled the in-app changelog sidebar and banner, now backed by a static JSON changelog API served from the marketing site; the old `@platform/changelog-framer` was replaced by a new `@platform/changelog-api` reader (ref: #3875).
+
+### Showcase
+
+- Added the showcase resolver chokepoint (S2): a `resolveShowcaseUseCase` and `resolveShowcaseAccess` server helper resolve the pinned showcase org/project from the `latitude.showcase` pointer (Redis-cached) with authz gating on the org's `wantsShowcase` flag. Behavior-neutral — nothing wires it yet (ref: #3881).
+
+### Design system
+
+- Reused the main app's favicon on the public design-system site, which previously served none (ref: #3883).
+
+### Infrastructure
+
+- Added the `design.latitude.so` Vercel CNAME to production DNS (ref: #3888).
+
+## v0.3.36 - 2026-07-06
+
+### Web
+
+- Showed the onboarding illustrations in the account-claim flow by extracting the onboarding right-pane into a shared component reused by both the onboarding and claim screens (ref: #3879).
+
+### Showcase
+
+- Landed the first backend slice of the showcase demo project: a new `@domain/showcase` package with a pointer table, repository, and a guarded create-showcase use-case, plus the Postgres migration. Backend-only groundwork with no user-facing behavior yet (ref: #3830).
+
+## v0.3.35 - 2026-07-06
+
+### Design system
+
+- Launched a standalone public design system site at `design.latitude.so`, extracted from the web app into its own Vite + TanStack Router SPA (`apps/design-system`); the in-app design-system routes were removed (ref: #3834).
+
+### Docs and onboarding
+
+- Published agentic onboarding docs: a new getting-started coding-agent guide covering zero-account and existing-account paths plus the claim flow, a README CLI mention, and in-app coding-agent onboarding copy; the `agentic-experience` spec was retired into `dev-docs/agentic-onboarding.md` (ref: #3876).
+
+### Web
+
+- Showed the billing usage counter in red when a free plan reaches its included credit limit, not only on metered overage (ref: #3878).
+- Laid groundwork for the showcase demo project: central mutation-error handling, a read-only write-gate middleware, a `ProjectScope` context, a globally reserved `lat-demo` project slug, and a per-org `wantsShowcase` flag set at org creation. Behavior-neutral today — no new toasts or blocked writes until the showcase scope is enabled (ref: #3822, #3829, #3831, #3828, #3827).
+
+### Reliability
+
+- Guarded trace search formatting against spans whose message parts are missing, preventing formatter crashes (ref: #3873).
+
+### Models
+
+- Updated the bundled `models.dev` data snapshot (ref: #3852).
+
+## v0.3.34 - 2026-07-05
+
+### Reliability
+
+- Resolved `quickjs-emscripten` at API runtime instead of bundling it, so tsdown no longer inlines the emscripten glue and signals script runs no longer die with "require is not a function" (ref: #3840).
+- Made Cursor agent-dispatch jobs idempotent and retryable: the Cursor adapter now sends the `agentId` as an idempotency key so retries and 409 conflicts dedupe instead of spawning duplicate agents/PRs, send jobs gained attempts/backoff, and claimed ledger rows are marked failed on final transport exhaustion (ref: #3808).
+- Bounded session span-list reads to stop ClickHouse OOMs: `listBySessionId` no longer returns the dynamic attribute maps, the membership coalesce uses bare column equalities so the session/trace bloom-filter skip indexes prune granules, and a 4 GB single-threaded formatting cap is applied to all multi-span reads (ref: #3850).
+
+### Models
+
+- Updated the bundled `models.dev` data snapshot (ref: #3772).
+
+### Infrastructure
+
+- Pointed the `latitude.so` apex and `www` at Vercel and added DNS records for public pages (ref: 26ee482, bd01561).
+
+## v0.3.33 - 2026-07-04
+
+### Web
+
+- Disabled the changelog sidebar UI while the API-backed changelog collection is being updated, preventing the web app from querying or showing the incomplete feature (ref: #3833).
+
+## v0.3.32 - 2026-07-04
+
+### Signals
+
+- Added describe-first agentic signal creation: users describe a behavior in plain language and a worker-backed generator drafts a full signal (detector, judge script, scope) with sandbox validation, preview, and polling-based progress in the Advanced detector tab (ref: #3826).
+- Added semantic-similarity conditions to rule detectors so signals can match meaning, not just exact strings; generated evaluation scripts now embed against scoped sessions and score by cosine similarity (ref: #3818).
+- Removed the columns toggle and "My signals" controls from the signals list (ref: #3820).
+
+### Onboarding
+
+- Added temporary onboarding accounts: a bootstrap endpoint mints a short-lived account and a `/claim/:token` flow lets users claim it into a permanent org (LAT-704) (ref: #3823).
+- Added a global rate limit on the account bootstrap endpoint to guard against abuse (ref: #3825).
+
+### API and MCP
+
+- Improved the MCP query system for dashboard building: span listing gained ordering fields, trace/session/span `p95` metrics became configurable percentile metrics, and agent-dispatch docs and tooling cover building dashboards from agents (ref: #3765).
+
+### Web
+
+- Fixed the setup guide button stretching out of its container in the integration detail section (ref: #3838).
+
+### Reliability
+
+- Retried failed outbox polls so the consumer survives transient DB errors instead of stalling (ref: #3836).
+- Externalized `quickjs-emscripten` in the API and workflows bundles so the WASM loader resolves at runtime instead of breaking the build (ref: #3837, #3819).
+
+## v0.3.31 - 2026-07-02
+
+### Signals
+
+- Added AI-authored custom evaluation scripts to the signal builder, including worker-backed generation, sandbox validation against scoped sessions, and polling-based progress in the Advanced detector tab (ref: #3813).
+- Refreshed the signal creation flow with detector method selection, clearer explanations of rule, LLM-judge, and custom-script detectors, and more direct edit/test paths (ref: #3813).
+
+### Docs and planning
+
+- Added the LAT-721 observability migration tool spec for self-serve historical imports from Langfuse, LangSmith, and Braintrust (ref: #3805).
+
+### Web
+
+- Declared the web app's `quickjs-emscripten` runtime dependency so QuickJS-backed evaluation script paths resolve reliably in production (ref: 2a89754).
+
+## v0.3.30 - 2026-07-02
+
+### API and SDKs
+
+- Added the `querySpans` API/MCP surface for listing spans across traces, with matching TypeScript and Python SDK support (ref: #3789).
+
+### Traces and spans
+
+- Recovered Vercel AI SDK v6 output when `gen_ai.input.messages` shadowed the Vercel span parser (ref: #3816).
+
+### Web
+
+- Fixed session conversations to scroll to semantic search highlights (ref: #3800).
+- Fixed the orphan-session blankslate so it shows when the LLM activity filter hides all rows (ref: #3801).
+- Externalized `quickjs-emscripten` so its WASM resolves correctly at runtime (ref: #3785).
+
+### Onboarding
+
+- Optimized onboarding and added in-app support chat help (ref: #3779).
+
+### Docs and tooling
+
+- Added the Latitude CLI reference and made SDK/CLI generation deterministic (ref: #3809).
+- Marked SOC 2 as certified across the security compliance pages (ref: #3792).
+
+### Internal
+
+- Repaired the Drizzle snapshot chain after the incidents consolidation (ref: #3811).
+
+## v0.3.29 - 2026-07-01
+
+### Analytics
+
+- Added the composable `queryAnalytics` API/MCP surface for traces, sessions, spans, scores, behaviors, and moments, with metric, breakdown, time-bucket, ordering, and SDK support (ref: #3768, #3778, #3780, #3781).
+
+### Signals and agent dispatch
+
+- Added the signal builder UI for creating, editing, previewing, and renaming signals from the web app, backed by worker-side preview support and rule detector editing (ref: #3773).
+- Added signal-to-agent dispatch with integrations for Claude Code, Cursor, Linear, and webhooks, plus settings UI, worker processing, documentation, and idempotent dispatch handling (ref: #3753).
+- Returned a validation error instead of crashing when signal list requests ask for more than 100 items (ref: #3786).
+
+### SDKs and CLI
+
+- Upgraded generated TypeScript and Python SDKs to Fern v7, renamed public SDK types to the Latitude namespace, added API-key auth updates, and introduced the generated `latitude` CLI with publishing workflows (ref: #3784).
+
+### Evaluations and sandbox
+
+- Exposed `conversation` as a top-level sandbox global alias for `session.conversation` (ref: #3770).
+- Surfaced real GEPA RPC errors in evaluation optimization instead of collapsing them to an unexpected remote RPC error (ref: #3790).
+
+### Docs and UI
+
+- Added voice-agent observability docs for ElevenLabs, LiveKit, and Vercel AI SDK v7 (ref: #3750).
+- Fixed GenAI conversation rendering when message parts are missing (ref: #3791).
+- Truncated legacy taxonomy observation IDs before domain conversion to avoid ClickHouse-backed observation crashes (ref: #3755).
+
+## v0.3.28 - 2026-07-01
+
+### Signals
+
+- Renamed the public signal impact field `affectedTracesPercent` to `affectedSessionsPercent` (a `[0,1]` fraction) across the list and detail API responses, `openapi.json` / `mcp.json`, and the generated TS and Python SDKs, and aligned the detail path to compute affected sessions / total project sessions so list and detail now report the same metric. Also populated `session_id` in the demo seed scores and spans so the sessions-based impact metric no longer reads 0 (ref: #3767).
+
+## v0.3.27 - 2026-07-01
+
+### Sandbox
+
+- Renamed the sandbox nav section from "Traces" to "Sessions" to match the live project navigation, fixed score filters so they work in the sandbox (reading the current user from a route-independent session hook), and scoped render errors so a filter crash no longer takes down the whole app (ref: #3769).
+
+### Onboarding
+
+- Updated the onboarding flow: deprecated the stack-selection step, refreshed setup instructions, and widened backoffice ActionRow to accept React 19 provider icon components (ref: #3743).
+
+### Signals
+
+- Stopped the signals list priority sections (Urgent → … → No priority) from fragmenting across paginated scroll: sections are now grouped contiguously in a fixed order, the virtualizer keys rows stably across page growth, and loaded pages are deduped by signal id (ref: #3740).
+
+## v0.3.26 - 2026-06-30
+
+### API and MCP
+
+- Added MCP tool annotations (`readOnlyHint`/`destructiveHint`, with optional `idempotentHint`/`openWorldHint`) to all 91 MCP-eligible API endpoints, so MCP clients can tell read-only, additive, and destructive tools apart. Annotations surface only in `mcp.json` and the live MCP transport; `openapi.json` and the generated SDK are unchanged (ref: #3766).
+
+### Evaluations
+
+- Added a use case to generate sandbox evaluation scripts from a freeform prompt: each candidate is smoke-tested against a representative session and regenerated on sandbox failure (up to 3 attempts), with generation telemetry routed to a dedicated dogfood project (ref: #3763).
+
+## v0.3.25 - 2026-06-30
+
+### Telemetry SDKs and docs
+
+- Added a Python Latitude tracer helper with compatibility fixes and updated SDK documentation (ref: 9c8d37e61, 153327065).
+
+### Traces and sessions
+
+- Added in-conversation search and keyboard navigation to session and trace conversation details (ref: #3709).
+- Renamed the annotation empty-state copy from issues to signals (ref: 43fd86952).
+
+### Operations
+
+- Retried transient ClickHouse `ECONNRESET` read failures and tuned keep-alive handling to reduce query flakiness (ref: #3745).
+- Updated the bundled `models.dev` provider catalog and ignored local `.conductor` agent state (ref: #3752, 15d3a9372).
+
+## v0.3.24 - 2026-06-29
+
+### Signals and evaluations
+
+- Added deterministic rule-based signal evaluations across the API, MCP, TypeScript SDK, and Python SDK, including validated condition schemas and generated pure evaluation scripts (ref: #3739).
+- Kept legacy cached clients working by coercing incident `sourceType: "issue"` requests to signals instead of rejecting them (ref: #3741).
+
+### Scores and trace filtering
+
+- Added trace and session filters for human annotation author and "has annotations", backed by ClickHouse `annotator_id` score analytics for new score rows (ref: #3742).
+
+### Telemetry SDKs and docs
+
+- Added telemetry capture lifecycle APIs, simplified AI SDK tracer usage, fixed Python wrapper-mode coroutine context isolation, and documented Cloudflare Think setup paths (ref: 5db2ba85e).
+
+## v0.3.23 - 2026-06-29
+
+### Datasets
+
+- Added dataset custom columns with web, API, MCP, CSV export, and SDK support, including column add, rename, reorder, soft-delete, restore, and custom row cell editing (ref: #3686, #3696).
+- Added API, MCP, TypeScript SDK, and Python SDK support for partially editing dataset rows, including custom-column merges that preserve omitted cells (ref: #3687, #3695).
+
+### Evaluations and scores
+
+- Moved evaluation scripts to the session runtime context so judges read the frozen `session` payload, including session-wide conversation, trace rollups, metrics, models, providers, finish reasons, and tool projections (ref: #3734).
+- Replaced the Annotations tab in trace and session drawers with a Scores tab that lists annotation, custom, and evaluation scores while preserving annotation editing and legacy tab links (ref: #3737).
+
+### Monitors and telemetry
+
+- Added a cache-hit-rate monitor metric for token analytics so trace monitors can alert when prompt cache reads drop below a threshold (ref: #3654).
+- Updated the bundled `models.dev` provider catalog (ref: #3712).
+
+### Operations
+
+- Refreshed CI, workflow, and runtime dependencies including ClickHouse, Turbo, Radix Select, AWS S3 presigning, Python tooling, and GitHub Actions runners (ref: #3718-#3733).
+
+## v0.3.22 - 2026-06-29
+
+### Signals
+
+- Scoped signal score lookup and sort subqueries by organization and project so signal lists, occurrence counts, last-seen ordering, and affected-session counts stay tenant-safe (ref: e3f25cfa2).
+
+## v0.3.21 - 2026-06-28
+
+### Monitors and incidents
+
+- Consolidated monitor alerts into the source-keyed incident and monitor-rule model, including live saved-search targets, normalized API/MCP/SDK responses, incident lifecycle fixes, notification fan-out updates, and a one-open-incident-per-source database guard (ref: #3665).
+- Removed the obsolete signal monitors tab and redirected the old route to the main monitors list now that signal escalation is owned by signals (ref: cbea6a3fa).
+
+### Telemetry and ingestion
+
+- Completed an end-to-end telemetry integration QA pass, fixing GenAI/OpenInference parsing, tool-call pairing, OpenRouter metadata, Bedrock cost lookup, Vercel AI SDK v7 system-instruction rollups, and refreshing TypeScript/Python telemetry examples and onboarding snippets (ref: #3711).
+- Normalized hyphenated UUID trace IDs during OTLP ingest so non-compliant SDKs no longer break ClickHouse FixedString lookups (ref: #3717).
+
+### Signals and web
+
+- Sped up signal list loading by keeping table rows, counts, and analytics scoped to the visible time range, and defaulted Sessions mode to the last 30 days (ref: #3708).
+- Aligned Behaviors/Moments naming across filters and detail views, and restored the Settings entry in sample-project sidebars (ref: #3704, #3706).
+
+### API and operations
+
+- Fixed `listProjects` MCP output validation by stripping internal-only project `settings` fields from API responses (ref: #3703).
+- Eagerly initialized QuickJS WASM at worker startup so infrastructure load failures surface immediately instead of being masked as evaluation compile errors (ref: #3714).
+
+## v0.3.20 - 2026-06-26
+
+### Signals and evaluations
+
+- Added API, MCP, and SDK support for creating, updating, and deleting user-authored signals, including evaluation-setting code generation and signal-origin tracking (ref: #3690).
+- Fixed signal table filtering to use score activity time instead of signal update time, keeping score-based views aligned with their underlying activity (ref: #3697).
+
+### Datasets and behaviours
+
+- Added dataset export flows for Behaviour sessions and Signal sessions, plus supporting taxonomy and demo-project plumbing for session trace IDs (ref: #3685, #3691).
+- Added public dataset documentation, regression-testing guidance, and in-product documentation links, while removing the old simulations docs (ref: #3694, #3700).
+
+### Taxonomy and models
+
+- Made taxonomy retries idempotent and preserved observation identifiers across retry paths (ref: #3698).
+- Updated the bundled `models.dev` provider catalog (ref: #3693).
+
+## v0.3.19 - 2026-06-25
+
+### Telemetry
+
+- Shipped the Hermes telemetry connector as a typed Python package with tests, lockfile, docs, changelog, and CI publishing for PyPI releases (ref: #3658, #3677, #3678).
+- Added an ElevenLabs Agents telemetry guide and documented Hermes and OpenClaw configuration updates (ref: #3689, #3681, #3672).
+
+### Signals and traces
+
+- Reduced repeated signal analytics fetches by batching list-signal analytics and repository reads across projects, groups, and score counts.
+- Fixed signal detail pages so annotation scores list sessions correctly instead of dropping score identifiers (ref: #3682).
+- Added an "add to dataset" action from trace and session detail drawers (ref: #3684).
+- Expanded the span tree automatically when no span is selected so trace details open with usable context (ref: #3675).
+
+### Web and operations
+
+- Kept expected web 4xx responses out of Datadog Error Tracking while preserving unexpected error reporting (ref: #3671).
+- Accepted unknown OAuth error codes in Slack integration routes so integrations can show recoverable failures instead of breaking navigation (ref: #3679).
+- Remapped demo-project snapshot trace and session IDs during seeding so seeded demo data stays attached to the target project (ref: #3667).
+- Clarified the low-cache-hit-rate flagger description and refreshed public overview and deployment docs (ref: #3664, #3680, #3673).
+
+## v0.3.18 - 2026-06-25
+
+### Spans and ingestion
+
+- Ingested OpenClaw's native `@openclaw/diagnostics-otel` exporter: classified `openclaw.run` and `openclaw.tool.execution` spans into `invoke_agent`/`execute_tool` operations, read per-call tokens and the provider's real cost from `openclaw.content.output_messages`, derived span status from `openclaw.outcome`, and dropped the orphan `openclaw.model.usage` span. The generic transform stays brand-agnostic; OpenClaw specifics live in the resolver layer (ref: #3668).
+- Deprecated the hand-rolled `@latitude-data/openclaw-telemetry` plugin and CLI in favor of the native exporter, and rewrote the public OpenClaw docs to recommend it with a production-ingest config example (ref: #3668).
+
+### Models
+
+- Updated the bundled `models.dev` provider catalog (ref: #3669).
+
+## v0.3.17 - 2026-06-23
+
+### Signals
+
+- Standardized generated signal verdicts on `passed=true` meaning the behavior is present, with alignment, discovery, live evaluation, and GEPA prompts updated to use the same convention (ref: #3661).
+- Kept failed signal-linked evaluation runs as unowned ClickHouse denominators so absent behavior still contributes to evaluation analytics (ref: #3661).
+
+### Onboarding and demo data
+
+- Sped up sample project seeding by skipping ClickHouse reset mutations for fresh projects and polling asynchronous reset mutations only when retry data exists (ref: #3663).
+- Quieted sample-project notification emails and made the behaviours page wait for taxonomy data before rendering empty states (ref: #3666).
+
+### Docs and models
+
+- Reorganized the docs into Observe, Understand, and Refine sections, added spans, tool calls, and behaviours pages, and fixed the introduction image link (ref: #3634).
+- Updated the bundled `models.dev` provider catalog (ref: #3632).
+
+## v0.3.16 - 2026-06-23
+
+### Monitors
+
+- Reworked monitor creation to be source-first: create monitors directly from saved searches, tools, users, and sessions through a unified metric alert configuration (ref: #3650).
+- Replaced the flat metric dropdown with a dimension-first selector and compact threshold controls, added min/max/median metrics, and simplified thresholds to absolute/relative tabs with capped relative lookbacks (ref: #3650).
+- Rendered absolute thresholds and incident markers as overlays on metric charts, and showed duration thresholds in seconds while preserving nanosecond storage (ref: #3650).
+- Linked saved-search monitor targets back to sessions with the saved search selected, and made monitor selector rows navigate to monitor details consistently (ref: #3650).
+- Classified `listMonitorsForTarget` by target kind so all-users monitors (empty or extra-predicate filter sets) stay in the users dropdown, with null-safe filter containment and a single canonical target-kind decoder across Postgres, the API, and the TS/Python SDKs (ref: #3659).
+
+### Signals and sessions
+
+- Based score analytics on distinct sessions instead of traces, exposed session pages in signal details, and switched signal/monitor/tool-activity views from trace rows to session rows (ref: #3650).
+- Moved session monitoring into the sessions action row, matching saved-search-backed monitors and applying their filters to the table (ref: #3650).
+- Added a session monitor selector and User ID filter suggestions via the distinct-value combobox (ref: #3650).
+
+### Web and flaggers
+
+- Fixed the settings scroll layout with a per-route `fillHeight` flag so detail routes own their internal scroll while other pages scroll at the viewport edge (ref: #3657).
+- Rendered the full flagger strategy catalog by synthesizing disabled records for unprovisioned strategies, creating the row only when a flagger is enabled via a new `findOrCreateFlagger` use case (ref: #3657).
+
+## v0.3.15 - 2026-06-22
+
+### Telemetry
+
+- Landed span-ingestion fixes, upgraded to Vercel AI SDK v7, migrated instrumentors, and ran a full provider e2e audit (ref: #3627).
+- Tightened trace and tool-call extraction from ingested spans, updated TypeScript telemetry examples and package metadata, and added a telemetry QA verification tracker (ref: #3655).
+- Added telemetry integration documentation and examples for CrewAI, DSPy, Haystack, LiteLLM, Gemini, Groq, Mistral, Ollama, Replicate, SageMaker, Transformers, WatsonX, and Vercel AI SDK v7.
+
+### Analytics and traces
+
+- Aggregated token analytics across the active session and trace filters and added cache hit-rate summaries to trace and session tables (ref: #3652).
+- Added cache hit rate as a session and trace field for filtering and table display (ref: #3651).
+- Standardized token analytics category labels and tooltip presentation in usage summaries (ref: #3649).
+
+### Signals and flaggers
+
+- Reverted the Phase 2 signal passed-polarity inversion, including historical ClickHouse/Postgres migrations, so scoring polarity stays compatible with existing signal behavior (ref: #3647).
+- Added a low-cache-hit-rate flagger preset and API/SDK schema support (ref: #3653).
+- Hid behaviour views when fewer than two clusters are available and removed the stale "First seen older" badge from the behaviour drawer (ref: #3642, #3640).
+
+### Sandbox
+
+- Woke archived sandboxes when users enter through the live toggle, reusing or creating an active sandbox as needed (ref: #3645).
+
+### Web and design
+
+- Refined changelog, aggregation, behaviour, signal detail, email, tabs, logo, and trend-bar UI styling (ref: #3644).
+- Added a typing animation to the semantic search placeholder (ref: #3643).
+
+### Observability
+
+- Preserved non-Error throw details instead of logging "[object Object]" (ref: #3639).
+
+### Data destinations
+
+- Fixed the destination runs table not scrolling or paginating — bounded the settings scroll container so older runs load within the viewport (follow-up to #3637).
+
+### Dependencies
+
+- Bumped protobufjs, framer-api, the OpenAI Python telemetry dependency, CI actions, and TypeScript telemetry dependencies (ref: #3580, #3452, #3443, #3635, #3636, #3655).
+
+## v0.3.14 - 2026-06-22
+
+### API & MCP
+
+- Added users analytics endpoints exposed over both the public API and MCP, with generated TS SDK types for user overview, activity, usage, behaviours, signals, and cost rollups (ref: #3630).
+- Exposed user and tool monitors over MCP, including monitor alert conditions, metrics, targets, and filter sets in the TS SDK (ref: #3631).
+
+### Traces
+
+- Streamed trace conversations in chunks so large conversations load progressively instead of in a single blocking fetch (ref: #3605).
+
+### Data destinations
+
+- Made the destination runs table scroll and paginate within the available viewport (ref: #3637).
+- Lowered the destination read page to 2k to keep bull-board responsive during backfill (ref: #3638).
+
+### Web
+
+- Added rotating search placeholder examples to the search input (ref: #3624).
+
+### Terminology
+
+- Updated terminology from OTLP to OTEL across the product.
+
+## v0.3.13 - 2026-06-19
+
+### Data destinations
+
+- Fixed destination backfill/sync stalling under payload-heavy projects: the window read now late-materializes wide payload columns so memory is bounded by the page instead of the whole dedup window (~3.5 GiB peak → ~250 MiB), clearing the ClickHouse 4 GiB cap that tripped the chain, and restores the 5k read page (ref: #3629).
+
+## v0.3.12 - 2026-06-19
+
+### Data destinations
+
+- Simplified the destination data model by dropping the stored max-runs concept, slimming the destination source entity, backfill, and sync use-cases (ref: #3625).
+- Lowered the destination runs read page cap to 2k and made the runs table fill the available viewport height (ref: #3628).
+
+### Traces
+
+- Recolored trace and session usage and duration bars for clearer composition of activity tracks, duration breakdowns, and span usage summaries (ref: #3626).
+
+## v0.3.11 - 2026-06-19
+
+### Signals
+
+- Cut over the signals evaluation engine (Phase 2): scoring scripts now decide membership directly with `passed=true` meaning the signal's behavior is present, the host no longer thresholds, and judge/GEPA/flagger/discovery polarity was unified on this convention. A `legacy_polarity` flag normalizes existing judges at the execution boundary and self-drains on re-optimization, and the score `source` field was renamed to `source_type` in Postgres and the domain layer while preserving the ClickHouse column, saved-search filter key, and public `/scores` wire key (ref: #3621).
+
+### Data destinations
+
+- Treated PostHog `429` responses as back-pressure rather than faults: deliveries now honor `Retry-After` and back off instead of quarantining otherwise-healthy destinations, with idle auto-pause and a backfill record cap added (ref: #3618).
+- Bounded backfill and live window reads to avoid ClickHouse OOM under wide-payload spans by clamping page size, projecting only needed columns, and adding a per-query memory guardrail so a pathological page fails its own job instead of the whole server (ref: #3623).
+- Split the data-destination documentation into separate pages and refined destination status wording.
+
+### Infrastructure
+
+- Increased web service redundancy to 2 replicas.
+- Disabled production maintenance mode.
+
+### Models
+
+- Updated the bundled `models.dev` data (ref: #3620).
+
+## v0.3.10 - 2026-06-18
+
+### Infrastructure
+
+- Kept production ALB target groups associated during maintenance redirects so ECS can roll every public service while traffic is redirected to the status page.
+
+## v0.3.9 - 2026-06-18
+
+### Maintenance windows
+
+- Expanded production maintenance redirects to cover every public service hostname, including console, API, ingest, and bull-board, so planned maintenance consistently sends traffic to the status page (ref: 863e46b).
+
+### ClickHouse
+
+- Throttled the `traces` primary-key migration backfill to reduce load while rebuilding trace rollups with `trace_id` in the primary key (ref: 6654694).
+
+## v0.3.8 - 2026-06-18
+
+### Signals
+
+- Renamed Issues to Signals end-to-end across the web UI, API, SDKs, notifications, seeded data, and documentation while preserving the signal lifecycle and analytics flows (ref: #3608, #3610).
+- Updated signal scoring, discovery, lifecycle, evaluation alignment, incident, and monitor integrations to use the new signal model and regenerated the TypeScript and Python SDK surfaces (ref: #3608, typescript-sdk-6.1.0, python-sdk-6.1.0).
+
+### Data destinations
+
+- Added destination health tracking, quarantine notifications, per-run metrics, and delivery failure handling so unhealthy destinations are visible and operators are notified (ref: #3606).
+- Added destination backfills with historical-boundary support, freshness checks, queued backfill requests, sync-run tracking, and a web backfill modal (ref: #3607).
+- Published data-destination documentation, including the PostHog integration guide, and promoted the implementation spec into durable dev docs (ref: #3619).
+
+### Telemetry and SDKs
+
+- Added Flue framework telemetry mapping, filtering, documentation, and a runnable TypeScript example app, plus Eve example app updates (ref: #3617, typescript-telemetry-3.1.1).
+- Released agent telemetry redaction updates for Claude Code, OpenClaw, and Pi telemetry packages (ref: e74d119).
+
+### Performance and reliability
+
+- Promoted `trace_id` into the ClickHouse traces primary key for faster trace-specific queries (ref: #3611).
+- Reduced trace detail loading work by building conversation span maps client-side and fixed stale span trees when navigating between traces (ref: #3612, #3615).
+- Restored the QuickJS Emscripten runtime dependency in worker bundles (ref: #3613).
+- Added a production maintenance redirect toggle for planned maintenance windows (ref: #3616).
+
+## v0.3.7 - 2026-06-17
+
+### Workers
+
+- Fixed sandbox evaluation startup in worker bundles by keeping the QuickJS runtime external so its Emscripten loader can resolve the package layout at runtime (ref: 9ebeb71).
+
+### Signals
+
+- Reworked the Signals implementation plan around evaluation-backed sandbox scripts, removed the unbuilt Tracker model, and deferred semantic similarity detectors to a later phase (ref: #3600).
+
+## v0.3.6 - 2026-06-17
+
+### Data destinations
+
+- Added per-source destination configuration with enable/disable status, payload exclusion, max-record limits, atomic source updates, and a delivery preview showing sampled mapped events before saving (ref: #3601).
+- Preserved hidden destination and source config fields during updates, showed the source in sync-run history, renamed read counts to records read, and made project-destination cleanup transactional (ref: #3601).
+
+### Telemetry
+
+- Added Eve framework instrumentation support by resolving Eve session and turn ids, preserving `eve.*` spans in the TypeScript SDK smart filter, and publishing the Eve setup guide (ref: #3604).
+- Added configurable custom redaction to the Claude Code, OpenClaw, and Pi Coding Agent telemetry packages with exact-name, regex, and mask options plus expanded privacy docs (ref: #3603).
+
+### Web UI
+
+- Grouped the project sidebar into Observe, Understand, and Refine sections, nested traces under sessions, and graduated monitors and behaviours from their feature flags (ref: #3599, #3602, #3597).
+
+## v0.3.5 - 2026-06-17
+
+### Telemetry
+
+- Added Google ADK instrumentation support to the Python telemetry SDK, with example and docs for tracing Agent Development Kit apps (ref: #3595).
+- Joined tool calls with their results when mapping OpenInference traces so tool invocations and outputs render together in session and trace views (ref: #3595).
+
+## v0.3.4 - 2026-06-17
+
+### Data destinations
+
+- Added the first data-destinations workflow with encrypted Postgres storage, PostHog delivery, source cursors, sync-run tracking, background sweep/run workers, connection testing, pause/resume/delete flows, project-deletion cleanup, and settings UI for configuring destinations (ref: #3543, #3544, #3545, #3570, #3571, #3574, #3575, #3576, #3577, #3594).
+
+### Monitors and incidents
+
+- Introduced unified monitor targets and metric alerts, including traces and tool-call metric streams, sourceless alert kinds, target-aware monitor creation, in-context tool/user monitor creation, dashboard target columns, matching-trace context, and firing-vertical incident rendering (ref: #3555, #3557, #3558, #3559, #3560, #3561, #3562, #3563, #3564, #3572, #3578).
+- Fixed monitor incident table sizing and incident notification formatting (ref: #3585).
+
+### Tools and trace analysis
+
+- Added tool analytics API, MCP, TypeScript SDK, and Python SDK surfaces with summaries, histograms, recent calls, error/context breakdowns, co-occurrence data, parameter statistics, and tool definition details (ref: #3568).
+- Persisted defined tools in ClickHouse session and trace rollups, and surfaced where defined-but-never-called tools come from in the Tools UI and trace details (ref: #3541).
+- Added the conversation timeline to session and trace detail drawers, with activity tracks, clustered markers, viewport navigation, and highlight-safe annotation selection (ref: #3596, c34339f).
+
+### Onboarding and demo data
+
+- Improved onboarding with seeded sample projects backed by derived demo snapshots and added tooling/workflows to export and seed the demo project dataset (ref: #3584, #3587).
+
+### OSS self-hosting and infrastructure
+
+- Improved the Helm chart with wait-for-dependencies init containers, clearer install notes, Temporal configuration helpers, and Railway one-click deployment docs (ref: #3542, #3573).
+- Re-enabled Latitude self-telemetry and tuned production API capacity, Node heap limits, and Datadog sidecar memory for production stability (ref: #3569, 65c99ad, 579e8ea, 62f0eb5).
+- Added Temporal worker configuration safety checks and increased taxonomy workflow spreading to reduce burst load (ref: #3592).
+
+### Performance and fixes
+
+- Rebuilt the ClickHouse `sessions` primary key to include `session_id` for faster session-specific reads (ref: #3593).
+- Fixed annotation queries without trace ids, conversation timeline marker navigation, settings card text colors, hidden taxonomy clusters in backoffice, and unit formatting when rounded values roll into the next unit (ref: #3591, #3589, #3588, #3551).
+- Refreshed bundled models.dev data and bumped CI/dependency tooling, including protobufjs, Claude Code action, and Docker QEMU setup (ref: #3552, #3565, #3566, #3567, #3598).
+
+## v0.3.3 - 2026-06-14
+
+### Trace search
+
+- Fixed Redis Cluster slotting for per-organization trace-search embedding budget counters so daily, weekly, and monthly windows can be read and incremented together without CROSSSLOT errors (ref: #3553).
+- Allowed Voyage to truncate oversized embedding and reranking inputs instead of rejecting long trace-search and conversation-intelligence messages with 400 errors (ref: #3554).
+
+## v0.3.2 - 2026-06-13
+
+### Trace search
+
+- Added shared message embeddings for trace search and conversation intelligence, backed by new ClickHouse `message_embeddings` and `trace_message_occurrences` tables with ANN search, occurrence fanout, and a sharded backfill script (ref: #3496).
+- Improved semantic trace-search ranking by excluding high-frequency boilerplate messages, raising the relevance floor, defaulting active searches to relevance sort, and clearing stale sort params when filters are reset (ref: #3496).
+- Fixed Voyage SDK resolution in bundled API, worker, and web images so semantic embeddings load instead of silently falling back to lexical-only search (ref: #3550).
+
+### Conversation intelligence
+
+- Reused the shared embedding store for session analysis, made workflow warm-up best-effort and replay-safe, and anchored moment labels to the rendered conversation so badges land on the correct turns (ref: #3496, 9e24587).
+
+### Evaluations
+
+- Allowed `zod` and `zod/v4` imports inside the QuickJS sandbox while continuing to block other CommonJS requires (ref: 67e6488).
+
+### Web UI
+
+- Polished the traces filter sidebar and refreshed bundled models.dev data (ref: #3548, 06e7440).
+
+### Dependencies
+
+- Bumped esbuild to 0.28.1 and actions/checkout to 6.0.2 (ref: #3547, #3439).
+
+## v0.3.1 - 2026-06-12
+
+### End-user profiles
+
+- Added user profiles across the platform: end-user telemetry attributes (`user.email` is now a first-class span attribute with its own ClickHouse column and trace/session aggregation), a Users project section with unique/new-users stats, an active-users histogram with drag-to-filter, and per-row activity sparklines and cost rollups, plus a user detail page showing profile, activity, affected issues, observed behaviours, model/provider/tool usage, and sessions (ref: #3531).
+- Telemetry SDKs (TypeScript and Python 3.1.0) gained a `userEmail` / `user_email` capture option, and `enduser.id` is now accepted as a user id attribute (ref: #3531).
+
+### Monitors
+
+- Ongoing alert incidents can now be resolved manually: hovering an ongoing incident pill on the monitors dashboard or monitor details reveals a Resolve action, and a new `POST /v1/projects/{projectSlug}/incidents/{incidentId}` endpoint exposes the same flow over HTTP, MCP, and the SDK (ref: #3533).
+- Added bulk actions to the monitors dashboard (resolve last incident, mute, remove) with all/all-except server-side selection, a "Resolve last incident" palette command on monitor details, and fixed the issues archived-tab bulk bar to offer Unignore/Unresolve instead of Ignore/Resolve (ref: #3535).
+
+### SDKs
+
+- TypeScript SDK 6.0.0 is now stable (out of alpha), and a new Fern-generated Python SDK ships as `latitude-sdk` 6.0.0 on PyPI — a clean rewrite of the legacy 5.x line targeting the V2 platform (ref: #3534).
+
+### OSS self-hosting
+
+- Added Tier 3 cluster deployment via a cloud-agnostic Helm chart (ref: #3536).
+
+### Web UI
+
+- Session trace sub-rows now show newest-first, matching the sessions table ordering, while keeping "Trace N" labels chronological (ref: #3537).
+- Moved the saved-search Save/Update button inside the search bar at its right edge (ref: #3540).
+- The sandbox project sidebar now renders the Sandbox toggle, so flipping it off returns to the linked live project (ref: #3528).
+
+### Dependencies
+
+- Bumped hono from 4.12.16 to 4.12.21 (ref: #3484) and refreshed the bundled models.dev data (ref: #3527).
+
+## v0.3.0 - 2026-06-12
+
+### Evaluations
+
+- Added a QuickJS sandbox script runtime for evaluation scripts behind the `evaluation-sandbox-runtime` feature flag: scripts run fully sandboxed with CPU, memory, and wall-clock budgets, `llm()` host calls require an explicit schema, and per-owner detector health is tracked with degraded events (ref: #3524).
+
+### OSS self-hosting
+
+- Made internal AI features pluggable via `LAT_AI_*` env configuration: per-feature generation overrides resolve to OpenAI, Google, custom OpenAI-compatible, Anthropic, or the default Amazon Bedrock provider, with global embedding and reranking configuration to match (ref: #3521).
+- Renamed app-consumed `CLICKHOUSE_*` env vars to `LAT_CLICKHOUSE_*`; infra injects both names during the transition (ref: #3521).
+- Fixed issue discovery failing on non-default embedding models by making the issue centroid consistency check model-agnostic (ref: #3529).
+
+### Telemetry
+
+- Added a LiveKit Agents content resolver so prompts, responses, tool calls/results, and tool definitions carried on `lk.*` span attributes render in trace details, plus a LiveKit integration guide for Python and Node.js (ref: #3526).
+
+### Conversation intelligence
+
+- Split taxonomy gardening build writes into separate activities, moved clustering into a worker thread, and added adaptive sample sizing with run-level sample metrics (ref: #3519).
+- Gardening runs now fail fast when staged plan artifacts are lost from Redis, instead of retrying for days, so the next cron sweep rebuilds from scratch (ref: #3523).
+
+### Background jobs
+
+- Limited default Temporal activity retries to roughly one hour and made validation failures non-retryable (ref: 8b99c5c).
+
+### Web UI
+
+- Reordered the project sidebar to traces, behaviours, tools, issues, monitors, datasets (ref: #3525).
+- Removed the resolution behaviour trajectory filter from the behaviours page (ref: bd340db).
+
+## v0.2.9 - 2026-06-11
+
+### Monitors
+
+- Improved monitor discoverability with separate Search and Issue monitor tabs, a Watching column that links back to trace searches, and a save-search flow that can create a monitor in one step (ref: #3509).
+- Added monitored-state chips and monitor picker details to saved-search controls, including severity dots and muted-monitor badges so muted monitors remain visible while notifications stay suppressed (ref: #3509, #3522).
+- Added shared severity threshold controls for email and Slack notifications, backed by a unified severity palette used across web charts, Slack blocks, email badges, and pickers (ref: #3509).
+- Hardened saved-search monitor sweeps by isolating per-alert defects and resolving percentile filters consistently with the traces page (ref: #3509).
+
+### Tools
+
+- Added a Common errors breakdown to tool detail error view, clustering similar failed-call outputs with counts, shares, samples, and error-type badges (ref: #3514).
+- Improved tool dashboards with absolute failed-call counts in the error-rate column, clamped long descriptions behind a Show more modal, and preserved search/time params when navigating between tools or opening filtered traces (ref: #3514).
+
+### Traces
+
+- Added span filtering and navigation from session metadata into trace details, including model filter links and a spans filter bar (ref: c05d32f).
+
+### Web UI
+
+- Improved narrow-width usability across navigation, listing headers, toolbars, popovers, settings pages, filters panels, and trace/session drawers so dense pages wrap or overlay instead of clipping or crushing content (ref: #3520).
+
+### Conversation intelligence
+
+- Reduced taxonomy gardening memory pressure by capping clustering samples, using slim clustering rows, and reassigning observations inside ClickHouse instead of round-tripping full rows through workers (ref: #3517).
+- Skipped trace-search embeddings for Latitude telemetry projects to avoid indexing Latitude's own dogfood telemetry (ref: #3436).
+
+## v0.2.8 - 2026-06-11
+
+### Issues
+
+- Added a Related issues section on the issue page that combines semantic similarity with session co-occurrence, showing linked issue cards with lifecycle badges, descriptions, activity, and reason chips (ref: #3503).
+- Added issue assignee and priority across the issues list and issue page: priority-grouped rows, assignee column/filter, My issues counts, CSV/export filter support, and command-palette actions to assign issues or set priority (ref: #3505).
+
+### Notifications
+
+- Added issue-assigned notifications in a new personal notification group, delivered in-app and by email with per-assignment idempotency, while incident notifications now snapshot and display issue assignee and priority context (ref: #3505).
+
+### Tools
+
+- Added the Tools dashboard and tool detail pages, backed by ClickHouse tool analytics for defined and called tools, usage/failure/latency trends, parameters, context breakdowns, co-occurrence, recent calls, and tool-based trace/session filters (ref: #3508).
+
+### Conversation intelligence
+
+- Added Temporal workflows and activities to backfill recent session intelligence by project and recent sessions (ref: #3506).
+- Routed internal AI generations into separate dogfood telemetry projects per feature, improving issue clustering and product-feedback attribution (ref: #3390).
+
+### Telemetry
+
+- Fixed Claude Code telemetry exports for very large traces by chunking OTLP uploads, truncating oversized span attributes with metadata, advancing transcript offsets only after successful export, and hardening Stop-hook state locks (ref: #3511).
+
+### OSS self-hosting
+
+- Added single-host production self-hosting: published multi-arch Docker Hub images, a pull-only `docker-stack.yml`, production-focused `.env.example` values, S3 path-style storage support, deployment docs, and fork guards for deployment workflows (ref: #3513).
+
+### Models
+
+- Updated the bundled models.dev catalog (ref: #3510).
+
+## v0.2.7 - 2026-06-10
+
+### Auth
+
+- Fixed "Session is not fresh" errors when disconnecting a provider in Settings → Account: disabled Better Auth's 24h session-freshness gate (`freshAge: 0`), which blocked unlinking for any session older than a day and guarded no other endpoint we use (ref: e6aa1fb).
+
+### Issues
+
+- Replaced the issue drawer with a full-page Issue view: lifetime impact metrics (occurrences, affected traces/sessions/users, cost and tokens), new assignee and priority triage fields, plus patterns and examples (ref: #3494).
+
+### Spans
+
+- Rendered non-JSON tool input/output (e.g. plain-text errors) as a code block in the span detail panel, matching the JSON path's styling and controls (ref: #3500).
+
+## v0.2.6 - 2026-06-10
+
+### Auth
+
+- Surfaced OAuth login errors on the login page (previously Google sign-in failures bounced back with no feedback) and added a "Connected accounts" section in Settings → Account to link/unlink Google and GitHub, including unlinking the only connected provider since magic link remains a sign-in path (ref: #3497).
+
+### MCP
+
+- Issued refreshable OAuth tokens for MCP clients so sessions can renew instead of expiring, while keeping offline access out of the RFC 9728 protected-resource metadata (ref: #3373).
+
+### Telemetry
+
+- Promoted the Python (`latitude-telemetry`) and TypeScript (`@latitude-data/telemetry`) SDKs out of alpha to stable 3.0.1, so default installs resolve to the 3.x API instead of the legacy 2.0.4 (ref: #3495).
+
+### OSS self-hosting
+
+- Replaced AGPL-licensed `ua-parser-js` with MIT-licensed `bowser`, namespaced all Redis cache and BullMQ keys under a `latitude:` prefix so Latitude can share a Redis instance, and removed deployment URLs baked into the web bundle so one public image serves any domain (ref: #3491).
+- Documented the key-free local development path with a new Development docs group and refreshed contributing guide (ref: #3498).
+
+### Models
+
+- Updated the bundled models.dev model catalog (ref: #3493).
+
+## v0.2.5 - 2026-06-10
+
+### Test mode
+
+- Treated Test Mode as a single sandbox per org: capped all plans to one active sandbox and replaced the sidebar dropdown with a context-aware toggle that find-or-creates the org's sandbox and a mirror of the live project you're in (ref: #3492).
+- Reworked archived sandboxes to surface an inline "Activate" affordance with the rest of the interface inert, threading sandbox status through route context to avoid an active→archived flash on first paint (ref: #3492).
+- Removed the settings Sandboxes list and create modal, and refreshed the public docs to describe the single-sandbox toggle (ref: #3492).
+
+## v0.2.4 - 2026-06-09
+
+### Enterprise SSO
+
+- Added enterprise SSO with SAML 2.0 and OIDC via `@better-auth/sso`, including provider repository and Better Auth schema support (ref: #3434).
+- Ordered `tanstackStartCookies` last in the Better Auth plugin chain so SSO sign-in cookies are set correctly (ref: #3485).
+
+### Test mode
+
+- Added the test-mode sandbox layout and traces UI (ref: #3456).
+- Lowered the per-key rate limit for sandbox keys (ref: #3462).
+- Added user-facing sandbox documentation (ref: #3490).
+
+### Conversation intelligence
+
+- Added filtering of behaviour sessions by trajectory turns (ref: #3479).
+- Added a Hungarian lineage continuity matcher with dead-path purge to keep taxonomy topic identity stable across rebuilds (ref: #3476).
+- Aggregated metadata in the session search rollup so search results carry merged metadata (ref: #3482).
+
+### Platform
+
+- Removed always-on feature flag gates, simplifying code paths that were permanently enabled (ref: #3454).
+- Dropped the deprecated ClickHouse behavior observations table (ref: #3487).
+
+### Telemetry
+
+- Dropped the required `apiKey`/`project` fields from the OpenClaw plugin config schema (v0.0.8, ref: #3458).
+
+### Docs
+
+- Added a Monitors overview page (ref: #3472).
+
+## v0.2.3 - 2026-06-09
+
+### Conversation intelligence
+
+- Rebuilt taxonomy gardening around a top-down divisive clustering pass with depth-aware naming, producing hierarchical topic trees in one bounded run instead of the previous sweep/recurse/merge flow (ref: 70579ffc1).
+- Made taxonomy clustering samples day-stratified and deterministic across the lookback window, preventing high-volume recent traffic from dominating rebuilds (ref: #3473).
+- Serialized taxonomy naming and added collision guards so sibling topics receive distinct labels before the quality gate runs (ref: #3473).
+- Hid the all-encompassing taxonomy root from behaviours tables and topic filters, promoting the first meaningful category level while still showing a single root for tiny corpora (ref: #3473).
+
+### Models
+
+- Updated the bundled models.dev model catalog (ref: #3474).
+
+## v0.2.2 - 2026-06-08
+
+### Test mode
+
+- Added a daily idle-sandbox sweep that archives inactive test-mode sandboxes from the workers service (ref: #3460).
+
+### Demo project seeding
+
+- Made demo-project seeding more resilient on remote ClickHouse by batching large span inserts, moving the fixed-traces sentinel to the end of the seed, parallelizing trace-search embedding, and adding Temporal heartbeats for faster retry detection (ref: #3471).
+
+### Conversation intelligence
+
+- Capped taxonomy gardening sample windows at 10k observations to keep clustering work bounded (ref: deff1fc5b).
+
+### Infrastructure
+
+- Increased workflow task memory and rounded ECS task sizing to valid Fargate increments after adding sidecars, reducing Temporal worker OOM risk (ref: 159a3c2b).
+
+## v0.2.1 - 2026-06-08
+
+### Conversation intelligence
+
+- Fixed backoffice session-intelligence backfills to use isolated child workflow IDs, avoiding collisions with live trace-triggered analysis runs already waiting on debounce timers (ref: 00a186be).
+
+### Test mode
+
+- Added the `lat_sandbox_` token prefix for API keys minted in Test Mode sandbox organizations while keeping live organization keys unprefixed (ref: #3457).
+
+## v0.2.0 - 2026-06-08
+
+### Conversation intelligence
+
+- Added conversation intelligence: a backend pipeline that classifies conversations against a topic taxonomy (with bounded observation sampling and calibration profiles) plus in-product behaviours that surface the resulting signals in the web app (ref: #3422).
+
+### Test mode
+
+- Added the sandbox ingest pipeline for test-mode organizations: an LLM-off gate that skips trace-end fan-out, archived-sandbox ingest refusal (403), a per-period span quota, debounced last-activity stamping, and realtime id-only trace-upsert pulses; introduced the `@domain/sandboxes` package with Postgres/Redis adapters (ref: #3412).
+- Added sandbox lifecycle use-cases and an active-sandbox cap per organization (ref: #3411).
+- Shortened span retention for sandbox organizations to 7 days via a dedicated TTL rule, leaving live-org retention unchanged (ref: #3409).
+
+### Monitors
+
+- Reworked `savedSearch.escalating` alerts to open on a sustained, bucketed threshold (filtering one-shot spikes) and close dwell-free once activity subsides, removing the old close lag of roughly the window length (ref: #3459).
+- Backtraced the close timestamp (`ended_at`) on sustained incidents so it reflects when activity actually subsided (ref: #3467).
+- Polished saved-search UI: shorter literal/phrase search chips, clearer "Save search" / "Update search" button copy, and opening the Conversation tab (with match highlight) when a session or trace is opened from a dashboard search (ref: #3468).
+
+### Fixes
+
+- Fixed taxonomy embedding and ClickHouse inserts failing on text containing lone UTF-16 surrogates by sanitizing them first (ref: #3466).
+- Fixed a billing deadlock by ordering usage-event inserts by their conflict key (ref: #3463).
+- Made the in-app "what's new" changelog popover dismissable with a cleaner collapse button (ref: #3461).
+- Hid archived issues from command palette search results.
+
+### Models
+
+- Updated the bundled models.dev model catalog (ref: #3389).
+
 ## v0.1.51 - 2026-06-05
 
 ### Monitors and API
@@ -313,4 +1736,3 @@
 - Fixed SqlClient transaction isolation so concurrent Effect fibers use separate Postgres transactions while nested calls reuse the current transaction (ref: #3294).
 - Added Framer secrets to infrastructure and web runtime configuration (ref: 6782d44).
 - Updated bundled models.dev data and removed MCP plugin docs for now (refs: #3293, #3298).
-

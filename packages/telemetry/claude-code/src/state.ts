@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -16,12 +17,29 @@ const STATE_DIR = join(homedir(), ".claude", "state", "latitude")
 const STATE_FILE = join(STATE_DIR, "state.json")
 const LOCK_FILE = join(STATE_DIR, "state.lock")
 const LOCK_TIMEOUT_MS = 2_000
+// A hook killed mid-run (e.g. by Claude Code's hook timeout) leaves its lock file
+// behind; anything older than this is treated as abandoned and broken.
+const LOCK_STALE_MS = 10 * 60_000
 
 interface SessionState {
   offset: number
   buffer: string
   turnCount: number
   traceId?: string | undefined
+  // Main-session entries only: accumulated parent Agent tool_use -> span links,
+  // keyed by toolUseId (and promptId as a fallback), so subagents can re-parent on
+  // later turns.
+  agentLinks?: Record<string, { traceId: string; parentSpanId: string }> | undefined
+  // Subagent-file entries only: incremental emission progress. Each subagent span
+  // is emitted exactly once (the trace-level aggregates are additive per insert, so
+  // re-sending would double-count). `emittedCalls` is how many of the subagent's
+  // calls have been emitted, `interactionEmitted` whether its interaction span has,
+  // `lastSize` the file size at the previous Stop (a growth check gates the trailing
+  // call until the transcript settles), and `subDone` marks it fully emitted.
+  emittedCalls?: number | undefined
+  interactionEmitted?: boolean | undefined
+  lastSize?: number | undefined
+  subDone?: boolean | undefined
   updated?: string | undefined
 }
 
@@ -43,6 +61,11 @@ export function load(key: string): SessionState {
       buffer: typeof entry.buffer === "string" ? entry.buffer : "",
       turnCount: Number(entry.turnCount) || 0,
       traceId: typeof entry.traceId === "string" ? entry.traceId : undefined,
+      agentLinks: entry.agentLinks && typeof entry.agentLinks === "object" ? entry.agentLinks : undefined,
+      emittedCalls: typeof entry.emittedCalls === "number" ? entry.emittedCalls : undefined,
+      interactionEmitted: typeof entry.interactionEmitted === "boolean" ? entry.interactionEmitted : undefined,
+      lastSize: typeof entry.lastSize === "number" ? entry.lastSize : undefined,
+      subDone: typeof entry.subDone === "boolean" ? entry.subDone : undefined,
     }
   } catch {
     return empty()
@@ -71,24 +94,36 @@ export async function withLock<T>(fn: () => Promise<T> | T): Promise<T | undefin
       fd = openSync(LOCK_FILE, "wx")
       break
     } catch {
+      breakStaleLock()
       await sleep(50)
     }
   }
   try {
     return await fn()
   } finally {
+    // Only release the lock we actually acquired — when the wait timed out and we
+    // proceeded anyway, the file belongs to another hook run still in flight.
     if (fd !== undefined) {
       try {
         closeSync(fd)
       } catch {
         // ignore
       }
+      try {
+        unlinkSync(LOCK_FILE)
+      } catch {
+        // already gone
+      }
     }
-    try {
-      unlinkSync(LOCK_FILE)
-    } catch {
-      // lock was never acquired or already gone
-    }
+  }
+}
+
+function breakStaleLock(): void {
+  try {
+    const age = Date.now() - statSync(LOCK_FILE).mtimeMs
+    if (age > LOCK_STALE_MS) unlinkSync(LOCK_FILE)
+  } catch {
+    // lock vanished between the failed acquire and now — fine
   }
 }
 

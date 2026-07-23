@@ -4,6 +4,7 @@ import { HotkeysProvider } from "@tanstack/react-hotkeys"
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router"
 import type { ReactNode } from "react"
 import { lazy, Suspense } from "react"
+import { ReadOnlyProjectModal } from "../components/read-only-project-modal.tsx"
 import { getThemePreference } from "../domains/theme/theme.functions.ts"
 import { ErrorFallback } from "../lib/client-error-reporting.tsx"
 import { AppQueryProvider } from "../lib/data/query-client.tsx"
@@ -21,7 +22,7 @@ const AgentationToolbar = import.meta.env.DEV
 
 export const Route = createRootRoute({
   errorComponent: ({ error, info, reset }) => (
-    <ErrorFallback error={error} componentStack={info?.componentStack ?? null} reset={reset} />
+    <ErrorFallback error={error} componentStack={info?.componentStack ?? null} reset={reset} variant="fullscreen" />
   ),
   loader: async () => {
     const theme = await getThemePreference()
@@ -76,6 +77,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
         <PostHogProvider />
         <AppQueryProvider>
           <HotkeysProvider>{children}</HotkeysProvider>
+          <ReadOnlyProjectModal />
           <Toaster />
           {AgentationToolbar !== null ? (
             <Suspense fallback={null}>

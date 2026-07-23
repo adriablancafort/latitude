@@ -1,20 +1,15 @@
-import { hasFeatureFlagUseCase } from "@domain/feature-flags"
 import {
-  cascadeSourceDeletionUseCase,
-  checkSavedSearchMonitorsUseCase,
+  checkMonitorsUseCase,
+  deleteMonitorUseCase,
+  MonitorRepository,
   SAVED_SEARCH_MONITORS_THROTTLE_MS,
   savedSearchMonitorsCheckDedupeKey,
-  sweepSavedSearchMonitorsUseCase,
 } from "@domain/monitors"
 import type { QueueConsumer, QueuePublisherShape } from "@domain/queue"
-import { OrganizationId } from "@domain/shared"
-import { withAi } from "@platform/ai"
-import { AIEmbedLive } from "@platform/ai-voyage"
-import type { RedisClient } from "@platform/cache-redis"
-import { type ClickHouseClient, SavedSearchMatchReaderLive, withClickHouse } from "@platform/db-clickhouse"
+import { OrganizationId, ProjectId } from "@domain/shared"
+import { type ClickHouseClient, MetricSeriesReaderLive, withClickHouse } from "@platform/db-clickhouse"
 import {
-  AlertIncidentRepositoryLive,
-  FeatureFlagRepositoryLive,
+  IncidentRepositoryLive,
   MonitorRepositoryLive,
   OutboxEventWriterLive,
   type PostgresClient,
@@ -22,8 +17,8 @@ import {
   withPostgres,
 } from "@platform/db-postgres"
 import { createLogger, withTracing } from "@repo/observability"
-import { Effect, Layer } from "effect"
-import { getAdminPostgresClient, getClickhouseClient, getPostgresClient, getRedisClient } from "../clients.ts"
+import { Cause, Effect, Layer } from "effect"
+import { getAdminPostgresClient, getClickhouseClient, getPostgresClient } from "../clients.ts"
 
 const logger = createLogger("monitors")
 
@@ -31,87 +26,113 @@ interface MonitorsDeps {
   consumer: QueueConsumer
   publisher: QueuePublisherShape
   postgresClient?: PostgresClient
-  /** Admin client — the cross-org sweep reads `monitor_alerts` regardless of org (RLS bypass). */
   adminPostgresClient?: PostgresClient
   clickhouseClient?: ClickHouseClient
-  redisClient?: RedisClient
 }
 
-// Feature flag + saved-search resolution + incident writes all live on Postgres;
-// the firing scan reads counts from ClickHouse (provided per-handler below).
-const checkRepoLayer = Layer.mergeAll(
+const monitorWorkerRepoLayer = Layer.mergeAll(
   MonitorRepositoryLive,
-  AlertIncidentRepositoryLive,
+  IncidentRepositoryLive,
   OutboxEventWriterLive,
   SavedSearchRepositoryLive,
-  FeatureFlagRepositoryLive,
 )
-
 export const createMonitorsWorker = ({
   consumer,
   publisher,
   postgresClient,
   adminPostgresClient,
   clickhouseClient,
-  redisClient,
 }: MonitorsDeps) => {
   const pgClient = postgresClient ?? getPostgresClient()
   const adminPgClient = adminPostgresClient ?? getAdminPostgresClient()
   const chClient = clickhouseClient ?? getClickhouseClient()
-  const rdClient = redisClient ?? getRedisClient()
 
   consumer.subscribe("monitors", {
-    // Firing only runs for flag-on orgs (belt-and-suspenders — flag-off orgs can't create these monitors).
     checkSavedSearchMonitors: (payload) =>
-      Effect.gen(function* () {
-        const enabled = yield* hasFeatureFlagUseCase({ identifier: "monitors" })
-        if (!enabled) return { evaluated: 0, failed: 0 }
-        return yield* checkSavedSearchMonitorsUseCase(payload)
-      }).pipe(
-        withPostgres(checkRepoLayer, pgClient, OrganizationId(payload.organizationId)),
-        withClickHouse(SavedSearchMatchReaderLive, chClient, OrganizationId(payload.organizationId)),
-        withAi(AIEmbedLive, rdClient),
+      checkMonitorsUseCase({ projectId: ProjectId(payload.projectId) }).pipe(
+        withPostgres(monitorWorkerRepoLayer, pgClient, OrganizationId(payload.organizationId)),
+        withClickHouse(MetricSeriesReaderLive, chClient, OrganizationId(payload.organizationId)),
         Effect.tap((result) =>
           Effect.sync(() =>
             logger.info(
-              `Saved-search check for ${payload.projectId}: evaluated=${result.evaluated} failed=${result.failed}`,
+              `Monitor check for ${payload.projectId}: checked=${result.checked} evaluatable=${result.evaluatable} evaluated=${result.evaluated} failed=${result.failed}`,
             ),
           ),
         ),
+        Effect.flatMap((result) =>
+          result.evaluatable > 0 && result.failed === result.evaluatable
+            ? Effect.fail(new Error(`All monitor evaluations failed for ${payload.projectId}`))
+            : Effect.succeed(result),
+        ),
         Effect.tapError((error) =>
-          Effect.sync(() => logger.error(`Saved-search check failed for ${payload.projectId}`, error)),
+          Effect.sync(() => logger.error(`Monitor check failed for ${payload.projectId}`, error)),
         ),
         withTracing,
         Effect.asVoid,
       ),
     sweepSavedSearchMonitors: () =>
-      sweepSavedSearchMonitorsUseCase({
-        // Same leading-edge throttle + key as trace-end so both triggers coalesce into one check per project.
-        publish: (target) =>
-          publisher.publish("monitors", "checkSavedSearchMonitors", target, {
-            dedupeKey: savedSearchMonitorsCheckDedupeKey(target),
-            leadingThrottleMs: SAVED_SEARCH_MONITORS_THROTTLE_MS,
-          }),
+      Effect.gen(function* () {
+        const repository = yield* MonitorRepository
+        const projects = yield* repository.listProjectsWithActiveMonitors()
+        yield* Effect.forEach(
+          projects,
+          ({ organizationId, projectId }) =>
+            publisher.publish(
+              "monitors",
+              "checkSavedSearchMonitors",
+              { organizationId, projectId },
+              {
+                dedupeKey: savedSearchMonitorsCheckDedupeKey({ organizationId, projectId }),
+                leadingThrottleMs: SAVED_SEARCH_MONITORS_THROTTLE_MS,
+              },
+            ),
+          { concurrency: 8 },
+        )
+        return { published: projects.length }
       }).pipe(
         withPostgres(MonitorRepositoryLive, adminPgClient),
-        Effect.tap((result) =>
-          Effect.sync(() =>
-            logger.info(
-              `Saved-search sweep: published=${result.published} failed=${result.failed} attempted=${result.attempted}`,
-            ),
-          ),
-        ),
-        Effect.tapError((error) => Effect.sync(() => logger.error("Saved-search sweep failed", error))),
+        Effect.tap((result) => Effect.sync(() => logger.info(`Monitor sweep: published=${result.published}`))),
+        Effect.tapError((error) => Effect.sync(() => logger.error("Monitor sweep failed", error))),
         withTracing,
         Effect.asVoid,
       ),
     onSourceDeleted: (payload) =>
-      cascadeSourceDeletionUseCase({ sourceType: payload.sourceType, sourceId: payload.sourceId }).pipe(
-        withPostgres(MonitorRepositoryLive, pgClient, OrganizationId(payload.organizationId)),
+      Effect.gen(function* () {
+        if (payload.sourceType !== "savedSearch") return { deleted: 0, failed: 0 }
+        const repository = yield* MonitorRepository
+        const monitors = yield* repository.listActiveMonitors({
+          projectId: ProjectId(payload.projectId),
+          targetType: "savedSearch",
+        })
+        const matching = monitors.filter((monitor) => monitor.target.id === payload.sourceId)
+        const outcomes = yield* Effect.forEach(
+          matching,
+          (monitor) =>
+            deleteMonitorUseCase({ id: monitor.id }).pipe(
+              Effect.as("deleted" as const),
+              Effect.catchCause((cause) =>
+                Effect.sync(() => {
+                  logger.error(`Source cascade failed to delete monitor ${monitor.id}`, Cause.squash(cause))
+                  return "failed" as const
+                }),
+              ),
+            ),
+          { concurrency: 4 },
+        )
+        const result = {
+          deleted: outcomes.filter((outcome) => outcome === "deleted").length,
+          failed: outcomes.filter((outcome) => outcome === "failed").length,
+        }
+        if (result.failed > 0) {
+          return yield* Effect.fail(new Error(`Failed to delete ${result.failed} saved-search monitor(s)`))
+        }
+        return result
+      }).pipe(
+        withPostgres(monitorWorkerRepoLayer, pgClient, OrganizationId(payload.organizationId)),
         Effect.tap((result) =>
           Effect.sync(() =>
             logger.info(
-              `Source cascade ${payload.sourceType}:${payload.sourceId}: alerts=${result.deletedAlertCount} monitors=${result.deletedMonitorCount}`,
+              `Source cascade for ${payload.sourceType}:${payload.sourceId}: deleted=${result.deleted} failed=${result.failed}`,
             ),
           ),
         ),

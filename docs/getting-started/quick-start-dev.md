@@ -14,7 +14,7 @@ This guide walks you through connecting an existing AI agent to Latitude. By the
 
 ## Step 1: Create a Project
 
-After signing in, create a new project from the dashboard. Projects are the main boundary for all reliability features: issues, evaluations, flaggers, saved searches, and simulations are all scoped to a project.
+After signing in, create a new project from the dashboard. Projects are the main boundary for all reliability features: signals, evaluations, flaggers, and saved searches are all scoped to a project.
 
 Give your project a descriptive name that matches the agent or feature you're monitoring.
 
@@ -45,20 +45,20 @@ Scores come from three sources:
 2. **Annotations**: human review verdicts from your team
 3. **Custom**: scores you submit from your own code via the API
 
-Your project starts with default [flaggers](../annotations/flaggers) that automatically annotate traces for common problems like jailbreaking, refusals, frustration, and tool call errors. Flagger annotations are written directly on matching traces and feed straight into issue discovery, so you'll see issues forming from your live traffic without configuring anything.
+Your project starts with default [flaggers](../annotations/flaggers) that automatically annotate traces for common problems like jailbreaking, refusals, frustration, and tool call errors. Flagger annotations are written directly on matching traces and feed straight into signal discovery, so you'll see signals forming from your live traffic without configuring anything.
 
 ## Step 5: Explore with Search and Annotate
 
-Open the **Search** page in your project. This is where you build cohorts of traces to investigate or review.
+Open the **Traces** page in your project. The search bar at the top is where you build cohorts of traces to investigate or review.
 
 1. Type a query like _"failed payments"_ or _"frustrated user"_. Search blends keywords and meaning, so close paraphrases work.
 2. Add filters from the toolbar to narrow further (status, model, cost, custom metadata, etc.).
 3. Click into any matching trace to read the conversation.
 4. Use the annotation panel on the right to leave human feedback. Pick conversation-level, message-level, or text-range scope, give a thumbs-up or thumbs-down verdict, and add a short explanation.
 
-When a search becomes a regular part of your workflow, click **Save search** to bookmark it. Saved searches surface on the Search landing page with assignee, last-found timestamp, and annotated-vs-total review progress. See [Saved Searches](../search/saved-searches) for the full lifecycle.
+When a search becomes a regular part of your workflow, click **Save search** to bookmark it. Saved searches are available from the **Saved searches** dropdown next to the search bar; reopening one restores its query and filters. See [Saved Searches](../search/saved-searches) for the full lifecycle.
 
-Your annotations feed into issue discovery and evaluation alignment alongside the annotations that flaggers create automatically.
+Your annotations feed into signal discovery and evaluation alignment alongside the annotations that flaggers create automatically.
 
 ## What's Next
 
@@ -68,5 +68,4 @@ Your annotations feed into issue discovery and evaluation alignment alongside th
 - [Annotations](../annotations/overview): Build human review workflows
 - [Flaggers](../annotations/flaggers): Automatic annotators for common failure categories
 - [Evaluations](../evaluations/overview): Set up automated monitoring
-- [Issues](../issues/overview): Understand how failure patterns are discovered
-- [Simulations](../simulations/overview): Test your agent before shipping
+- [Signals](../signals/overview): Understand how failure patterns are discovered

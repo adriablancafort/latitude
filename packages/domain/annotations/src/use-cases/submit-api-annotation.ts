@@ -82,7 +82,7 @@ type SubmitApiAnnotationRequest = z.input<typeof submitApiAnnotationInputSchema>
  * Resolves the target trace (by id or by filter set) and writes the annotation
  * via `writePublishedAnnotationUseCase` — `draftedAt` is always `null` and
  * `ScoreCreated` is emitted with `status: "published"` in the same
- * transaction, so the annotation enters issue discovery immediately.
+ * transaction, so the annotation enters signal discovery immediately.
  *
  * `sourceId` is always forced to `"API"` for this entry point; the lower-level
  * `writeDraftAnnotationUseCase` / `writePublishedAnnotationUseCase` primitives
@@ -120,7 +120,7 @@ export const submitApiAnnotationUseCase = Effect.fn("annotations.submitApiAnnota
     traceId,
     spanId: null,
     simulationId: parsed.simulationId,
-    issueId: parsed.issueId,
+    signalId: parsed.signalId,
     annotatorId: input.annotatorId ?? null,
     value: parsed.value,
     passed: parsed.passed,

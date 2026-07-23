@@ -8,23 +8,28 @@ import {
   projectOrOrgContext,
   sectionMarkdown,
   trendChartBlock,
+  triageContextSuffix,
 } from "./blocks.ts"
-import { resolveSourceName } from "./source-name.ts"
+import { resolveAssigneeName, resolveSource } from "./source-name.ts"
 import type { SlackNotificationRenderer } from "./types.ts"
 
 export const incidentClosedRenderer: SlackNotificationRenderer<"incident.closed"> = (payload, ctx) =>
   Effect.gen(function* () {
     const projectName = ctx.project?.name ?? ctx.organization.name
-    const isSavedSearch = payload.sourceType === "savedSearch"
-    const issueUrl = ctx.project
-      ? `${ctx.webAppUrl}/projects/${ctx.project.slug}/issues?issueId=${payload.sourceId}`
-      : ctx.webAppUrl
+    const isMonitorIncident = payload.sourceType === "monitor"
     const monitorUrl =
       monitorDeepLink({ webAppUrl: ctx.webAppUrl, projectSlug: ctx.project?.slug, monitorSlug: payload.monitorSlug }) ??
       ctx.webAppUrl
     const duration = humanizeDurationMs(payload.recovery.durationMs)
 
-    const sourceName = yield* resolveSourceName(payload)
+    const source = yield* resolveSource(payload)
+    const sourceName = source?.name ?? null
+    const signalUrl = ctx.project
+      ? source
+        ? `${ctx.webAppUrl}/projects/${ctx.project.slug}/signals/${encodeURIComponent(source.slug)}`
+        : `${ctx.webAppUrl}/projects/${ctx.project.slug}/signals`
+      : ctx.webAppUrl
+    const assigneeName = yield* resolveAssigneeName(payload.assigneeId)
 
     const attribution = monitorAttributionBlocks({
       webAppUrl: ctx.webAppUrl,
@@ -35,11 +40,11 @@ export const incidentClosedRenderer: SlackNotificationRenderer<"incident.closed"
       condition: payload.condition,
     })
     const context = contextLine(
-      `${payload.severity} · ${payload.sourceType} · ${projectOrOrgContext(ctx.organization, ctx.project)}`,
+      `${payload.severity} · ${payload.sourceType} · ${projectOrOrgContext(ctx.organization, ctx.project)}${triageContextSuffix({ priority: payload.priority, assigneeName })}`,
     )
 
-    if (isSavedSearch) {
-      const searchRef = sourceName ?? "a saved search"
+    if (isMonitorIncident) {
+      const searchRef = sourceName ?? "a monitored target"
       return {
         text: `Resolved: escalation on ${searchRef} — elevated for ${duration}`,
         color: COLORS.resolved,
@@ -55,15 +60,15 @@ export const incidentClosedRenderer: SlackNotificationRenderer<"incident.closed"
     const chart = trendChartBlock(ctx.notificationId, ctx.webAppUrl)
 
     return {
-      text: `Issue recovered in ${projectName} — elevated for ${duration}`,
+      text: `Signal recovered in ${projectName} — elevated for ${duration}`,
       color: COLORS.resolved,
       blocks: [
-        ...(sourceName ? [sectionMarkdown(`*<${issueUrl}|${sourceName}>*`)] : []),
+        ...(sourceName ? [sectionMarkdown(`*<${signalUrl}|${sourceName}>*`)] : []),
         sectionMarkdown(`Elevated for *${duration}*.`),
         ...(chart ? [chart] : []),
         ...attribution,
         context,
-        actionsLink("View issue", issueUrl),
+        actionsLink("View signal", signalUrl),
       ],
     }
   })

@@ -1,14 +1,14 @@
 import { Button, cn, Icon, Tabs, Text, Tooltip } from "@repo/ui"
 import { formatCount } from "@repo/utils"
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
+import { ChevronRightIcon } from "lucide-react"
 import { useMemo, useState } from "react"
 import { useBehaviourTrajectory } from "../../../../../../domains/taxonomy/taxonomy.collection.ts"
 import type {
   BehaviourNodeRecord,
   BehaviourTimeRangeRecord,
+  BehaviourTrajectoryMetric,
 } from "../../../../../../domains/taxonomy/taxonomy.functions.ts"
 
-type TrajectoryMetric = "frequency" | "escalation" | "resolution" | "churnRisk" | "wins"
 type TrajectoryAxis = "day" | "turn"
 
 const MAX_COLLAPSED_ROWS = 3
@@ -16,12 +16,13 @@ const MIN_BUBBLE_SIZE_PX = 4
 const MAX_BUBBLE_SIZE_PX = 30
 const ROW_HEIGHT_PX = 48
 const MAX_TURN_BUCKETS = 14
-const CHART_X_PADDING_PERCENT = 2.5
 
-const metricOptions: ReadonlyArray<{ readonly id: TrajectoryMetric; readonly label: string }> = [
+const bucketCenterXPercent = (bucketIndex: number, bucketCount: number): number =>
+  ((bucketIndex + 0.5) / bucketCount) * 100
+
+const metricOptions: ReadonlyArray<{ readonly id: BehaviourTrajectoryMetric; readonly label: string }> = [
   { id: "frequency", label: "Frequency" },
   { id: "escalation", label: "Escalation" },
-  { id: "resolution", label: "Resolution" },
   { id: "churnRisk", label: "Churn risk" },
   { id: "wins", label: "Wins" },
 ]
@@ -56,8 +57,8 @@ const resolveVisibleLevel = (topics: readonly BehaviourNodeRecord[], path: reado
 const bucketLabel = (bucket: string, axis: TrajectoryAxis): string => {
   if (axis === "turn") {
     const [start, end] = bucket.split(":").map((value) => Number(value))
-    if (Number.isFinite(start) && Number.isFinite(end) && start !== end) return `Turns ${start + 1}-${end + 1}`
-    if (Number.isFinite(start)) return `Turn ${start + 1}`
+    if (Number.isFinite(start) && Number.isFinite(end) && start !== end) return `${start + 1}-${end + 1}`
+    if (Number.isFinite(start)) return `${start + 1}`
     return bucket
   }
   const [, month, day] = bucket.split("-")
@@ -91,7 +92,7 @@ const coarsenTrajectoryRows = (
     maxWinsLastMessageIndex: number
   }[],
   axis: TrajectoryAxis,
-  metric: TrajectoryMetric,
+  metric: BehaviourTrajectoryMetric,
 ) => {
   if (axis === "day") {
     return {
@@ -175,7 +176,7 @@ const coarsenTrajectoryRows = (
 
 const metricValue = (
   row: { frequency: number; escalation: number; resolution: number; churnRisk: number; wins: number },
-  metric: TrajectoryMetric,
+  metric: BehaviourTrajectoryMetric,
 ) => row[metric]
 
 const maxLastMessageIndexForMetric = (
@@ -186,7 +187,7 @@ const maxLastMessageIndexForMetric = (
     maxChurnRiskLastMessageIndex: number
     maxWinsLastMessageIndex: number
   },
-  metric: TrajectoryMetric,
+  metric: BehaviourTrajectoryMetric,
 ) => {
   if (metric === "escalation") return row.maxEscalationLastMessageIndex
   if (metric === "resolution") return row.maxResolutionLastMessageIndex
@@ -206,29 +207,42 @@ export function BehavioursTrajectoryChart({
   topics,
   selectedPath,
   timeRange,
+  customBehaviorId,
   onSelectPath,
+  onSelectPoint,
 }: {
   readonly projectId: string
   readonly topics: readonly BehaviourNodeRecord[]
   readonly selectedPath: readonly string[]
   readonly timeRange: BehaviourTimeRangeRecord | undefined
+  readonly customBehaviorId?: string
   readonly onSelectPath: (path: readonly string[]) => void
+  readonly onSelectPoint: (selection: {
+    readonly path: readonly string[]
+    readonly axis: TrajectoryAxis
+    readonly metric: BehaviourTrajectoryMetric
+    readonly bucket: string
+    readonly maxTurn: number
+  }) => void
 }) {
-  const [metric, setMetric] = useState<TrajectoryMetric>("frequency")
-  const [axis, setAxis] = useState<TrajectoryAxis>("day")
+  const [metric, setMetric] = useState<BehaviourTrajectoryMetric>("frequency")
+  const [axis, setAxis] = useState<TrajectoryAxis>("turn")
   const [showAll, setShowAll] = useState(false)
   const visibleLevel = useMemo(() => resolveVisibleLevel(topics, selectedPath), [topics, selectedPath])
   const visibleNodes = showAll ? visibleLevel.nodes : visibleLevel.nodes.slice(0, MAX_COLLAPSED_ROWS)
   const visibleIds = visibleNodes.map((node) => node.cluster.id)
-  const { data, isLoading } = useBehaviourTrajectory(projectId, visibleIds, axis, timeRange)
+  const { data, isLoading } = useBehaviourTrajectory(projectId, visibleIds, axis, timeRange, customBehaviorId)
   const rawRows = data?.rows ?? []
   const trajectory = useMemo(() => coarsenTrajectoryRows(rawRows, axis, metric), [rawRows, axis, metric])
   const rows = trajectory.rows
   const buckets = trajectory.buckets
   const maxCount = Math.max(...rows.map((row) => metricValue(row, metric)), 0)
   const rowsByCategoryAndBucket = new Map(rows.map((row) => [`${row.categoryClusterId}:${row.bucket}`, row]))
+  const maxTurn =
+    axis === "turn"
+      ? Math.max(...buckets.map((candidate) => Number(candidate.split(":")[1] ?? candidate)).filter(Number.isFinite), 0)
+      : 0
   const chartHeight = Math.max(visibleNodes.length * ROW_HEIGHT_PX, ROW_HEIGHT_PX)
-  const canGoBack = visibleLevel.trail.length > 0
   const currentPath = visibleLevel.trail.map((node) => node.cluster.id)
 
   return (
@@ -254,28 +268,6 @@ export function BehavioursTrajectoryChart({
           onSelect={(value) => setAxis(value)}
         />
       </div>
-
-      {canGoBack || visibleLevel.trail.length > 0 ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {canGoBack ? (
-            <Button variant="ghost" size="sm" onClick={() => onSelectPath(currentPath.slice(0, -1))}>
-              <Icon icon={ChevronLeftIcon} size="xs" />
-              Back
-            </Button>
-          ) : null}
-          {visibleLevel.trail.map((node, index) => (
-            <button
-              type="button"
-              key={node.cluster.id}
-              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground hover:bg-muted/40"
-              onClick={() => onSelectPath(currentPath.slice(0, index + 1))}
-            >
-              {index > 0 ? <Icon icon={ChevronRightIcon} size="xs" color="foregroundMuted" /> : null}
-              <span className="max-w-36 truncate">{node.cluster.name}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
 
       <div className="mt-4 grid grid-cols-[minmax(8rem,12rem)_minmax(0,1fr)] gap-3">
         <div className="flex flex-col" style={{ height: chartHeight }}>
@@ -323,11 +315,7 @@ export function BehavioursTrajectoryChart({
                   const count = row ? metricValue(row, metric) : 0
                   if (count <= 0) return null
                   const size = bubbleSize(count, maxCount)
-                  const left =
-                    buckets.length === 1
-                      ? 50
-                      : CHART_X_PADDING_PERCENT +
-                        (bucketIndex / (buckets.length - 1)) * (100 - CHART_X_PADDING_PERCENT * 2)
+                  const left = bucketCenterXPercent(bucketIndex, buckets.length)
                   const top = rowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2
                   return (
                     <Tooltip
@@ -349,7 +337,15 @@ export function BehavioursTrajectoryChart({
                             marginTop: -size / 2,
                             backgroundColor: rowColors[rowIndex % rowColors.length],
                           }}
-                          onClick={() => onSelectPath([...currentPath, node.cluster.id])}
+                          onClick={() =>
+                            onSelectPoint({
+                              path: [...currentPath, node.cluster.id],
+                              axis,
+                              metric,
+                              bucket,
+                              maxTurn,
+                            })
+                          }
                         />
                       }
                     >
@@ -372,7 +368,7 @@ export function BehavioursTrajectoryChart({
           <span />
           <div className="relative h-5 text-muted-foreground text-xs">
             {buckets.map((bucket, index) => {
-              const left = buckets.length === 1 ? 50 : (index / (buckets.length - 1)) * 100
+              const left = bucketCenterXPercent(index, buckets.length)
               const show =
                 buckets.length <= 6 ||
                 index === 0 ||
@@ -380,18 +376,7 @@ export function BehavioursTrajectoryChart({
                 index % Math.ceil(buckets.length / 4) === 0
               if (!show) return null
               return (
-                <span
-                  key={bucket}
-                  className={cn(
-                    "absolute whitespace-nowrap",
-                    index === 0
-                      ? "translate-x-0"
-                      : index === buckets.length - 1
-                        ? "-translate-x-full"
-                        : "-translate-x-1/2",
-                  )}
-                  style={{ left: `${left}%` }}
-                >
+                <span key={bucket} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: `${left}%` }}>
                   {bucketLabel(bucket, axis)}
                 </span>
               )

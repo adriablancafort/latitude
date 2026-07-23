@@ -2,10 +2,12 @@ import { stringAttr } from "../attributes.ts"
 import type { OtlpKeyValue } from "../types.ts"
 import { resolveMetadata, tagsCandidates } from "./enrichment.ts"
 import {
+  agentNameCandidates,
   modelCandidates,
   resolveProvider,
   responseModelCandidates,
   sessionIdCandidates,
+  userEmailCandidates,
   userIdCandidates,
 } from "./identity.ts"
 import { resolveOperation } from "./operation.ts"
@@ -18,11 +20,13 @@ interface ResolvedAttributes extends ResolvedUsage {
   readonly operation: string
   readonly provider: string
   readonly model: string
+  readonly agentName: string
   readonly responseModel: string
   readonly responseId: string
   readonly finishReasons: readonly string[]
   readonly sessionId: string
   readonly userId: string
+  readonly userEmail: string
   readonly tags: readonly string[]
   readonly metadata: Readonly<Record<string, string>>
   readonly errorType: string
@@ -32,27 +36,33 @@ interface ResolveAttributesInput {
   readonly spanAttrs: readonly OtlpKeyValue[]
   readonly statusCode: string
   readonly spanName?: string
+  readonly scopeName?: string
+  readonly hasParent?: boolean
 }
 
 export function resolveAttributes({
   spanAttrs,
   statusCode,
   spanName = "",
+  scopeName = "",
+  hasParent = true,
 }: ResolveAttributesInput): ResolvedAttributes {
   const provider = resolveProvider(spanAttrs, spanName)
   const model = first(modelCandidates, spanAttrs) ?? ""
-  const operation = resolveOperation(spanAttrs, spanName)
+  const operation = resolveOperation(spanAttrs, spanName, scopeName, hasParent)
 
   return {
     operation,
     provider,
     model,
+    agentName: first(agentNameCandidates, spanAttrs) ?? "",
     responseModel: first(responseModelCandidates, spanAttrs) ?? "",
     ...resolveUsage({ attrs: spanAttrs, provider, model }),
     responseId: first(responseIdCandidates, spanAttrs) ?? "",
     finishReasons: first(finishReasonsCandidates, spanAttrs) ?? [],
     sessionId: first(sessionIdCandidates, spanAttrs) ?? "",
     userId: first(userIdCandidates, spanAttrs) ?? "",
+    userEmail: first(userEmailCandidates, spanAttrs) ?? "",
     tags: first(tagsCandidates, spanAttrs) ?? [],
     metadata: resolveMetadata(spanAttrs),
     errorType: statusCode === "error" ? (stringAttr(spanAttrs, "error.type") ?? "") : "",

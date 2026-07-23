@@ -11,48 +11,32 @@
  * are inert and can be cleaned from the backoffice.
  */
 export const FEATURE_FLAGS = {
-  "claude-code-wrapped": {
-    emoji: "🎁",
-    name: "Claude Code Wrapped",
-    description: "Creates the weekly Wrapped for projects with Claude Code telemetry within the organization.",
-  },
-  "wrapped-merch-promo": {
-    emoji: "👕",
-    name: "Wrapped merch promo",
-    description: "Shows the 41st.latitude.so 'share on X for free merch' banner inside the weekly Wrapped email.",
-  },
-  "email-notifications": {
-    emoji: "✉️",
-    name: "Email notifications",
-    description: "Enables email delivery for incident notifications and the related user preferences UI.",
-  },
-  notifications: {
-    emoji: "🔔",
-    name: "In-app notifications",
-    description: "Enables the in-app notifications bell and the per-project notification settings page.",
-  },
-  slack: {
-    emoji: "💬",
-    name: "Slack integration",
-    description: "Enables the Slack integration settings and incident delivery to Slack.",
-  },
-  "timeline-incidents": {
-    emoji: "📊",
-    name: "Timeline incidents overlay",
-    description: "Renders the incident overlay on trace and issue timeline histograms.",
-  },
-  monitors: {
-    emoji: "📡",
-    name: "Monitors",
+  sso: {
+    emoji: "🔐",
+    name: "Enterprise SSO",
     description:
-      "Unified alerting surface (per-monitor lifecycle, with notification delivery routed through the existing org/project notification settings).",
+      "Lets org owners/admins configure SAML or OIDC single sign-on and (optionally) enforce it for their verified email domain.",
   },
-  behaviours: {
-    emoji: "🏷️",
-    name: "Behaviours",
-    description: "Enables the live taxonomy behaviours page for clustered user and agent interaction patterns.",
+  customBehaviors: {
+    emoji: "🎛️",
+    name: "Custom behaviors",
+    description:
+      "Project-scoped, filter-defined behavior taxonomies with their own authoring UI. Hidden until the Generate flow ships.",
   },
-} as const satisfies Record<string, { readonly emoji: string; readonly name: string; readonly description: string }>
+  adaptiveTaxonomyClustering: {
+    emoji: "🌳",
+    name: "Adaptive taxonomy clustering",
+    description:
+      "Enforces node-relative adaptive taxonomy clustering for every project in the organization, raising the environment baseline (shadow/enforced) to enforced. The env kill switch still overrides it.",
+  },
+} as const satisfies Record<
+  string,
+  {
+    readonly emoji: string
+    readonly name: string
+    readonly description: string
+  }
+>
 
 export type FeatureFlagId = keyof typeof FEATURE_FLAGS
 

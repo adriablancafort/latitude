@@ -1,6 +1,6 @@
 import { NotFoundError, type ScoreId } from "@domain/shared"
 import { Effect } from "effect"
-import { ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT } from "../constants.ts"
+import { SIGNAL_FLAGGER_SLUG_SAMPLE_LIMIT } from "../constants.ts"
 import type { Score } from "../entities/score.ts"
 import type { ScoreRepositoryShape } from "../ports/score-repository.ts"
 
@@ -9,7 +9,7 @@ const EMPTY_PAGE = { items: [], hasMore: false, limit: 50, offset: 0 } as const
 export const createFakeScoreRepository = (overrides?: Partial<ScoreRepositoryShape>) => {
   const scores = new Map<string, Score>()
   const isCanonicalEvaluationScore = (score: Score, evaluationId: string) =>
-    score.source === "evaluation" && score.sourceId === evaluationId && score.draftedAt === null
+    score.sourceType === "evaluation" && score.sourceId === evaluationId && score.draftedAt === null
 
   const repository: ScoreRepositoryShape = {
     findById: (id) => {
@@ -21,15 +21,15 @@ export const createFakeScoreRepository = (overrides?: Partial<ScoreRepositorySha
       scores.set(score.id, score)
       return Effect.void
     },
-    assignIssueIfUnowned: ({ scoreId, issueId, updatedAt }) => {
+    assignSignalIfUnowned: ({ scoreId, signalId, updatedAt }) => {
       const score = scores.get(scoreId)
-      if (!score || score.issueId !== null) {
+      if (!score || score.signalId !== null) {
         return Effect.succeed(false)
       }
 
       scores.set(scoreId, {
         ...score,
-        issueId,
+        signalId,
         updatedAt,
       })
       return Effect.succeed(true)
@@ -52,14 +52,14 @@ export const createFakeScoreRepository = (overrides?: Partial<ScoreRepositorySha
           return score.traceId === traceId
         }),
       ),
-    existsByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) =>
+    findByEvaluationIdAndTraceId: ({ projectId, evaluationId, traceId }) =>
       Effect.succeed(
-        [...scores.values()].some(
+        [...scores.values()].find(
           (score) =>
             score.projectId === projectId &&
             isCanonicalEvaluationScore(score, evaluationId) &&
             score.traceId === traceId,
-        ),
+        ) ?? null,
       ),
     listByProjectId: () => Effect.succeed(EMPTY_PAGE),
     listBySourceId: () => Effect.succeed(EMPTY_PAGE),
@@ -68,24 +68,37 @@ export const createFakeScoreRepository = (overrides?: Partial<ScoreRepositorySha
     countAnnotationsByTraceIds: () => Effect.succeed([]),
     listBySessionId: () => Effect.succeed(EMPTY_PAGE),
     listBySpanId: () => Effect.succeed(EMPTY_PAGE),
-    listByIssueId: () => Effect.succeed(EMPTY_PAGE),
+    listBySignalId: () => Effect.succeed(EMPTY_PAGE),
     findPublishedSystemAnnotationByTraceAndFeedback: ({ projectId, traceId, feedback }) =>
       Effect.succeed(
         [...scores.values()].find(
           (score) =>
             score.projectId === projectId &&
-            score.source === "annotation" &&
+            score.sourceType === "annotation" &&
             score.sourceId === "SYSTEM" &&
             score.traceId === traceId &&
             score.feedback === feedback &&
             score.draftedAt === null,
         ) ?? null,
       ),
-    listFlaggerSlugsByIssueId: ({ projectId, issueId }) =>
+    listPublishedSystemAnnotationsBySession: ({ projectId, sessionId, limit = 200 }) =>
+      Effect.succeed(
+        [...scores.values()]
+          .filter(
+            (score) =>
+              score.projectId === projectId &&
+              score.sourceType === "annotation" &&
+              score.sourceId === "SYSTEM" &&
+              score.sessionId === sessionId &&
+              score.draftedAt === null,
+          )
+          .slice(0, limit),
+      ),
+    listFlaggerSlugsBySignalId: ({ projectId, signalId }) =>
       Effect.succeed(
         (() => {
           // Mirror the Postgres impl exactly: take the most-recent
-          // `ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT` SYSTEM annotation occurrences for
+          // `SIGNAL_FLAGGER_SLUG_SAMPLE_LIMIT` SYSTEM annotation occurrences for
           // the issue, *then* collapse to distinct slugs ordered by most-recent.
           // Applying the same sample cap means fake-backed tests can't observe
           // slugs that production would drop on noisy issues.
@@ -93,13 +106,13 @@ export const createFakeScoreRepository = (overrides?: Partial<ScoreRepositorySha
             .filter(
               (score) =>
                 score.projectId === projectId &&
-                score.issueId === issueId &&
-                score.source === "annotation" &&
+                score.signalId === signalId &&
+                score.sourceType === "annotation" &&
                 score.sourceId === "SYSTEM" &&
                 score.draftedAt === null,
             )
             .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-            .slice(0, ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT)
+            .slice(0, SIGNAL_FLAGGER_SLUG_SAMPLE_LIMIT)
 
           const lastSeenBySlug = new Map<string, Date>()
           for (const score of candidates) {

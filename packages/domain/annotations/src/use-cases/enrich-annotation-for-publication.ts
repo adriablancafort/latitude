@@ -6,10 +6,12 @@ import {
   type AIError,
   buildProjectScopedAiMetadata,
   formatGenAIMessage,
+  resolveGenerationConfig,
 } from "@domain/ai"
 import type { AnnotationScoreMetadata } from "@domain/scores"
 import {
   type BadRequestError,
+  LATITUDE_TELEMETRY_PROJECT_SLUGS,
   OrganizationId,
   ProjectId,
   type RepositoryError,
@@ -20,7 +22,7 @@ import { resolveLastLlmCompletionSpanId, SpanRepository, TraceRepository } from 
 import { Effect } from "effect"
 import type { GenAIMessage } from "rosetta-ai"
 import { z } from "zod"
-import { ANNOTATION_ENRICHMENT_MODEL } from "../constants.ts"
+import { ANNOTATION_DEFAULT_ENRICHMENT_MODEL } from "../constants.ts"
 import { loadAnnotationScoreForPublicationMutation } from "../helpers/load-annotation-score-for-publication.ts"
 import { resolveAnnotationAnchorText } from "../helpers/resolve-annotation-anchor-text.ts"
 
@@ -188,10 +190,12 @@ export const enrichAnnotationForPublicationUseCase = Effect.fn("annotations.enri
     }
   }
 
+  const modelConfig = yield* resolveGenerationConfig("ANNOTATION_ENRICHER", ANNOTATION_DEFAULT_ENRICHMENT_MODEL)
   const result = yield* ai.generate({
-    ...ANNOTATION_ENRICHMENT_MODEL,
+    ...modelConfig,
     telemetry: {
       spanName: AI_GENERATE_TELEMETRY_SPAN_NAMES.annotationEnrichPublication,
+      project: LATITUDE_TELEMETRY_PROJECT_SLUGS.annotationEnrichment,
       tags: [...AI_GENERATE_TELEMETRY_TAGS.annotationEnrichPublication],
       metadata: buildProjectScopedAiMetadata(
         {

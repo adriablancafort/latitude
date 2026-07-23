@@ -9,9 +9,7 @@ export type TaxonomyLineageTransitionType = z.infer<typeof taxonomyLineageTransi
 export const TaxonomyLineageTransitionType = {
   Birth: "birth",
   Death: "death",
-  Merge: "merge",
   Continuation: "continuation",
-  Split: "split",
 } as const satisfies Record<string, TaxonomyLineageTransitionType>
 
 export const taxonomyClusterLineageSchema = z.object({
@@ -56,6 +54,10 @@ export const taxonomyRunSchema = z.object({
   startedAt: z.date(),
   completedAt: z.date().nullable(),
   observationsScanned: z.number().int().nonnegative(),
+  observationsAvailable: z.number().int().nonnegative(),
+  observationsSampled: z.number().int().nonnegative(),
+  sampleStrategy: z.string(),
+  sampleCap: z.number().int().nonnegative(),
   noiseScanned: z.number().int().nonnegative(),
   clustersBorn: z.number().int().nonnegative(),
   clustersMerged: z.number().int().nonnegative(),

@@ -3,27 +3,26 @@ import { useForm } from "@tanstack/react-form"
 import { useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useCallback, useRef, useState } from "react"
-import { useHasFeatureFlag } from "../../../../../domains/feature-flags/feature-flags.collection.ts"
 import { invalidateProjectFlaggers, useProjectFlaggers } from "../../../../../domains/flaggers/flaggers.collection.ts"
 import {
   configureProjectFlaggersForOnboarding,
   listAvailableFlaggers,
 } from "../../../../../domains/flaggers/flaggers.functions.ts"
 import type { FlaggerPresetSlug } from "../../../../../domains/flaggers/presets.ts"
+import { useProjectsCollection } from "../../../../../domains/projects/projects.collection.ts"
+import { completeProjectOnboarding, updateProject } from "../../../../../domains/projects/projects.functions.ts"
 import { countTracesByProject } from "../../../../../domains/traces/traces.functions.ts"
 import { submitOnboarding } from "../../../../../domains/users/user.functions.ts"
+import { getQueryClient } from "../../../../../lib/data/query-client.tsx"
 import { toUserMessage } from "../../../../../lib/errors.ts"
 import { createFormSubmitHandler } from "../../../../../lib/form-server-action.ts"
-import { CarouselSlide, CarouselTrack } from "./onboarding/carousel-track.tsx"
-import { OnboardingGallery } from "./onboarding/onboarding-gallery.tsx"
+import { OnboardingRightPane } from "./onboarding/onboarding-right-pane.tsx"
 import * as FlaggersStep from "./onboarding/steps/flaggers-step.tsx"
 import * as RoleStep from "./onboarding/steps/role-step.tsx"
 import * as SlackStep from "./onboarding/steps/slack-step.tsx"
-import type { StackChoice } from "./onboarding/steps/stack-step.tsx"
-import * as StackStep from "./onboarding/steps/stack-step.tsx"
 import * as TelemetryStep from "./onboarding/steps/telemetry-step.tsx"
 
-export const ONBOARDING_STEPS = ["role", "stack", "flaggers", "slack", "telemetry"] as const
+export const ONBOARDING_STEPS = ["role", "flaggers", "slack", "telemetry"] as const
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number]
 
 type OnboardingFormValues = { jobTitle: string; phoneNumber: string }
@@ -41,7 +40,8 @@ export type OnboardingForm = ReturnType<typeof _onboardingFormTypeHelper>
 export function OnboardingFlow({
   projectId,
   projectSlug,
-  onboardingType,
+  projectName: initialProjectName,
+  persistedProjectName,
   slackEnvConfigured,
   initialStep,
   flashInstalled,
@@ -50,27 +50,20 @@ export function OnboardingFlow({
 }: {
   readonly projectId: string
   readonly projectSlug: string
-  readonly onboardingType: "code-agents" | "prod-traces" | undefined
+  readonly projectName: string
+  readonly persistedProjectName: string
   readonly slackEnvConfigured: boolean
   readonly initialStep?: OnboardingStep
   readonly flashInstalled?: "ok"
-  readonly flashError?: "workspace_taken" | "oauth_failed"
+  readonly flashError?: string
   readonly onOpenProjectTraces: (projectId: string) => Promise<void>
 }) {
   const { toast } = useToast()
   const navigate = useNavigate()
 
-  const slackFlagEnabled = useHasFeatureFlag("slack")
-  const slackStepEnabled = slackFlagEnabled && slackEnvConfigured
+  const slackStepEnabled = slackEnvConfigured
 
-  // Force back to `role` if a URL deep-links past `stack` without `onboardingType` set.
-  const onboardingTypeSet = onboardingType != null
-  const resolvedInitialStep: OnboardingStep = (() => {
-    if (initialStep == null) return "role"
-    if (initialStep === "role" || initialStep === "stack") return initialStep
-    if (!onboardingTypeSet) return "role"
-    return initialStep
-  })()
+  const resolvedInitialStep: OnboardingStep = initialStep ?? "role"
 
   const [step, setStep] = useState<OnboardingStep>(resolvedInitialStep)
 
@@ -110,9 +103,13 @@ export function OnboardingFlow({
     })
   })
 
-  const [stackChoice, setStackChoice] = useState<StackChoice | null>(null)
+  const [projectName, setProjectName] = useState(initialProjectName)
   const [selectedFlaggerSlugs, setSelectedFlaggerSlugs] = useState<ReadonlySet<string> | null>(null)
   const [isSavingFlaggers, setIsSavingFlaggers] = useState(false)
+  const { data: allProjects = [] } = useProjectsCollection()
+  // The demo to explore is now the shared, pre-created showcase (merged into the
+  // collection as the `isShowcase` row) rather than a per-org seeded sample.
+  const sampleProject = allProjects.find((project) => project.isShowcase === true)
 
   const form = useForm({
     defaultValues: {
@@ -121,8 +118,9 @@ export function OnboardingFlow({
     } satisfies OnboardingFormValues,
     onSubmit: createFormSubmitHandler(
       async ({ jobTitle, phoneNumber }) => {
-        const stack = stackChoice as StackChoice
-        await submitOnboarding({ data: { jobTitle, phoneNumber, stackChoice: stack, projectId } })
+        await submitOnboarding({
+          data: { jobTitle, phoneNumber, stackChoice: "production-agent", projectId },
+        })
       },
       {
         onSuccess: () => goToStep("flaggers"),
@@ -137,11 +135,6 @@ export function OnboardingFlow({
     await form.validateField("jobTitle", "change")
     const meta = form.getFieldMeta("jobTitle")
     if (meta && meta.errors.length > 0) return
-    goToStep("stack")
-  }
-
-  const handleStackContinue = () => {
-    if (stackChoice === null) return
     void form.handleSubmit()
   }
 
@@ -175,8 +168,18 @@ export function OnboardingFlow({
   }
 
   const handleConfigureFlaggers = async () => {
+    const trimmedProjectName = projectName.trim()
+    if (!trimmedProjectName) {
+      toast({ variant: "destructive", description: "Project name is required" })
+      return
+    }
+
     setIsSavingFlaggers(true)
     try {
+      if (trimmedProjectName !== persistedProjectName) {
+        await updateProject({ data: { id: projectId, name: trimmedProjectName } })
+        await getQueryClient().invalidateQueries({ queryKey: ["projects"] })
+      }
       await configureProjectFlaggersForOnboarding({
         data: {
           projectId,
@@ -242,39 +245,31 @@ export function OnboardingFlow({
     }
   })
 
-  const handleSkipToTraces = () => {
-    void onOpenProjectTraces(projectId)
+  const handleOpenSampleProject = async () => {
+    if (!sampleProject) return
+    try {
+      await completeProjectOnboarding({ data: { projectId } })
+      await getQueryClient().invalidateQueries({ queryKey: ["projects"] })
+      await navigate({ to: "/projects/$projectSlug", params: { projectSlug: sampleProject.slug } })
+    } catch (error) {
+      toast({ variant: "destructive", description: toUserMessage(error) })
+    }
   }
 
   const telemetryBackStep: OnboardingStep = slackStepEnabled ? "slack" : "flaggers"
 
-  // Right-pane slides. `role` and `stack` share one "intro" slide so the gallery stays put
-  // across the first two steps; the pane first slides when entering `flaggers`.
-  type RightSlide = "intro" | "flaggers" | "slack" | "telemetry"
-  const STEP_TO_RIGHT_SLIDE: Record<OnboardingStep, RightSlide> = {
-    role: "intro",
-    stack: "intro",
-    flaggers: "flaggers",
-    slack: "slack",
-    telemetry: "telemetry",
-  }
-  const visibleRightSlides: ReadonlyArray<RightSlide> = slackStepEnabled
-    ? ["intro", "flaggers", "slack", "telemetry"]
-    : ["intro", "flaggers", "telemetry"]
-  const activeRightSlideIndex = Math.max(0, visibleRightSlides.indexOf(STEP_TO_RIGHT_SLIDE[step]))
+  const activeSteps: ReadonlyArray<OnboardingStep> = slackStepEnabled
+    ? ["role", "flaggers", "slack", "telemetry"]
+    : ["role", "flaggers", "telemetry"]
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden bg-background">
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-y-auto overscroll-y-contain px-6 pt-12 pb-16 sm:px-12 sm:pt-16 sm:pb-20 lg:w-1/2 lg:border-r lg:border-border lg:px-24 lg:pt-24 lg:pb-32 [scrollbar-gutter:stable]">
         {step === "role" ? (
-          <RoleStep.Left form={form} onNext={() => void handleAdvanceFromRole()} />
-        ) : step === "stack" ? (
-          <StackStep.Left
-            stackChoice={stackChoice}
-            setStackChoice={setStackChoice}
+          <RoleStep.Left
+            form={form}
             isSubmitting={form.state.isSubmitting}
-            onBack={() => goToStep("role")}
-            onContinue={handleStackContinue}
+            onNext={() => void handleAdvanceFromRole()}
           />
         ) : step === "flaggers" ? (
           <FlaggersStep.Left
@@ -284,8 +279,10 @@ export function OnboardingFlow({
             enabledFlaggerSlugs={enabledFlaggerSlugs}
             toggleFlaggerSelection={toggleFlaggerSelection}
             applyFlaggerPreset={applyFlaggerPreset}
+            projectName={projectName}
+            onProjectNameChange={setProjectName}
             isSavingFlaggers={isSavingFlaggers}
-            onBack={() => goToStep("stack")}
+            onBack={() => goToStep("role")}
             onContinue={() => void handleConfigureFlaggers()}
           />
         ) : step === "slack" ? (
@@ -296,32 +293,22 @@ export function OnboardingFlow({
           />
         ) : (
           <TelemetryStep.Left
-            stackChoice={stackChoice}
             traceReceived={traceReceived}
             projectSlug={projectSlug}
+            sampleProjectSlug={sampleProject?.slug}
             onBack={() => goToStep(telemetryBackStep)}
-            onSkip={handleSkipToTraces}
+            onOpenSampleProject={() => void handleOpenSampleProject()}
           />
         )}
       </div>
 
-      <div className="hidden h-full min-h-0 min-w-0 shrink-0 flex-col overflow-hidden bg-secondary lg:flex lg:w-1/2">
-        <CarouselTrack activeIndex={activeRightSlideIndex}>
-          {visibleRightSlides.map((slide) => (
-            <CarouselSlide key={slide}>
-              {slide === "intro" ? (
-                <OnboardingGallery />
-              ) : slide === "flaggers" ? (
-                <FlaggersStep.Right enabledFlaggerSlugs={enabledFlaggerSlugs} availableFlaggers={availableFlaggers} />
-              ) : slide === "slack" ? (
-                <SlackStep.Right isActive={step === "slack"} />
-              ) : (
-                <TelemetryStep.Right traceReceived={traceReceived} />
-              )}
-            </CarouselSlide>
-          ))}
-        </CarouselTrack>
-      </div>
+      <OnboardingRightPane
+        steps={activeSteps}
+        currentStep={step}
+        enabledFlaggerSlugs={enabledFlaggerSlugs}
+        availableFlaggers={availableFlaggers}
+        traceReceived={traceReceived}
+      />
     </div>
   )
 }

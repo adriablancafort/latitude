@@ -89,6 +89,27 @@ latitude.shutdown()
 
 `capture()` does not create spans by itself. It only adds context to spans created by auto-instrumentation inside the callback. In most apps, wrap the outer request handler, conversation turn, or agent entrypoint once.
 
+If callback wrapping does not fit your control flow, use lifecycle mode:
+
+```python
+scope = capture.start(
+    "handle-user-request",
+    {
+        "user_id": "user_123",
+        "session_id": "session_abc",
+        "project": "support-agent",
+    },
+)
+
+try:
+    run_agent()
+except Exception as error:
+    capture.end(scope, error)
+    raise
+
+capture.end(scope)
+```
+
 Nested `capture()` calls inherit parent context and can override local values. Metadata is shallow-merged, and tags are appended and deduplicated.
 
 ## Existing OpenTelemetry setup
@@ -127,19 +148,26 @@ Set the integration key on `instrumentations` to the SDK module your app imports
 | OpenAI Agents SDK | `openai-agents` | `{"openai-agents": agents}` |
 | Anthropic | `anthropic` | `{"anthropic": anthropic}` |
 | Amazon Bedrock | `boto3` | `{"bedrock": boto3}` |
+| Amazon SageMaker | `boto3` | `{"sagemaker": boto3}` |
 | Cohere | `cohere` | `{"cohere": cohere}` |
 | LangChain | `langchain-core` | `{"langchain": langchain_core}` |
 | LlamaIndex | `llama-index` | `{"llamaindex": llama_index}` |
+| CrewAI | `crewai` | `{"crewai": crewai}` |
+| Haystack | `haystack-ai` | `{"haystack": haystack}` |
 | Together AI | `together` | `{"togetherai": together}` |
 | Vertex AI | `google-cloud-aiplatform` | `{"vertexai": vertexai}` |
 | Google AI Platform | `google-cloud-aiplatform` | `{"aiplatform": aiplatform}` |
-| Google Generative AI | `google-generativeai` | `{"google_generativeai": genai}` |
+| Google ADK | `google-adk` | `{"google_adk": google.adk}` |
+| Google Gemini | `google-genai` | `{"google_generativeai": genai}` |
 | Groq | `groq` | `{"groq": groq}` |
 | LiteLLM | `litellm` | `{"litellm": litellm}` |
 | Mistral AI | `mistralai` | `{"mistralai": mistralai}` |
 | Ollama | `ollama` | `{"ollama": ollama}` |
 | Replicate | `replicate` | `{"replicate": replicate}` |
+| IBM watsonx.ai | `ibm-watsonx-ai` | `{"watsonx": ibm_watsonx_ai}` |
+| Aleph Alpha | `aleph-alpha-client` | `{"aleph_alpha": aleph_alpha_client}` |
 | Transformers | `transformers` | `{"transformers": transformers}` |
+| DSPy | `dspy` | via litellm → `{"litellm": litellm}` |
 
 For provider-specific setup notes, use the provider and framework pages in the Observability sidebar.
 

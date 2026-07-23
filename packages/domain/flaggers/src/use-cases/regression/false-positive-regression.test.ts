@@ -9,9 +9,8 @@ import {
   TraceId,
 } from "@domain/shared"
 import type { TraceDetail } from "@domain/spans"
-import { LatitudeApiClient } from "@latitude-data/sdk"
-import { createAiLayer } from "@platform/ai"
-import { AIGenerateLive } from "@platform/ai-vercel"
+import { LatitudeClient } from "@latitude-data/sdk"
+import { AIGenerateLive, createAiLayer } from "@platform/ai"
 import { Effect, Layer } from "effect"
 import { describe, expect, it } from "vitest"
 import { z } from "zod"
@@ -53,8 +52,8 @@ function readRequiredEnv(name: string): string {
 }
 
 async function fetchFalsePositiveRegressionRows(): Promise<FalsePositiveRegressionRow[]> {
-  const client = new LatitudeApiClient({
-    token: readRequiredEnv("LAT_LATITUDE_TELEMETRY_API_KEY"),
+  const client = new LatitudeClient({
+    apiKey: readRequiredEnv("LAT_LATITUDE_TELEMETRY_API_KEY"),
     baseUrl: process.env.LAT_LATITUDE_API_URL?.trim() || "https://api.latitude.so",
     maxRetries: 0,
   })
@@ -121,12 +120,14 @@ function makeTraceDetail(input: {
     costTotalMicrocents: 0,
     sessionId: SessionId("session"),
     userId: ExternalUserId("user"),
+    userEmail: "",
     simulationId: SimulationId(""),
     tags: [],
     metadata: {},
     models: [],
     providers: [],
     serviceNames: [],
+    agentNames: [],
     rootSpanId: SpanId("r".repeat(16)),
     rootSpanName: "root",
     systemInstructions: input.systemInstructions,

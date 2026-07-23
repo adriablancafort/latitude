@@ -1,17 +1,17 @@
 import type {
-  IssueId,
   NotFoundError,
   ProjectId,
   RepositoryError,
   ScoreId,
   SessionId,
+  SignalId,
   SpanId,
   SqlClient,
   TraceId,
 } from "@domain/shared"
 import { Context, type Effect } from "effect"
 import { z } from "zod"
-import type { Score, ScoreSource } from "../entities/score.ts"
+import type { Score, ScoreSourceType } from "../entities/score.ts"
 
 export const scoreDraftModeSchema = z.enum(["exclude", "include", "only"])
 export type ScoreDraftMode = z.infer<typeof scoreDraftModeSchema>
@@ -38,9 +38,9 @@ export interface TraceAnnotationCounts {
 export interface ScoreRepositoryShape {
   findById(id: ScoreId): Effect.Effect<Score, NotFoundError | RepositoryError, SqlClient>
   save(score: Score): Effect.Effect<void, RepositoryError, SqlClient>
-  assignIssueIfUnowned(input: {
+  assignSignalIfUnowned(input: {
     readonly scoreId: ScoreId
-    readonly issueId: IssueId
+    readonly signalId: SignalId
     readonly updatedAt: Date
   }): Effect.Effect<boolean, RepositoryError, SqlClient>
   delete(id: ScoreId): Effect.Effect<void, RepositoryError, SqlClient>
@@ -55,15 +55,12 @@ export interface ScoreRepositoryShape {
     readonly traceId: TraceId
     readonly sessionId?: SessionId | null
   }): Effect.Effect<boolean, RepositoryError, SqlClient>
-  /**
-   * Checks whether a canonical persisted evaluation score already exists for
-   * one concrete `(evaluationId, traceId)` pair.
-   */
-  existsByEvaluationIdAndTraceId(input: {
+  /** Canonical persisted evaluation score for one `(evaluationId, traceId)` pair, or `null`. */
+  findByEvaluationIdAndTraceId(input: {
     readonly projectId: ProjectId
     readonly evaluationId: string
     readonly traceId: TraceId
-  }): Effect.Effect<boolean, RepositoryError, SqlClient>
+  }): Effect.Effect<Score | null, RepositoryError, SqlClient>
   listByProjectId(input: {
     readonly projectId: ProjectId
     readonly options?: ScoreListOptions
@@ -71,14 +68,14 @@ export interface ScoreRepositoryShape {
   /** When `sourceId` is omitted, lists all scores for the project with the given `source` (e.g. every annotation). */
   listBySourceId(input: {
     readonly projectId: ProjectId
-    readonly source: ScoreSource
+    readonly source: ScoreSourceType
     readonly sourceId?: string
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
   listByTraceId(input: {
     readonly projectId: ProjectId
     readonly traceId: TraceId
-    readonly source?: ScoreSource
+    readonly source?: ScoreSourceType
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
   /**
@@ -89,7 +86,7 @@ export interface ScoreRepositoryShape {
   listByTraceIds(input: {
     readonly projectId: ProjectId
     readonly traceIds: readonly TraceId[]
-    readonly source?: ScoreSource
+    readonly source?: ScoreSourceType
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
   countAnnotationsByTraceIds(input: {
@@ -107,11 +104,11 @@ export interface ScoreRepositoryShape {
     readonly spanId: SpanId
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
-  listByIssueId(input: {
+  listBySignalId(input: {
     readonly projectId: ProjectId
-    readonly issueId: IssueId
+    readonly signalId: SignalId
     /** Optional filter by score source (e.g. `annotation` or `evaluation`). */
-    readonly source?: ScoreSource
+    readonly source?: ScoreSourceType
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
   findPublishedSystemAnnotationByTraceAndFeedback(input: {
@@ -120,20 +117,29 @@ export interface ScoreRepositoryShape {
     readonly feedback: string
   }): Effect.Effect<Score | null, RepositoryError, SqlClient>
   /**
+   * Published flagger-authored annotations for one session, newest first,
+   * bounded by `limit`. Backs the flagger anchor dedup.
+   */
+  listPublishedSystemAnnotationsBySession(input: {
+    readonly projectId: ProjectId
+    readonly sessionId: SessionId
+    readonly limit?: number
+  }): Effect.Effect<readonly Score[], RepositoryError, SqlClient>
+  /**
    * Returns the distinct `metadata.flaggerSlug` values found across an issue's
    * published flagger-authored annotation occurrences (i.e. `source =
    * "annotation"`, `sourceId = "SYSTEM"`, `draftedAt IS NULL`), ordered with
    * the most-recently-firing flagger first.
    *
    * Implementations sample the most-recent
-   * `ISSUE_FLAGGER_SLUG_SAMPLE_LIMIT` annotation occurrences on the issue
+   * `SIGNAL_FLAGGER_SLUG_SAMPLE_LIMIT` annotation occurrences on the issue
    * before collapsing to distinct slugs — slug variety converges fast, so
    * this keeps the scan cheap for noisy issues (same sampling rationale as
-   * `aggregateTagsByIssues` in the CH analytics path).
+   * `aggregateTagsBySignals` in the CH analytics path).
    */
-  listFlaggerSlugsByIssueId(input: {
+  listFlaggerSlugsBySignalId(input: {
     readonly projectId: ProjectId
-    readonly issueId: IssueId
+    readonly signalId: SignalId
   }): Effect.Effect<readonly string[], RepositoryError, SqlClient>
 }
 

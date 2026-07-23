@@ -7,7 +7,7 @@ import * as core from "../../../../core/index.js";
 import * as environments from "../../../../environments.js";
 import { handleNonStatusCodeError } from "../../../../errors/handleNonStatusCodeError.js";
 import * as errors from "../../../../errors/index.js";
-import * as LatitudeApi from "../../../index.js";
+import * as Latitude from "../../../index.js";
 
 export declare namespace DatasetsClient {
     export type Options = BaseClientOptions;
@@ -18,7 +18,7 @@ export declare namespace DatasetsClient {
 export class DatasetsClient {
     protected readonly _options: NormalizedClientOptionsWithAuth<DatasetsClient.Options>;
 
-    constructor(options: DatasetsClient.Options) {
+    constructor(options: DatasetsClient.Options = {}) {
         this._options = normalizeClientOptionsWithAuth(options);
     }
 
@@ -26,34 +26,29 @@ export class DatasetsClient {
      * Returns a cursor-paginated page of datasets in the project.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {LatitudeApi.DatasetsListRequest} request
+     * @param {Latitude.ListDatasetsRequest} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
-     *     await client.datasets.list("projectSlug", {
-     *         cursor: "cursor",
-     *         limit: 1,
-     *         sortBy: "name",
-     *         sortDirection: "asc"
-     *     })
+     *     await client.datasets.list("projectSlug")
      */
     public list(
         projectSlug: string,
-        request: LatitudeApi.DatasetsListRequest = {},
+        request: Latitude.ListDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.PaginatedDatasets> {
+    ): core.HttpResponsePromise<Latitude.PaginatedDatasets> {
         return core.HttpResponsePromise.fromPromise(this.__list(projectSlug, request, requestOptions));
     }
 
     private async __list(
         projectSlug: string,
-        request: LatitudeApi.DatasetsListRequest = {},
+        request: Latitude.ListDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.PaginatedDatasets>> {
+    ): Promise<core.WithRawResponse<Latitude.PaginatedDatasets>> {
         const { cursor, limit, sortBy, sortDirection } = request;
         const _queryParams: Record<string, unknown> = {
             cursor,
@@ -71,12 +66,11 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: { ..._queryParams, ...requestOptions?.queryParams },
             queryString: core.url
                 .queryBuilder()
                 .addMany(_queryParams)
@@ -89,28 +83,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.PaginatedDatasets, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.PaginatedDatasets, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -130,12 +118,12 @@ export class DatasetsClient {
      * Creates an empty dataset in the project. The slug is derived from `name`.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
-     * @param {LatitudeApi.CreateDatasetBody} request
+     * @param {Latitude.CreateDatasetBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.create("projectSlug", {
@@ -144,17 +132,17 @@ export class DatasetsClient {
      */
     public create(
         projectSlug: string,
-        request: LatitudeApi.CreateDatasetBody,
+        request: Latitude.CreateDatasetBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Dataset> {
+    ): core.HttpResponsePromise<Latitude.Dataset> {
         return core.HttpResponsePromise.fromPromise(this.__create(projectSlug, request, requestOptions));
     }
 
     private async __create(
         projectSlug: string,
-        request: LatitudeApi.CreateDatasetBody,
+        request: Latitude.CreateDatasetBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Dataset>> {
+    ): Promise<core.WithRawResponse<Latitude.Dataset>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -165,13 +153,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets`,
             ),
             method: "POST",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -181,28 +169,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Dataset, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Dataset, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -223,11 +205,12 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {Latitude.GetDatasetsRequest} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.get("projectSlug", "datasetSlug")
@@ -235,16 +218,18 @@ export class DatasetsClient {
     public get(
         projectSlug: string,
         datasetSlug: string,
+        request: Latitude.GetDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Dataset> {
-        return core.HttpResponsePromise.fromPromise(this.__get(projectSlug, datasetSlug, requestOptions));
+    ): core.HttpResponsePromise<Latitude.Dataset> {
+        return core.HttpResponsePromise.fromPromise(this.__get(projectSlug, datasetSlug, request, requestOptions));
     }
 
     private async __get(
         projectSlug: string,
         datasetSlug: string,
+        _request: Latitude.GetDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Dataset>> {
+    ): Promise<core.WithRawResponse<Latitude.Dataset>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -255,12 +240,12 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -268,28 +253,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Dataset, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Dataset, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -310,10 +289,11 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {Latitude.DeleteDatasetsRequest} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.delete("projectSlug", "datasetSlug")
@@ -321,14 +301,16 @@ export class DatasetsClient {
     public delete(
         projectSlug: string,
         datasetSlug: string,
+        request: Latitude.DeleteDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
     ): core.HttpResponsePromise<void> {
-        return core.HttpResponsePromise.fromPromise(this.__delete(projectSlug, datasetSlug, requestOptions));
+        return core.HttpResponsePromise.fromPromise(this.__delete(projectSlug, datasetSlug, request, requestOptions));
     }
 
     private async __delete(
         projectSlug: string,
         datasetSlug: string,
+        _request: Latitude.DeleteDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
     ): Promise<core.WithRawResponse<void>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
@@ -341,12 +323,12 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}`,
             ),
             method: "DELETE",
             headers: _headers,
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
             maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
             abortSignal: requestOptions?.abortSignal,
@@ -360,17 +342,14 @@ export class DatasetsClient {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -391,12 +370,12 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.UpdateDatasetBody} request
+     * @param {Latitude.UpdateDatasetBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.update("projectSlug", "datasetSlug")
@@ -404,18 +383,18 @@ export class DatasetsClient {
     public update(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.UpdateDatasetBody = {},
+        request: Latitude.UpdateDatasetBody = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.Dataset> {
+    ): core.HttpResponsePromise<Latitude.Dataset> {
         return core.HttpResponsePromise.fromPromise(this.__update(projectSlug, datasetSlug, request, requestOptions));
     }
 
     private async __update(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.UpdateDatasetBody = {},
+        request: Latitude.UpdateDatasetBody = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.Dataset>> {
+    ): Promise<core.WithRawResponse<Latitude.Dataset>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -426,13 +405,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}`,
             ),
             method: "PATCH",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -442,28 +421,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.Dataset, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.Dataset, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -484,36 +457,31 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.DatasetsListRowsRequest} request
+     * @param {Latitude.ListRowsDatasetsRequest} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
-     *     await client.datasets.listRows("projectSlug", "datasetSlug", {
-     *         cursor: "cursor",
-     *         limit: 1,
-     *         search: "search",
-     *         sortDirection: "asc"
-     *     })
+     *     await client.datasets.listRows("projectSlug", "datasetSlug")
      */
     public listRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.DatasetsListRowsRequest = {},
+        request: Latitude.ListRowsDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.PaginatedDatasetRows> {
+    ): core.HttpResponsePromise<Latitude.PaginatedDatasetRows> {
         return core.HttpResponsePromise.fromPromise(this.__listRows(projectSlug, datasetSlug, request, requestOptions));
     }
 
     private async __listRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.DatasetsListRowsRequest = {},
+        request: Latitude.ListRowsDatasetsRequest = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.PaginatedDatasetRows>> {
+    ): Promise<core.WithRawResponse<Latitude.PaginatedDatasetRows>> {
         const { cursor, limit, search, sortDirection } = request;
         const _queryParams: Record<string, unknown> = {
             cursor,
@@ -531,12 +499,11 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows`,
             ),
             method: "GET",
             headers: _headers,
-            queryParameters: { ..._queryParams, ...requestOptions?.queryParams },
             queryString: core.url
                 .queryBuilder()
                 .addMany(_queryParams)
@@ -549,28 +516,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return { data: _response.body as LatitudeApi.PaginatedDatasetRows, rawResponse: _response.rawResponse };
+            return { data: _response.body as Latitude.PaginatedDatasetRows, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -591,12 +552,12 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.InsertDatasetRowsBody} request
+     * @param {Latitude.InsertDatasetRowsBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.insertRows("projectSlug", "datasetSlug", {
@@ -606,9 +567,9 @@ export class DatasetsClient {
     public insertRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.InsertDatasetRowsBody,
+        request: Latitude.InsertDatasetRowsBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.InsertDatasetRowsResponse> {
+    ): core.HttpResponsePromise<Latitude.InsertDatasetRowsResponse> {
         return core.HttpResponsePromise.fromPromise(
             this.__insertRows(projectSlug, datasetSlug, request, requestOptions),
         );
@@ -617,9 +578,9 @@ export class DatasetsClient {
     private async __insertRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.InsertDatasetRowsBody,
+        request: Latitude.InsertDatasetRowsBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.InsertDatasetRowsResponse>> {
+    ): Promise<core.WithRawResponse<Latitude.InsertDatasetRowsResponse>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -630,13 +591,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows`,
             ),
             method: "POST",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -646,31 +607,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return {
-                data: _response.body as LatitudeApi.InsertDatasetRowsResponse,
-                rawResponse: _response.rawResponse,
-            };
+            return { data: _response.body as Latitude.InsertDatasetRowsResponse, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -691,12 +643,12 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.DeleteDatasetRowsBody} request
+     * @param {Latitude.DeleteDatasetRowsBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.deleteRows("projectSlug", "datasetSlug", {
@@ -709,9 +661,9 @@ export class DatasetsClient {
     public deleteRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.DeleteDatasetRowsBody,
+        request: Latitude.DeleteDatasetRowsBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.DeleteDatasetRowsResponse> {
+    ): core.HttpResponsePromise<Latitude.DeleteDatasetRowsResponse> {
         return core.HttpResponsePromise.fromPromise(
             this.__deleteRows(projectSlug, datasetSlug, request, requestOptions),
         );
@@ -720,9 +672,9 @@ export class DatasetsClient {
     private async __deleteRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.DeleteDatasetRowsBody,
+        request: Latitude.DeleteDatasetRowsBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.DeleteDatasetRowsResponse>> {
+    ): Promise<core.WithRawResponse<Latitude.DeleteDatasetRowsResponse>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -733,13 +685,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows`,
             ),
             method: "DELETE",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -749,31 +701,22 @@ export class DatasetsClient {
             logging: this._options.logging,
         });
         if (_response.ok) {
-            return {
-                data: _response.body as LatitudeApi.DeleteDatasetRowsResponse,
-                rawResponse: _response.rawResponse,
-            };
+            return { data: _response.body as Latitude.DeleteDatasetRowsResponse, rawResponse: _response.rawResponse };
         }
 
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -790,16 +733,108 @@ export class DatasetsClient {
     }
 
     /**
+     * Partially updates a single row. Only the cells you send are changed; omitted cells keep their current value. Use this to fill in an `expectedOutput` (or any other cell) after rows were imported. Bumps the dataset version.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {string} rowId - Stable row identifier (from `listDatasetRows`).
+     * @param {Latitude.UpdateDatasetRowBody} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.updateRow("projectSlug", "datasetSlug", "rowId")
+     */
+    public updateRow(
+        projectSlug: string,
+        datasetSlug: string,
+        rowId: string,
+        request: Latitude.UpdateDatasetRowBody = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.UpdateDatasetRowResponse> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__updateRow(projectSlug, datasetSlug, rowId, request, requestOptions),
+        );
+    }
+
+    private async __updateRow(
+        projectSlug: string,
+        datasetSlug: string,
+        rowId: string,
+        request: Latitude.UpdateDatasetRowBody = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.UpdateDatasetRowResponse>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows/${core.url.encodePathParam(rowId)}`,
+            ),
+            method: "PATCH",
+            headers: _headers,
+            contentType: "application/json",
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            requestType: "json",
+            body: request,
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.UpdateDatasetRowResponse, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "PATCH",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/rows/{rowId}",
+        );
+    }
+
+    /**
      * Imports one row per trace matched by `traces`.
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.ImportRowsFromTracesBody} request
+     * @param {Latitude.ImportRowsFromTracesBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
      *
      * @example
      *     await client.datasets.importRowsFromTraces("projectSlug", "datasetSlug", {
@@ -812,9 +847,9 @@ export class DatasetsClient {
     public importRowsFromTraces(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.ImportRowsFromTracesBody,
+        request: Latitude.ImportRowsFromTracesBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.ImportRowsFromTracesResponse> {
+    ): core.HttpResponsePromise<Latitude.ImportRowsFromTracesResponse> {
         return core.HttpResponsePromise.fromPromise(
             this.__importRowsFromTraces(projectSlug, datasetSlug, request, requestOptions),
         );
@@ -823,9 +858,9 @@ export class DatasetsClient {
     private async __importRowsFromTraces(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.ImportRowsFromTracesBody,
+        request: Latitude.ImportRowsFromTracesBody,
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.ImportRowsFromTracesResponse>> {
+    ): Promise<core.WithRawResponse<Latitude.ImportRowsFromTracesResponse>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -836,13 +871,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows/import/traces`,
             ),
             method: "POST",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -853,7 +888,7 @@ export class DatasetsClient {
         });
         if (_response.ok) {
             return {
-                data: _response.body as LatitudeApi.ImportRowsFromTracesResponse,
+                data: _response.body as Latitude.ImportRowsFromTracesResponse,
                 rawResponse: _response.rawResponse,
             };
         }
@@ -861,22 +896,16 @@ export class DatasetsClient {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -901,13 +930,13 @@ export class DatasetsClient {
      *
      * @param {string} projectSlug - Project slug (human-readable identifier)
      * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
-     * @param {LatitudeApi.ExportDatasetRowsBody} request
+     * @param {Latitude.ExportDatasetRowsBody} request
      * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link LatitudeApi.BadRequestError}
-     * @throws {@link LatitudeApi.UnauthorizedError}
-     * @throws {@link LatitudeApi.NotFoundError}
-     * @throws {@link LatitudeApi.ContentTooLargeError}
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     * @throws {@link Latitude.ContentTooLargeError}
      *
      * @example
      *     await client.datasets.exportRows("projectSlug", "datasetSlug")
@@ -915,9 +944,9 @@ export class DatasetsClient {
     public exportRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.ExportDatasetRowsBody = {},
+        request: Latitude.ExportDatasetRowsBody = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): core.HttpResponsePromise<LatitudeApi.ExportDatasetRowsReadyResponse> {
+    ): core.HttpResponsePromise<Latitude.ExportDatasetRowsReadyResponse> {
         return core.HttpResponsePromise.fromPromise(
             this.__exportRows(projectSlug, datasetSlug, request, requestOptions),
         );
@@ -926,9 +955,9 @@ export class DatasetsClient {
     private async __exportRows(
         projectSlug: string,
         datasetSlug: string,
-        request: LatitudeApi.ExportDatasetRowsBody = {},
+        request: Latitude.ExportDatasetRowsBody = {},
         requestOptions?: DatasetsClient.RequestOptions,
-    ): Promise<core.WithRawResponse<LatitudeApi.ExportDatasetRowsReadyResponse>> {
+    ): Promise<core.WithRawResponse<Latitude.ExportDatasetRowsReadyResponse>> {
         const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
         const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
             _authRequest.headers,
@@ -939,13 +968,13 @@ export class DatasetsClient {
             url: core.url.join(
                 (await core.Supplier.get(this._options.baseUrl)) ??
                     (await core.Supplier.get(this._options.environment)) ??
-                    environments.LatitudeApiEnvironment.Production,
+                    environments.LatitudeEnvironment.Production,
                 `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/rows/export`,
             ),
             method: "POST",
             headers: _headers,
             contentType: "application/json",
-            queryParameters: requestOptions?.queryParams,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
             requestType: "json",
             body: request,
             timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
@@ -956,7 +985,7 @@ export class DatasetsClient {
         });
         if (_response.ok) {
             return {
-                data: _response.body as LatitudeApi.ExportDatasetRowsReadyResponse,
+                data: _response.body as Latitude.ExportDatasetRowsReadyResponse,
                 rawResponse: _response.rawResponse,
             };
         }
@@ -964,27 +993,21 @@ export class DatasetsClient {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 400:
-                    throw new LatitudeApi.BadRequestError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 401:
-                    throw new LatitudeApi.UnauthorizedError(
-                        _response.error.body as LatitudeApi.Error_,
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
                         _response.rawResponse,
                     );
                 case 404:
-                    throw new LatitudeApi.NotFoundError(
-                        _response.error.body as LatitudeApi.Error_,
-                        _response.rawResponse,
-                    );
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
                 case 413:
-                    throw new LatitudeApi.ContentTooLargeError(
-                        _response.error.body as LatitudeApi.ExportDatasetRowsTooLargeResponse,
+                    throw new Latitude.ContentTooLargeError(
+                        _response.error.body as Latitude.ExportDatasetRowsTooLargeResponse,
                         _response.rawResponse,
                     );
                 default:
-                    throw new errors.LatitudeApiError({
+                    throw new errors.LatitudeError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                         rawResponse: _response.rawResponse,
@@ -997,6 +1020,551 @@ export class DatasetsClient {
             _response.rawResponse,
             "POST",
             "/v1/projects/{projectSlug}/datasets/{datasetSlug}/rows/export",
+        );
+    }
+
+    /**
+     * Returns the ordered active column schema — the built-in columns plus any custom columns. Pass `includeRemoved=true` to also return soft-removed columns (so they can be restored).
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {Latitude.ListColumnsDatasetsRequest} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.listColumns("projectSlug", "datasetSlug")
+     */
+    public listColumns(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.ListColumnsDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.DatasetColumnsList> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__listColumns(projectSlug, datasetSlug, request, requestOptions),
+        );
+    }
+
+    private async __listColumns(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.ListColumnsDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.DatasetColumnsList>> {
+        const { includeRemoved } = request;
+        const _queryParams: Record<string, unknown> = {
+            includeRemoved: includeRemoved != null ? includeRemoved : undefined,
+        };
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns`,
+            ),
+            method: "GET",
+            headers: _headers,
+            queryString: core.url
+                .queryBuilder()
+                .addMany(_queryParams)
+                .mergeAdditional(requestOptions?.queryParams)
+                .build(),
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.DatasetColumnsList, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "GET",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns",
+        );
+    }
+
+    /**
+     * Adds a custom column. The column starts empty on every row; rows are written only when a cell is filled, so the dataset version does not change.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {Latitude.AddDatasetColumnBody} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.addColumn("projectSlug", "datasetSlug", {
+     *         name: "name"
+     *     })
+     */
+    public addColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.AddDatasetColumnBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.DatasetColumn> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__addColumn(projectSlug, datasetSlug, request, requestOptions),
+        );
+    }
+
+    private async __addColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.AddDatasetColumnBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.DatasetColumn>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns`,
+            ),
+            method: "POST",
+            headers: _headers,
+            contentType: "application/json",
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            requestType: "json",
+            body: request,
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.DatasetColumn, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "POST",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns",
+        );
+    }
+
+    /**
+     * Removes a column (built-in or custom) from the active schema. Its data is preserved and the column can be re-added; this does not change the dataset version.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {string} identifier - Stable column identifier.
+     * @param {Latitude.DeleteColumnDatasetsRequest} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.deleteColumn("projectSlug", "datasetSlug", "identifier")
+     */
+    public deleteColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        request: Latitude.DeleteColumnDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<void> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__deleteColumn(projectSlug, datasetSlug, identifier, request, requestOptions),
+        );
+    }
+
+    private async __deleteColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        _request: Latitude.DeleteColumnDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<void>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns/${core.url.encodePathParam(identifier)}`,
+            ),
+            method: "DELETE",
+            headers: _headers,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: undefined, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "DELETE",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns/{identifier}",
+        );
+    }
+
+    /**
+     * Renames a column. Works for both built-in and custom columns.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {string} identifier - Stable column identifier.
+     * @param {Latitude.UpdateDatasetColumnBody} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.updateColumn("projectSlug", "datasetSlug", "identifier", {
+     *         name: "name"
+     *     })
+     */
+    public updateColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        request: Latitude.UpdateDatasetColumnBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.DatasetColumn> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__updateColumn(projectSlug, datasetSlug, identifier, request, requestOptions),
+        );
+    }
+
+    private async __updateColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        request: Latitude.UpdateDatasetColumnBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.DatasetColumn>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns/${core.url.encodePathParam(identifier)}`,
+            ),
+            method: "PATCH",
+            headers: _headers,
+            contentType: "application/json",
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            requestType: "json",
+            body: request,
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.DatasetColumn, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "PATCH",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns/{identifier}",
+        );
+    }
+
+    /**
+     * Sets the left-to-right order of columns. This is a metadata edit and does not change the dataset version.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {Latitude.ReorderDatasetColumnsBody} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.reorderColumns("projectSlug", "datasetSlug", {
+     *         order: ["order"]
+     *     })
+     */
+    public reorderColumns(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.ReorderDatasetColumnsBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.DatasetColumnsList> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__reorderColumns(projectSlug, datasetSlug, request, requestOptions),
+        );
+    }
+
+    private async __reorderColumns(
+        projectSlug: string,
+        datasetSlug: string,
+        request: Latitude.ReorderDatasetColumnsBody,
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.DatasetColumnsList>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns/reorder`,
+            ),
+            method: "POST",
+            headers: _headers,
+            contentType: "application/json",
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            requestType: "json",
+            body: request,
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.DatasetColumnsList, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "POST",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns/reorder",
+        );
+    }
+
+    /**
+     * Restores a soft-removed column (built-in or custom) to the active schema, reconnecting its preserved data. Find removed identifiers via `listDatasetColumns` with `includeRemoved=true`.
+     *
+     * @param {string} projectSlug - Project slug (human-readable identifier)
+     * @param {string} datasetSlug - Dataset slug (human-readable identifier within the project).
+     * @param {string} identifier - Stable column identifier.
+     * @param {Latitude.RestoreColumnDatasetsRequest} request
+     * @param {DatasetsClient.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Latitude.BadRequestError}
+     * @throws {@link Latitude.UnauthorizedError}
+     * @throws {@link Latitude.NotFoundError}
+     *
+     * @example
+     *     await client.datasets.restoreColumn("projectSlug", "datasetSlug", "identifier")
+     */
+    public restoreColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        request: Latitude.RestoreColumnDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): core.HttpResponsePromise<Latitude.DatasetColumn> {
+        return core.HttpResponsePromise.fromPromise(
+            this.__restoreColumn(projectSlug, datasetSlug, identifier, request, requestOptions),
+        );
+    }
+
+    private async __restoreColumn(
+        projectSlug: string,
+        datasetSlug: string,
+        identifier: string,
+        _request: Latitude.RestoreColumnDatasetsRequest = {},
+        requestOptions?: DatasetsClient.RequestOptions,
+    ): Promise<core.WithRawResponse<Latitude.DatasetColumn>> {
+        const _authRequest: core.AuthRequest = await this._options.authProvider.getAuthRequest();
+        const _headers: core.Fetcher.Args["headers"] = mergeHeaders(
+            _authRequest.headers,
+            this._options?.headers,
+            requestOptions?.headers,
+        );
+        const _response = await core.fetcher({
+            url: core.url.join(
+                (await core.Supplier.get(this._options.baseUrl)) ??
+                    (await core.Supplier.get(this._options.environment)) ??
+                    environments.LatitudeEnvironment.Production,
+                `v1/projects/${core.url.encodePathParam(projectSlug)}/datasets/${core.url.encodePathParam(datasetSlug)}/columns/${core.url.encodePathParam(identifier)}/restore`,
+            ),
+            method: "POST",
+            headers: _headers,
+            queryString: core.url.queryBuilder().mergeAdditional(requestOptions?.queryParams).build(),
+            timeoutMs: (requestOptions?.timeoutInSeconds ?? this._options?.timeoutInSeconds ?? 60) * 1000,
+            maxRetries: requestOptions?.maxRetries ?? this._options?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+            fetchFn: this._options?.fetch,
+            logging: this._options.logging,
+        });
+        if (_response.ok) {
+            return { data: _response.body as Latitude.DatasetColumn, rawResponse: _response.rawResponse };
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 400:
+                    throw new Latitude.BadRequestError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                case 401:
+                    throw new Latitude.UnauthorizedError(
+                        _response.error.body as Latitude.Error_,
+                        _response.rawResponse,
+                    );
+                case 404:
+                    throw new Latitude.NotFoundError(_response.error.body as Latitude.Error_, _response.rawResponse);
+                default:
+                    throw new errors.LatitudeError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                        rawResponse: _response.rawResponse,
+                    });
+            }
+        }
+
+        return handleNonStatusCodeError(
+            _response.error,
+            _response.rawResponse,
+            "POST",
+            "/v1/projects/{projectSlug}/datasets/{datasetSlug}/columns/{identifier}/restore",
         );
     }
 }

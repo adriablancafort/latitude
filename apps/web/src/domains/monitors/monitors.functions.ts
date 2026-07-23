@@ -1,121 +1,193 @@
-import { AlertIncidentRepository } from "@domain/alerts"
-import { IssueRepository } from "@domain/issues"
+import { exportSelectionSchema } from "@domain/exports"
+import { IncidentRepository, resolveIncidentUseCase } from "@domain/incidents"
 import {
-  createMonitorAlertUseCase,
   createMonitorUseCase,
-  deleteMonitorAlertUseCase,
   deleteMonitorUseCase,
   formatHumanReadableAlert,
   getMonitorBySlugUseCase,
   getMonitorIncidentsUseCase,
   type ListMonitorsResult,
+  listMonitorsForTargetUseCase,
   listMonitorsUseCase,
-  listSavedSearchMonitorSlugsUseCase,
+  MetricSeriesReader,
+  type MetricSeriesTarget,
   type Monitor,
-  type MonitorAlert,
-  type MonitorAlertInput,
   type MonitorLastIncident,
+  MonitorRepository,
   type MonitorSearchResult,
+  monitorStreamForTargetType,
+  monitorTargetSchema,
   muteMonitorUseCase,
   searchMonitorsUseCase,
   unmuteMonitorUseCase,
-  updateMonitorAlertUseCase,
   updateMonitorUseCase,
 } from "@domain/monitors"
-import { listSavedSearches } from "@domain/saved-searches"
+import { listSavedSearches, SavedSearchRepository } from "@domain/saved-searches"
 import {
   AlertIncidentId,
   alertIncidentConditionSchema,
-  alertIncidentKindSchema,
-  alertIncidentSourceTypeSchema,
   alertSeveritySchema,
-  IssueId,
-  MonitorAlertId,
+  DEFAULT_SEVERITY_FOR_INCIDENT_NOTIFICATION_KEY,
+  filterSetSchema,
   MonitorId,
-  OrganizationId,
+  monitorStreamSchema,
   ProjectId,
+  SavedSearchId,
+  SignalId,
 } from "@domain/shared"
+import { SignalRepository } from "@domain/signals"
+import { MetricSeriesReaderLive } from "@platform/db-clickhouse"
 import {
-  AlertIncidentRepositoryLive,
-  IssueRepositoryLive,
+  IncidentRepositoryLive,
   MonitorRepositoryLive,
   NotificationRepositoryLive,
+  OutboxEventWriterLive,
   SavedSearchRepositoryLive,
-  withPostgres,
+  SignalRepositoryLive,
 } from "@platform/db-postgres"
 import { withTracing } from "@repo/observability"
 import { createServerFn } from "@tanstack/react-start"
 import { Effect, Layer } from "effect"
 import { z } from "zod"
-import { requireSession } from "../../server/auth.ts"
-import { getPostgresClient } from "../../server/clients.ts"
+import { getClickhouseClient, getPostgresClient } from "../../server/clients.ts"
+import type { ScopedOrgId } from "../../server/resolve-org-scope.ts"
+import { resolveOrgScope } from "../../server/resolve-org-scope.ts"
+import { withScopedClickHouse } from "../../server/scoped-clickhouse.ts"
+import { withScopedPostgres } from "../../server/scoped-postgres.ts"
 
-const toMonitorAlertRecord = (alert: MonitorAlert, savedSearchNames: ReadonlyMap<string, string>) => {
-  const savedSearchName = alert.source.id ? savedSearchNames.get(alert.source.id) : undefined
+interface SavedSearchRef {
+  readonly name: string
+  readonly slug: string
+}
+
+type MonitorRuleKind = "monitor.match" | "monitor.threshold" | "monitor.escalating"
+
+export interface MonitorRuleRecord {
+  readonly id: string
+  readonly monitorId: string
+  readonly kind: MonitorRuleKind
+  readonly source: { readonly type: "savedSearch"; readonly id: string | null } | null
+  readonly condition: Monitor["rule"]["config"]["condition"] | null
+  readonly severity: Monitor["rule"]["severity"]
+  readonly summary: string
+  readonly sourceName: string | null
+  readonly sourceSlug: string | null
+  readonly createdAt: string
+}
+
+const monitorMetricForTarget = (monitor: Monitor) =>
+  monitor.target.metric ?? monitor.rule.config.metric ?? { kind: "count" as const }
+
+const normalizedMonitorTarget = (monitor: Monitor) => ({
+  ...monitor.target,
+  kind: monitor.target.kind ?? monitor.target.type,
+  stream: monitorStreamForTargetType(monitor.target.type),
+  filterSet: monitor.target.filterSet ?? null,
+  query: monitor.target.query ?? null,
+  savedSearchId: monitor.target.savedSearchId ?? (monitor.target.type === "savedSearch" ? monitor.target.id : null),
+  metric: monitorMetricForTarget(monitor),
+})
+
+const toMonitorRuleRecord = (
+  monitor: Monitor,
+  savedSearchRefs: ReadonlyMap<string, SavedSearchRef>,
+): MonitorRuleRecord => {
+  const savedSearchId = monitor.target.type === "savedSearch" ? monitor.target.id : null
+  const ref = savedSearchId ? savedSearchRefs.get(savedSearchId) : undefined
+  const kind =
+    monitor.rule.trigger === "match"
+      ? "monitor.match"
+      : monitor.rule.trigger === "threshold"
+        ? "monitor.threshold"
+        : "monitor.escalating"
   return {
-    id: alert.id,
-    monitorId: alert.monitorId,
-    kind: alert.kind,
-    source: { type: alert.source.type, id: alert.source.id },
-    condition: alert.condition,
-    severity: alert.severity,
-    // Rendered server-side so the panel/list don't pull `@domain/monitors` into
-    // the client bundle. Saved-search summaries carry the source name when known.
-    summary: formatHumanReadableAlert(alert, savedSearchName ? { savedSearchName } : undefined),
-    createdAt: alert.createdAt.toISOString(),
+    id: monitor.id,
+    monitorId: monitor.id,
+    kind,
+    source: savedSearchId ? { type: "savedSearch" as const, id: savedSearchId } : null,
+    condition: monitor.rule.config.condition ?? null,
+    severity: monitor.rule.severity,
+    summary: formatHumanReadableAlert(
+      { kind, condition: monitor.rule.config.condition ?? null },
+      ref ? { savedSearchName: ref.name } : undefined,
+    ),
+    sourceName: ref?.name ?? null,
+    sourceSlug: ref?.slug ?? null,
+    createdAt: monitor.createdAt.toISOString(),
   }
 }
 
-/** @public Consumed by the M4/M5 alert form + details panel; not yet wired in M2. */
-export type MonitorAlertRecord = ReturnType<typeof toMonitorAlertRecord>
+const userAlertKindSchema = z.enum([
+  "savedSearch.match",
+  "savedSearch.threshold",
+  "savedSearch.escalating",
+  "monitor.match",
+  "monitor.threshold",
+  "monitor.escalating",
+])
 
-const toMonitorRecord = (monitor: Monitor, savedSearchNames: ReadonlyMap<string, string>) => ({
-  id: monitor.id,
-  organizationId: monitor.organizationId,
-  projectId: monitor.projectId,
-  slug: monitor.slug,
-  name: monitor.name,
-  description: monitor.description,
-  system: monitor.system,
-  alerts: monitor.alerts.map((alert) => toMonitorAlertRecord(alert, savedSearchNames)),
-  mutedAt: monitor.mutedAt?.toISOString() ?? null,
-  deletedAt: monitor.deletedAt?.toISOString() ?? null,
-  createdAt: monitor.createdAt.toISOString(),
-  updatedAt: monitor.updatedAt.toISOString(),
-})
+type UserAlertKind = z.infer<typeof userAlertKindSchema>
+
+const notificationKeyForAlertKind = (kind: UserAlertKind) =>
+  kind.includes("threshold")
+    ? "monitor.threshold"
+    : kind.includes("escalating")
+      ? "monitor.escalating"
+      : "monitor.match"
+
+const toMonitorRecord = (monitor: Monitor, savedSearchRefs: ReadonlyMap<string, SavedSearchRef>) => {
+  const rule = toMonitorRuleRecord(monitor, savedSearchRefs)
+  return {
+    id: monitor.id,
+    organizationId: monitor.organizationId,
+    projectId: monitor.projectId,
+    slug: monitor.slug,
+    name: monitor.name,
+    description: monitor.description,
+    system: monitor.system,
+    rule,
+    target: normalizedMonitorTarget(monitor),
+    targetSavedSearchName:
+      monitor.target.type === "savedSearch" && monitor.target.id
+        ? (savedSearchRefs.get(monitor.target.id)?.name ?? null)
+        : null,
+    targetSavedSearchSlug:
+      monitor.target.type === "savedSearch" && monitor.target.id
+        ? (savedSearchRefs.get(monitor.target.id)?.slug ?? null)
+        : null,
+    mutedAt: monitor.mutedAt?.toISOString() ?? null,
+    deletedAt: monitor.deletedAt?.toISOString() ?? null,
+    createdAt: monitor.createdAt.toISOString(),
+    updatedAt: monitor.updatedAt.toISOString(),
+  }
+}
 
 export type MonitorRecord = ReturnType<typeof toMonitorRecord>
 
-/**
- * Builds an id→name map for the saved searches referenced by these monitors'
- * alerts, so `formatHumanReadableAlert` can name the source. Fetches nothing
- * when no alert watches a saved search (the common all-system-monitors case).
- */
-const resolveSavedSearchNames = async (
-  orgId: OrganizationId,
+const resolveSavedSearchRefs = async (
+  orgId: ScopedOrgId,
   projectId: ProjectId,
   monitors: readonly Monitor[],
-): Promise<ReadonlyMap<string, string>> => {
-  const referencesSavedSearch = monitors.some((monitor) =>
-    monitor.alerts.some((alert) => alert.source.type === "savedSearch" && alert.source.id !== null),
-  )
+): Promise<ReadonlyMap<string, SavedSearchRef>> => {
+  const referencesSavedSearch = monitors.some((monitor) => monitor.target.type === "savedSearch" && monitor.target.id)
   if (!referencesSavedSearch) return new Map()
   const page = await Effect.runPromise(
     listSavedSearches({ projectId }).pipe(
-      withPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
+      withScopedPostgres(SavedSearchRepositoryLive, getPostgresClient(), orgId),
       withTracing,
     ),
   )
-  return new Map(page.items.map((search) => [search.id, search.name]))
+  return new Map(page.items.map((search) => [search.id, { name: search.name, slug: search.slug }]))
 }
 
-/** Resolve saved-search names for a single monitor, then map it to its wire record. */
-const toMonitorRecordResolved = async (orgId: OrganizationId, monitor: Monitor): Promise<MonitorRecord> => {
-  const names = await resolveSavedSearchNames(orgId, monitor.projectId, [monitor])
-  return toMonitorRecord(monitor, names)
+/** Resolve saved-search refs for a single monitor, then map it to its wire record. */
+const toMonitorRecordResolved = async (orgId: ScopedOrgId, monitor: Monitor): Promise<MonitorRecord> => {
+  const refs = await resolveSavedSearchRefs(orgId, monitor.projectId, [monitor])
+  return toMonitorRecord(monitor, refs)
 }
 
 export interface MonitorLastIncidentRecord {
+  readonly id: string
   readonly startedAtIso: string
   readonly endedAtIso: string | null
 }
@@ -127,18 +199,21 @@ export interface MonitorListRowRecord {
 
 const toMonitorListRowRecord = (
   monitor: Monitor,
-  savedSearchNames: ReadonlyMap<string, string>,
+  savedSearchRefs: ReadonlyMap<string, SavedSearchRef>,
   last: MonitorLastIncident | undefined,
 ): MonitorListRowRecord => ({
-  monitor: toMonitorRecord(monitor, savedSearchNames),
+  monitor: toMonitorRecord(monitor, savedSearchRefs),
   lastIncident: last
-    ? { startedAtIso: last.startedAt.toISOString(), endedAtIso: last.endedAt?.toISOString() ?? null }
+    ? { id: last.id, startedAtIso: last.startedAt.toISOString(), endedAtIso: last.endedAt?.toISOString() ?? null }
     : null,
 })
 
-const toListMonitorsResultRecord = (result: ListMonitorsResult, savedSearchNames: ReadonlyMap<string, string>) => ({
+const toListMonitorsResultRecord = (
+  result: ListMonitorsResult,
+  savedSearchRefs: ReadonlyMap<string, SavedSearchRef>,
+) => ({
   items: result.items.map((monitor) =>
-    toMonitorListRowRecord(monitor, savedSearchNames, result.lastIncidentByMonitorId.get(monitor.id)),
+    toMonitorListRowRecord(monitor, savedSearchRefs, result.lastIncidentByMonitorId.get(monitor.id)),
   ),
   totalCount: result.totalCount,
   hasMore: result.hasMore,
@@ -153,13 +228,13 @@ const listMonitorsInputSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
   offset: z.number().int().min(0).optional(),
   searchQuery: z.string().max(500).optional(),
+  system: z.boolean().optional(),
 })
 
 export const listMonitors = createServerFn({ method: "GET" })
   .inputValidator(listMonitorsInputSchema)
-  .handler(async ({ data }): Promise<ListMonitorsResultRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<ListMonitorsResultRecord> => {
+    const orgId = await resolveOrgScope(context)
     const pgClient = getPostgresClient()
 
     const result = await Effect.runPromise(
@@ -168,31 +243,136 @@ export const listMonitors = createServerFn({ method: "GET" })
         ...(data.limit !== undefined ? { limit: data.limit } : {}),
         ...(data.offset !== undefined ? { offset: data.offset } : {}),
         ...(data.searchQuery ? { searchQuery: data.searchQuery } : {}),
-      }).pipe(withPostgres(MonitorRepositoryLive, pgClient, orgId), withTracing),
+        ...(data.system !== undefined ? { system: data.system } : {}),
+      }).pipe(withScopedPostgres(MonitorRepositoryLive, pgClient, orgId), withTracing),
     )
 
-    const names = await resolveSavedSearchNames(orgId, ProjectId(data.projectId), result.items)
-    return toListMonitorsResultRecord(result, names)
+    const refs = await resolveSavedSearchRefs(orgId, ProjectId(data.projectId), result.items)
+    return toListMonitorsResultRecord(result, refs)
   })
 
-/**
- * Batched lookup powering the saved-search dropdown's "View monitor" deep-link: returns a map of
- * `savedSearchId -> monitorSlug` (the earliest-created live, unmuted monitor watching each search).
- */
-export const listSavedSearchMonitorSlugs = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ projectId: z.string() }))
-  .handler(async ({ data }): Promise<Record<string, string>> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
-    const pgClient = getPostgresClient()
+const listMonitorsForTargetInputSchema = z.object({
+  projectId: z.string(),
+  stream: monitorStreamSchema,
+  targetKind: monitorTargetSchema.shape.type.optional(),
+  filterSetContains: filterSetSchema,
+})
 
-    const rows = await Effect.runPromise(
-      listSavedSearchMonitorSlugsUseCase({ projectId: ProjectId(data.projectId) }).pipe(
-        withPostgres(MonitorRepositoryLive, pgClient, orgId),
+/** Live unified monitors targeting a specific tool/user — backs the in-context "monitors for this X" card. */
+export const listMonitorsForTarget = createServerFn({ method: "GET" })
+  .inputValidator(listMonitorsForTargetInputSchema)
+  .handler(async ({ data, context }): Promise<MonitorRecord[]> => {
+    const orgId = await resolveOrgScope(context)
+    const monitors = await Effect.runPromise(
+      listMonitorsForTargetUseCase({
+        projectId: ProjectId(data.projectId),
+        ...(data.targetKind !== undefined ? { targetType: data.targetKind } : {}),
+        filterSetContains: data.filterSetContains,
+      }).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
         withTracing,
       ),
     )
-    return Object.fromEntries(rows.map((row) => [row.savedSearchId, row.monitorSlug]))
+    const refs = await resolveSavedSearchRefs(orgId, ProjectId(data.projectId), monitors)
+    return monitors.map((monitor) => toMonitorRecord(monitor, refs))
+  })
+
+const getMonitorMetricSeriesInputSchema = z.object({
+  projectId: z.string(),
+  monitorSlug: z.string(),
+  fromMs: z.number(),
+  toMs: z.number(),
+  bucketMs: z.number().positive(),
+})
+
+interface MonitorMetricSeriesRecord {
+  /** Bucket start timestamps (ms epoch), oldest-first. */
+  readonly bucketStartsMs: number[]
+  /** Metric value per bucket, oldest-first, aligned to `bucketStartsMs`. */
+  readonly values: number[]
+  readonly bucketMs: number
+}
+
+/** Resolve a monitor's persisted target to the metric reader's `(stream, filterSet, query, metric)`. */
+const resolveMetricTarget = (monitor: Monitor) =>
+  Effect.gen(function* () {
+    const target = normalizedMonitorTarget(monitor)
+    if (target.kind === "savedSearch" && target.savedSearchId !== null) {
+      const search = yield* (yield* SavedSearchRepository)
+        .findById(SavedSearchId(target.savedSearchId))
+        .pipe(Effect.catchTag("SavedSearchNotFoundError", () => Effect.succeed(null)))
+      if (search === null) return null
+      return {
+        stream: target.stream,
+        filterSet: search.filterSet,
+        query: search.query,
+        metric: target.metric,
+      } satisfies MetricSeriesTarget
+    }
+    return {
+      stream: target.stream,
+      filterSet: target.filterSet ?? {},
+      query: target.query ?? null,
+      metric: target.metric,
+    } satisfies MetricSeriesTarget
+  })
+
+/** The monitor's tracked metric as a per-bucket series over `[fromMs, toMs)` — powers the monitor page histogram. */
+export const getMonitorMetricSeries = createServerFn({ method: "GET" })
+  .inputValidator(getMonitorMetricSeriesInputSchema)
+  .handler(async ({ data, context }): Promise<MonitorMetricSeriesRecord | null> => {
+    const orgId = await resolveOrgScope(context)
+    const projectId = ProjectId(data.projectId)
+    const bucketMs = data.bucketMs
+    const to = new Date(data.toMs)
+    const from = new Date(data.fromMs)
+
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const monitor = yield* getMonitorBySlugUseCase({ projectId, slug: data.monitorSlug }).pipe(
+          Effect.catchTag("NotFoundError", () => Effect.succeed(null)),
+        )
+        if (monitor === null) return null
+        const target = yield* resolveMetricTarget(monitor)
+        if (target === null) return null
+        const reader = yield* MetricSeriesReader
+        const newestFirst = yield* reader.seriesPerBucket({
+          organizationId: orgId,
+          projectId,
+          target,
+          from,
+          to,
+          bucketMs,
+        })
+        const count = newestFirst.length
+        // Reader returns newest-first aligned to `to`; flip to oldest-first with each bucket's start.
+        const values = [...newestFirst].reverse()
+        const bucketStartsMs = values.map((_, index) => data.toMs - (count - index) * bucketMs)
+        return { bucketStartsMs, values, bucketMs } satisfies MonitorMetricSeriesRecord
+      }).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
+        withScopedClickHouse(MetricSeriesReaderLive, getClickhouseClient(), orgId),
+        withTracing,
+      ),
+    )
   })
 
 export interface MonitorSearchRecord {
@@ -230,8 +410,8 @@ export const searchMonitorsOrgWide = createServerFn({ method: "GET" })
       limit: z.number().int().min(1).max(25).optional(),
     }),
   )
-  .handler(async ({ data }): Promise<readonly MonitorSearchRecord[]> => {
-    const { organizationId } = await requireSession()
+  .handler(async ({ data, context }): Promise<readonly MonitorSearchRecord[]> => {
+    const orgId = await resolveOrgScope(context)
     const pgClient = getPostgresClient()
 
     const results = await Effect.runPromise(
@@ -239,7 +419,7 @@ export const searchMonitorsOrgWide = createServerFn({ method: "GET" })
         ...(data.searchQuery !== undefined ? { searchQuery: data.searchQuery } : {}),
         ...(data.preferProjectId !== undefined ? { preferProjectId: ProjectId(data.preferProjectId) } : {}),
         ...(data.limit !== undefined ? { limit: data.limit } : {}),
-      }).pipe(withPostgres(MonitorRepositoryLive, pgClient, OrganizationId(organizationId)), withTracing),
+      }).pipe(withScopedPostgres(MonitorRepositoryLive, pgClient, orgId), withTracing),
     )
 
     return results.map(toMonitorSearchRecord)
@@ -252,15 +432,14 @@ const getMonitorInputSchema = z.object({
 
 export const getMonitorBySlug = createServerFn({ method: "GET" })
   .inputValidator(getMonitorInputSchema)
-  .handler(async ({ data }): Promise<MonitorRecord | null> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<MonitorRecord | null> => {
+    const orgId = await resolveOrgScope(context)
     const pgClient = getPostgresClient()
 
     const monitor = await Effect.runPromise(
       getMonitorBySlugUseCase({ projectId: ProjectId(data.projectId), slug: data.slug }).pipe(
         Effect.catchTag("NotFoundError", () => Effect.succeed(null)),
-        withPostgres(MonitorRepositoryLive, pgClient, orgId),
+        withScopedPostgres(MonitorRepositoryLive, pgClient, orgId),
         withTracing,
       ),
     )
@@ -270,14 +449,17 @@ export const getMonitorBySlug = createServerFn({ method: "GET" })
 
 const monitorMutationInputSchema = z.object({ monitorId: z.string() })
 
-const runMonitorMute = async (monitorId: string, muted: boolean): Promise<MonitorRecord> => {
-  const { organizationId } = await requireSession()
-  const orgId = OrganizationId(organizationId)
+const runMonitorMute = async (
+  monitorId: string,
+  muted: boolean,
+  context: Parameters<typeof resolveOrgScope>[0],
+): Promise<MonitorRecord> => {
+  const orgId = await resolveOrgScope(context)
   const useCase = muted ? muteMonitorUseCase : unmuteMonitorUseCase
 
   const monitor = await Effect.runPromise(
     useCase({ id: MonitorId(monitorId) }).pipe(
-      withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId),
+      withScopedPostgres(MonitorRepositoryLive, getPostgresClient(), orgId),
       withTracing,
     ),
   )
@@ -286,55 +468,255 @@ const runMonitorMute = async (monitorId: string, muted: boolean): Promise<Monito
 
 export const muteMonitor = createServerFn({ method: "POST" })
   .inputValidator(monitorMutationInputSchema)
-  .handler(({ data }): Promise<MonitorRecord> => runMonitorMute(data.monitorId, true))
+  .handler(({ data, context }): Promise<MonitorRecord> => runMonitorMute(data.monitorId, true, context))
 
 export const unmuteMonitor = createServerFn({ method: "POST" })
   .inputValidator(monitorMutationInputSchema)
-  .handler(({ data }): Promise<MonitorRecord> => runMonitorMute(data.monitorId, false))
+  .handler(({ data, context }): Promise<MonitorRecord> => runMonitorMute(data.monitorId, false, context))
+
+const bulkMonitorsInputSchema = z.object({
+  projectId: z.string(),
+  selection: exportSelectionSchema,
+  // Filters mirroring the dashboard list query, so `all` / `allExcept`
+  // selections act on exactly the rows the table shows.
+  searchQuery: z.string().max(500).optional(),
+  system: z.boolean().optional(),
+})
+
+type BulkMonitorsInput = z.infer<typeof bulkMonitorsInputSchema>
+
+const BULK_MONITORS_BATCH_SIZE = 100
+
+const resolveBulkSelectionMonitorIds = async (
+  orgId: ScopedOrgId,
+  data: BulkMonitorsInput,
+): Promise<readonly string[]> => {
+  if (data.selection.mode === "selected") return data.selection.rowIds
+
+  const excluded = data.selection.mode === "allExcept" ? new Set(data.selection.rowIds) : null
+  const trimmedSearchQuery = data.searchQuery?.trim() || undefined
+  const ids: string[] = []
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let offset = 0
+      while (true) {
+        const page = yield* listMonitorsUseCase({
+          projectId: ProjectId(data.projectId),
+          limit: BULK_MONITORS_BATCH_SIZE,
+          offset,
+          ...(trimmedSearchQuery ? { searchQuery: trimmedSearchQuery } : {}),
+          ...(data.system !== undefined ? { system: data.system } : {}),
+        })
+        if (page.items.length === 0) break
+        for (const monitor of page.items) {
+          if (excluded?.has(monitor.id)) continue
+          ids.push(monitor.id)
+        }
+        if (!page.hasMore) break
+        offset += page.limit
+      }
+    }).pipe(withScopedPostgres(MonitorRepositoryLive, getPostgresClient(), orgId), withTracing),
+  )
+
+  return ids
+}
+
+export const bulkMuteMonitors = createServerFn({ method: "POST" })
+  .inputValidator(bulkMonitorsInputSchema)
+  .handler(async ({ data, context }): Promise<{ readonly mutedCount: number }> => {
+    const orgId = await resolveOrgScope(context)
+    const monitorIds = await resolveBulkSelectionMonitorIds(orgId, data)
+
+    const mutedCount = await Effect.runPromise(
+      Effect.gen(function* () {
+        let count = 0
+        for (const monitorId of monitorIds) {
+          yield* muteMonitorUseCase({ id: MonitorId(monitorId) }).pipe(
+            Effect.catchTag("NotFoundError", () => Effect.void),
+          )
+          count += 1
+        }
+        return count
+      }).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
+        withTracing,
+      ),
+    )
+
+    return { mutedCount }
+  })
+
+export const bulkDeleteMonitors = createServerFn({ method: "POST" })
+  .inputValidator(bulkMonitorsInputSchema)
+  .handler(
+    async ({ data, context }): Promise<{ readonly deletedCount: number; readonly skippedSystemCount: number }> => {
+      const orgId = await resolveOrgScope(context)
+      const monitorIds = await resolveBulkSelectionMonitorIds(orgId, data)
+
+      const counts = await Effect.runPromise(
+        Effect.gen(function* () {
+          let deletedCount = 0
+          let skippedSystemCount = 0
+          for (const monitorId of monitorIds) {
+            const outcome = yield* deleteMonitorUseCase({ id: MonitorId(monitorId) }).pipe(
+              Effect.as("deleted" as const),
+              Effect.catchTags({
+                SystemMonitorForbiddenError: () => Effect.succeed("skipped" as const),
+                NotFoundError: () => Effect.succeed("missing" as const),
+              }),
+            )
+            if (outcome === "deleted") deletedCount += 1
+            if (outcome === "skipped") skippedSystemCount += 1
+          }
+          return { deletedCount, skippedSystemCount }
+        }).pipe(
+          withScopedPostgres(
+            Layer.mergeAll(
+              MonitorRepositoryLive,
+              SavedSearchRepositoryLive,
+              IncidentRepositoryLive,
+              OutboxEventWriterLive,
+            ),
+            getPostgresClient(),
+            orgId,
+          ),
+          withTracing,
+        ),
+      )
+
+      return counts
+    },
+  )
+
+export const bulkResolveMonitorLastIncidents = createServerFn({ method: "POST" })
+  .inputValidator(bulkMonitorsInputSchema)
+  .handler(async ({ data, context }): Promise<{ readonly resolvedCount: number }> => {
+    const orgId = await resolveOrgScope(context)
+    const monitorIds = await resolveBulkSelectionMonitorIds(orgId, data)
+
+    const resolvedCount = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* IncidentRepository
+        let count = 0
+        for (const monitorId of monitorIds) {
+          // Same ongoing-first pick the dashboard's "Last incident" column shows.
+          const page = yield* repository.listByMonitorId({ monitorId: MonitorId(monitorId), limit: 1 })
+          const last = page.items[0]
+          if (!last || last.endedAt !== null) continue
+          yield* resolveIncidentUseCase({ id: last.id, endedAt: new Date() })
+          count += 1
+        }
+        return count
+      }).pipe(
+        withScopedPostgres(Layer.mergeAll(IncidentRepositoryLive, OutboxEventWriterLive), getPostgresClient(), orgId),
+        withTracing,
+      ),
+    )
+
+    return { resolvedCount }
+  })
+
+const resolveIncidentInputSchema = z.object({ incidentId: z.string() })
+
+export const resolveMonitorIncident = createServerFn({ method: "POST" })
+  .inputValidator(resolveIncidentInputSchema)
+  .handler(async ({ data, context }): Promise<{ readonly id: string; readonly endedAtIso: string | null }> => {
+    const orgId = await resolveOrgScope(context)
+
+    const incident = await Effect.runPromise(
+      resolveIncidentUseCase({ id: AlertIncidentId(data.incidentId), endedAt: new Date() }).pipe(
+        withScopedPostgres(Layer.mergeAll(IncidentRepositoryLive, OutboxEventWriterLive), getPostgresClient(), orgId),
+        withTracing,
+      ),
+    )
+    return { id: incident.id, endedAtIso: incident.endedAt?.toISOString() ?? null }
+  })
 
 // --- Create / update / delete (M5) -----------------------------------------
 
 const NAME_MAX_LENGTH = 128
 const DESCRIPTION_MAX_LENGTH = 2000
 
-const monitorAlertSourceSchema = z.object({ type: alertIncidentSourceTypeSchema, id: z.string().nullable() })
+const monitorRuleSourceSchema = z.object({
+  type: z.enum(["savedSearch", "monitor", "signal"]),
+  id: z.string().nullable(),
+})
 
-/** Shared alert-creation fields; `condition`/`severity` default in the use-case. */
 const createAlertFieldsSchema = z.object({
-  kind: alertIncidentKindSchema,
-  source: monitorAlertSourceSchema,
+  kind: userAlertKindSchema,
+  source: monitorRuleSourceSchema.nullable(),
   condition: alertIncidentConditionSchema.nullish(),
   severity: alertSeveritySchema.optional(),
 })
 
-const toAlertInput = (fields: z.infer<typeof createAlertFieldsSchema>): MonitorAlertInput => ({
-  kind: fields.kind,
-  source: { type: fields.source.type, id: fields.source.id },
-  condition: fields.condition ?? null,
-  ...(fields.severity !== undefined ? { severity: fields.severity } : {}),
-})
+const triggerForAlertKind = (kind: UserAlertKind) =>
+  kind.includes("threshold") ? "threshold" : kind.includes("escalating") ? "escalating" : "match"
 
 const createMonitorInputSchema = z.object({
   projectId: z.string(),
   name: z.string().min(1).max(NAME_MAX_LENGTH),
   description: z.string().max(DESCRIPTION_MAX_LENGTH).optional(),
-  alerts: z.array(createAlertFieldsSchema).min(1),
+  rule: createAlertFieldsSchema,
+  target: monitorTargetSchema.optional(),
 })
 
 export const createMonitor = createServerFn({ method: "POST" })
   .inputValidator(createMonitorInputSchema)
-  .handler(async ({ data }): Promise<MonitorRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<MonitorRecord> => {
+    const orgId = await resolveOrgScope(context)
 
     const monitor = await Effect.runPromise(
-      createMonitorUseCase({
-        organizationId: orgId,
-        projectId: ProjectId(data.projectId),
-        name: data.name,
-        ...(data.description !== undefined ? { description: data.description } : {}),
-        alerts: data.alerts.map(toAlertInput),
-      }).pipe(withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId), withTracing),
+      (() => {
+        const rule = data.rule
+        const target = data.target ?? {
+          type: "savedSearch" as const,
+          id: rule.source?.id ?? null,
+          filterSet: undefined,
+          query: null,
+        }
+        const trigger = triggerForAlertKind(rule.kind)
+        const metric = data.target?.metric ?? { kind: "count" as const }
+        return createMonitorUseCase({
+          organizationId: orgId,
+          projectId: ProjectId(data.projectId),
+          name: data.name,
+          ...(data.description !== undefined ? { description: data.description } : {}),
+          target,
+          rule: {
+            trigger,
+            config: {
+              ...(data.target?.filterSet ? { filterSet: data.target.filterSet } : {}),
+              metric,
+              ...(rule.condition ? { condition: rule.condition as never } : {}),
+            },
+            severity:
+              rule.severity ?? DEFAULT_SEVERITY_FOR_INCIDENT_NOTIFICATION_KEY[notificationKeyForAlertKind(rule.kind)],
+          },
+        })
+      })().pipe(
+        // SavedSearchRepository backs the semantic-search monitorability check on the watched search.
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
+        withTracing,
+      ),
     )
     return toMonitorRecordResolved(orgId, monitor)
   })
@@ -347,91 +729,84 @@ const updateMonitorInputSchema = z.object({
 
 export const updateMonitor = createServerFn({ method: "POST" })
   .inputValidator(updateMonitorInputSchema)
-  .handler(async ({ data }): Promise<MonitorRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<MonitorRecord> => {
+    const orgId = await resolveOrgScope(context)
 
     const monitor = await Effect.runPromise(
       updateMonitorUseCase({
         id: MonitorId(data.monitorId),
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.description !== undefined ? { description: data.description } : {}),
-      }).pipe(withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId), withTracing),
+      }).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
+        withTracing,
+      ),
     )
     return toMonitorRecordResolved(orgId, monitor)
   })
 
 export const deleteMonitor = createServerFn({ method: "POST" })
   .inputValidator(monitorMutationInputSchema)
-  .handler(async ({ data }): Promise<{ readonly id: string }> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+  .handler(async ({ data, context }): Promise<{ readonly id: string }> => {
+    const orgId = await resolveOrgScope(context)
 
     const monitor = await Effect.runPromise(
       deleteMonitorUseCase({ id: MonitorId(data.monitorId) }).pipe(
-        withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId),
+        withScopedPostgres(
+          Layer.mergeAll(MonitorRepositoryLive, IncidentRepositoryLive, OutboxEventWriterLive),
+          getPostgresClient(),
+          orgId,
+        ),
         withTracing,
       ),
     )
     return { id: monitor.id }
   })
 
-const createMonitorAlertInputSchema = createAlertFieldsSchema.extend({ monitorId: z.string() })
-
-export const createMonitorAlert = createServerFn({ method: "POST" })
-  .inputValidator(createMonitorAlertInputSchema)
-  .handler(async ({ data }): Promise<MonitorRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
-
-    const monitor = await Effect.runPromise(
-      createMonitorAlertUseCase({ monitorId: MonitorId(data.monitorId), ...toAlertInput(data) }).pipe(
-        withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId),
-        withTracing,
-      ),
-    )
-    return toMonitorRecordResolved(orgId, monitor)
-  })
-
-const updateMonitorAlertInputSchema = z.object({
+const updateMonitorRuleInputSchema = z.object({
   monitorId: z.string(),
-  alertId: z.string(),
-  kind: alertIncidentKindSchema.optional(),
-  source: monitorAlertSourceSchema.optional(),
-  condition: alertIncidentConditionSchema.nullish(),
   severity: alertSeveritySchema.optional(),
 })
 
-export const updateMonitorAlert = createServerFn({ method: "POST" })
-  .inputValidator(updateMonitorAlertInputSchema)
-  .handler(async ({ data }): Promise<MonitorRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
+export const updateMonitorRule = createServerFn({ method: "POST" })
+  .inputValidator(updateMonitorRuleInputSchema)
+  .handler(async ({ data, context }): Promise<MonitorRecord> => {
+    const orgId = await resolveOrgScope(context)
 
     const monitor = await Effect.runPromise(
-      updateMonitorAlertUseCase({
-        monitorId: MonitorId(data.monitorId),
-        alertId: MonitorAlertId(data.alertId),
-        ...(data.kind !== undefined ? { kind: data.kind } : {}),
-        ...(data.source !== undefined ? { source: { type: data.source.type, id: data.source.id } } : {}),
-        ...(data.condition !== undefined ? { condition: data.condition } : {}),
-        ...(data.severity !== undefined ? { severity: data.severity } : {}),
-      }).pipe(withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId), withTracing),
-    )
-    return toMonitorRecordResolved(orgId, monitor)
-  })
-
-export const deleteMonitorAlert = createServerFn({ method: "POST" })
-  .inputValidator(z.object({ monitorId: z.string(), alertId: z.string() }))
-  .handler(async ({ data }): Promise<MonitorRecord> => {
-    const { organizationId } = await requireSession()
-    const orgId = OrganizationId(organizationId)
-
-    const monitor = await Effect.runPromise(
-      deleteMonitorAlertUseCase({
-        monitorId: MonitorId(data.monitorId),
-        alertId: MonitorAlertId(data.alertId),
-      }).pipe(withPostgres(MonitorRepositoryLive, getPostgresClient(), orgId), withTracing),
+      Effect.gen(function* () {
+        const repository = yield* MonitorRepository
+        const current = yield* repository.findById(MonitorId(data.monitorId))
+        return yield* updateMonitorUseCase({
+          id: current.id,
+          rule: {
+            trigger: current.rule.trigger,
+            config: current.rule.config,
+            severity: data.severity ?? current.rule.severity,
+          },
+        })
+      }).pipe(
+        withScopedPostgres(
+          Layer.mergeAll(
+            MonitorRepositoryLive,
+            SavedSearchRepositoryLive,
+            IncidentRepositoryLive,
+            OutboxEventWriterLive,
+          ),
+          getPostgresClient(),
+          orgId,
+        ),
+        withTracing,
+      ),
     )
     return toMonitorRecordResolved(orgId, monitor)
   })
@@ -447,25 +822,27 @@ export const getMonitorIncidentStats = createServerFn({ method: "GET" })
   .handler(
     async ({
       data,
+      context,
     }): Promise<{
       readonly total: number
       readonly firstStartedAtIso: string | null
+      readonly lastIncidentId: string | null
       readonly lastStartedAtIso: string | null
       readonly lastEndedAtIso: string | null
     }> => {
-      const { organizationId } = await requireSession()
-      const orgId = OrganizationId(organizationId)
+      const orgId = await resolveOrgScope(context)
 
       const stats = await Effect.runPromise(
         Effect.gen(function* () {
-          const repository = yield* AlertIncidentRepository
+          const repository = yield* IncidentRepository
           return yield* repository.statsByMonitorId(MonitorId(data.monitorId))
-        }).pipe(withPostgres(AlertIncidentRepositoryLive, getPostgresClient(), orgId), withTracing),
+        }).pipe(withScopedPostgres(IncidentRepositoryLive, getPostgresClient(), orgId), withTracing),
       )
 
       return {
         total: stats.total,
         firstStartedAtIso: stats.firstStartedAt?.toISOString() ?? null,
+        lastIncidentId: stats.lastIncidentId,
         lastStartedAtIso: stats.lastStartedAt?.toISOString() ?? null,
         lastEndedAtIso: stats.lastEndedAt?.toISOString() ?? null,
       }
@@ -485,10 +862,10 @@ const toMonitorIncidentRecord = (
       readonly id: string
       readonly startedAt: Date
       readonly endedAt: Date | null
-      readonly kind: string
-      readonly sourceType: string
-      readonly sourceId: string
+      readonly sourceType: string | null
+      readonly sourceId: string | null
       readonly severity: string
+      readonly condition?: { readonly trigger?: string } | null
     }
     readonly notified: boolean
   },
@@ -498,7 +875,14 @@ const toMonitorIncidentRecord = (
   id: item.incident.id,
   startedAt: item.incident.startedAt.toISOString(),
   endedAt: item.incident.endedAt?.toISOString() ?? null,
-  kind: item.incident.kind,
+  kind:
+    item.incident.sourceType === "signal"
+      ? "signal.escalating"
+      : item.incident.condition?.trigger === "escalating"
+        ? "monitor.escalating"
+        : item.incident.condition?.trigger === "threshold"
+          ? "monitor.threshold"
+          : "monitor.match",
   sourceType: item.incident.sourceType,
   sourceId: item.incident.sourceId,
   severity: item.incident.severity,
@@ -514,13 +898,13 @@ export const listMonitorIncidents = createServerFn({ method: "GET" })
   .handler(
     async ({
       data,
+      context,
     }): Promise<{
       readonly items: readonly MonitorIncidentRecord[]
       readonly nextCursor: MonitorIncidentsCursor | null
       readonly hasMore: boolean
     }> => {
-      const { organizationId } = await requireSession()
-      const orgId = OrganizationId(organizationId)
+      const orgId = await resolveOrgScope(context)
       const projectId = ProjectId(data.projectId)
       const pgClient = getPostgresClient()
 
@@ -538,40 +922,41 @@ export const listMonitorIncidents = createServerFn({ method: "GET" })
               }
             : {}),
         }).pipe(
-          withPostgres(Layer.mergeAll(AlertIncidentRepositoryLive, NotificationRepositoryLive), pgClient, orgId),
+          withScopedPostgres(Layer.mergeAll(IncidentRepositoryLive, NotificationRepositoryLive), pgClient, orgId),
           withTracing,
         ),
       )
 
       // Resolve source names/slugs for the "Source" column; unresolved ids fall back to the id in the UI.
-      const issueIds = [
-        ...new Set(result.items.filter((i) => i.incident.sourceType === "issue").map((i) => i.incident.sourceId)),
+      const signalIds = [
+        ...new Set(
+          result.items.flatMap((i) =>
+            i.incident.sourceType === "signal" && i.incident.sourceId !== null ? [i.incident.sourceId] : [],
+          ),
+        ),
       ]
-      const issueNameById = new Map<string, string>()
-      if (issueIds.length > 0) {
+      const signalNameById = new Map<string, string>()
+      const signalSlugById = new Map<string, string>()
+      if (signalIds.length > 0) {
         const issues = await Effect.runPromise(
           Effect.gen(function* () {
-            const repository = yield* IssueRepository
-            return yield* repository.findByIds({ projectId, issueIds: issueIds.map(IssueId) })
-          }).pipe(withPostgres(IssueRepositoryLive, pgClient, orgId), withTracing),
+            const repository = yield* SignalRepository
+            return yield* repository.findByIds({ projectId, signalIds: signalIds.map(SignalId) })
+          }).pipe(withScopedPostgres(SignalRepositoryLive, pgClient, orgId), withTracing),
         )
-        for (const issue of issues) issueNameById.set(issue.id, issue.name)
-      }
-
-      const savedSearchById = new Map<string, { readonly name: string; readonly slug: string }>()
-      if (result.items.some((i) => i.incident.sourceType === "savedSearch")) {
-        const page = await Effect.runPromise(
-          listSavedSearches({ projectId }).pipe(withPostgres(SavedSearchRepositoryLive, pgClient, orgId), withTracing),
-        )
-        for (const search of page.items) savedSearchById.set(search.id, { name: search.name, slug: search.slug })
+        for (const issue of issues) {
+          signalNameById.set(issue.id, issue.name)
+          signalSlugById.set(issue.id, issue.slug)
+        }
       }
 
       return {
         items: result.items.map((item) => {
           const { sourceType, sourceId } = item.incident
-          const saved = sourceType === "savedSearch" ? savedSearchById.get(sourceId) : undefined
-          const sourceName = sourceType === "issue" ? (issueNameById.get(sourceId) ?? null) : (saved?.name ?? null)
-          return toMonitorIncidentRecord(item, sourceName, saved?.slug ?? null)
+          const isSignal = sourceType === "signal" && sourceId !== null
+          const sourceName = isSignal ? (signalNameById.get(sourceId) ?? null) : null
+          const sourceSlug = isSignal ? (signalSlugById.get(sourceId) ?? null) : null
+          return toMonitorIncidentRecord(item, sourceName, sourceSlug)
         }),
         nextCursor: result.nextCursor
           ? { endedAt: result.nextCursor.endedAt?.toISOString() ?? null, id: result.nextCursor.id }

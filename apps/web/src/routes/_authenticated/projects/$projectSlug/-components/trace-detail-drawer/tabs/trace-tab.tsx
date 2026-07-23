@@ -11,13 +11,19 @@ import {
   Tooltip,
 } from "@repo/ui"
 import { formatCount, formatDuration, relativeTime } from "@repo/utils"
-import { ArrowDownRightIcon, ArrowUpRightIcon, BrainIcon, FingerprintIcon, TextIcon } from "lucide-react"
+import { ArrowDownRightIcon, ArrowUpRightIcon, BrainIcon, FingerprintIcon, TextIcon, WrenchIcon } from "lucide-react"
 import { useMemo } from "react"
 import type { SpanRecord } from "../../../../../../../domains/spans/spans.functions.ts"
 import type { TraceDetailRecord, TraceRecord } from "../../../../../../../domains/traces/traces.functions.ts"
+import { MemoryChangesSection } from "../../memory-changes/memory-changes-section.tsx"
+import { MemorySummary } from "../../memory-summary.tsx"
+import { AgentsBreakdown } from "../../session-detail-drawer/agents-breakdown/agents-breakdown.tsx"
+import { useAgentGraph } from "../../session-detail-drawer/agents-breakdown/use-agent-graph.ts"
+import { aggregateToolPills, ToolPillList } from "../../tool-pills.tsx"
 import { TraceOutlierBadge, type TraceOutlierMetric } from "../../trace-outlier-badge.tsx"
 import { DurationBar } from "../duration-bar.tsx"
 import { computeDurationBreakdown } from "../duration-composition.ts"
+import { ModelFilterLink } from "./spans-tab/model-filter-link.tsx"
 import { UsageSummary } from "./spans-tab/span-detail/usage-summary.tsx"
 
 function JsonBlock({ value }: { readonly value: unknown }) {
@@ -43,6 +49,7 @@ export function TraceTab({
   isDetailLoading,
   filters,
   onFiltersChange,
+  onOpenSpansWithModel,
   defaultOutputOpen = true,
 }: {
   readonly traceId: string
@@ -55,6 +62,7 @@ export function TraceTab({
   readonly isDetailLoading: boolean
   readonly filters?: FilterSet | undefined
   readonly onFiltersChange?: ((filters: FilterSet) => void) | undefined
+  readonly onOpenSpansWithModel?: ((model: string) => void) | undefined
   readonly defaultOutputOpen?: boolean
 }) {
   const hasProviders = traceRecord && traceRecord.providers.length > 0
@@ -86,6 +94,8 @@ export function TraceTab({
 
   // Falls back to the record total until spans load, so the duration always renders.
   const durationBreakdown = useMemo(() => computeDurationBreakdown(spans ?? []), [spans])
+  const agentGraph = useAgentGraph(spans)
+  const toolPills = useMemo(() => aggregateToolPills(spans), [spans])
   const fallbackDurationMs = traceRecord ? traceRecord.durationNs / 1_000_000 : 0
   const durationWallClockMs = durationBreakdown.wallClockMs > 0 ? durationBreakdown.wallClockMs : fallbackDurationMs
   const durationBadge = traceRecord ? renderBadge("durationNs", traceRecord.durationNs) : undefined
@@ -141,11 +151,18 @@ export function TraceTab({
                 {p}
               </Tooltip>
             ))}
-          {hasModels && (
-            <Text.H5 color="foregroundMuted" noWrap>
-              {traceRecord.models.join(", ")}
-            </Text.H5>
-          )}
+          {hasModels &&
+            (onOpenSpansWithModel ? (
+              <div className="flex flex-row flex-wrap items-center gap-1.5">
+                {traceRecord.models.map((model) => (
+                  <ModelFilterLink key={model} model={model} onClick={() => onOpenSpansWithModel(model)} />
+                ))}
+              </div>
+            ) : (
+              <Text.H5 color="foregroundMuted" noWrap>
+                {traceRecord.models.join(", ")}
+              </Text.H5>
+            ))}
         </div>
       )}
 
@@ -162,9 +179,12 @@ export function TraceTab({
               isLoading={isSpansLoading}
             />
             <UsageSummary data={traceRecord} costBadges={costBadgesNode} />
+            <MemorySummary projectId={projectId} sessionId={traceRecord.sessionId || traceId} traceId={traceId} />
           </div>
         )
       )}
+
+      <AgentsBreakdown graph={agentGraph} />
 
       {/* ── Tags ── */}
       <div className="flex flex-col gap-1">
@@ -179,6 +199,26 @@ export function TraceTab({
           </Text.H6>
         )}
       </div>
+
+      {/* ── Tools ── */}
+      <DetailSection icon={<WrenchIcon className="w-4 h-4" />} label="Tools" defaultOpen={false}>
+        {() =>
+          isSpansLoading ? (
+            <Skeleton className="h-7 w-48" />
+          ) : toolPills.length > 0 ? (
+            <ToolPillList tools={toolPills} scopeLabel="trace" />
+          ) : (
+            <Text.H6 color="foregroundMuted" italic>
+              No tools
+            </Text.H6>
+          )
+        }
+      </DetailSection>
+
+      {/* ── Memory changes ── */}
+      {traceRecord && (
+        <MemoryChangesSection projectId={projectId} sessionId={traceRecord.sessionId || traceId} traceId={traceId} />
+      )}
 
       {/* ── Metadata ── */}
       <DetailSection icon={<TextIcon className="w-4 h-4" />} label="Metadata" defaultOpen={false}>

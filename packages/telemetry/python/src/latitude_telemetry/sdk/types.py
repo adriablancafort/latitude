@@ -22,7 +22,7 @@ InstrumentationName = Literal[
     "aiplatform",
     "aleph_alpha",
     "crewai",
-    "dspy",
+    "google_adk",
     "google_generativeai",
     "groq",
     "haystack",
@@ -58,6 +58,7 @@ class ContextOptions(TypedDict, total=False):
     metadata: dict[str, object]
     session_id: str
     user_id: str
+    user_email: str
     # Route the capture (and all child spans) to a specific Latitude project.
     # Overrides the constructor `project` default for this capture only.
     project: str

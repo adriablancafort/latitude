@@ -55,12 +55,14 @@ const traceDetailStub = (traceId: string): TraceDetail => ({
   costTotalMicrocents: 0,
   sessionId: traceSessionId,
   userId: ExternalUserId("user"),
+  userEmail: "",
   simulationId: SimulationId(""),
   tags: [],
   metadata: {},
   models: [],
   providers: [],
   serviceNames: [],
+  agentNames: [],
   rootSpanId: SpanId("r".repeat(16)),
   rootSpanName: "root",
   systemInstructions: [],
@@ -90,12 +92,14 @@ const traceStub = (traceId: string): Trace => ({
   costTotalMicrocents: 0,
   sessionId: traceSessionId,
   userId: ExternalUserId("user"),
+  userEmail: "",
   simulationId: SimulationId(""),
   tags: [],
   metadata: {},
   models: [],
   providers: [],
   serviceNames: [],
+  agentNames: [],
   rootSpanId: SpanId("r".repeat(16)),
   rootSpanName: "root",
 })
@@ -321,7 +325,7 @@ describe("submitApiScoreUseCase", () => {
 
       const score = await Effect.runPromise(submitApiScoreUseCase(customInput()).pipe(Effect.provide(layer)))
 
-      expect(score.source).toBe("custom")
+      expect(score.sourceType).toBe("custom")
       expect(score.sourceId).toBe("api-source")
       expect(store.size).toBe(1)
       expect(events).toEqual([
@@ -337,7 +341,7 @@ describe("submitApiScoreUseCase", () => {
 
       const score = await Effect.runPromise(submitApiScoreUseCase(evaluationInput()).pipe(Effect.provide(layer)))
 
-      expect(score.source).toBe("evaluation")
+      expect(score.sourceType).toBe("evaluation")
       expect(score.sourceId).toBe(evaluationCuid)
       expect(score.metadata).toEqual({ evaluationHash: "sha256:abc123" })
       expect(store.size).toBe(1)

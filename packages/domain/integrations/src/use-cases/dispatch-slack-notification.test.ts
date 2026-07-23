@@ -1,23 +1,26 @@
-import { IssueRepository } from "@domain/issues"
 import { type Organization, OrganizationRepository } from "@domain/organizations"
 import { SavedSearchRepository } from "@domain/saved-searches"
 import {
   NotFoundError,
   OrganizationId,
   ProjectId,
+  SignalId,
   SlackIntegrationId,
   SqlClient,
   type SqlClientShape,
 } from "@domain/shared"
+import { type Signal, SignalRepository } from "@domain/signals"
+import { createFakeSignalRepository } from "@domain/signals/testing"
+import { UserRepository } from "@domain/users"
 import { Effect, Layer } from "effect"
 import { describe, expect, it } from "vitest"
 import { InMemorySlackDeliveryRepositoryLive } from "../testing/in-memory-slack-delivery-repository.ts"
 import { dispatchSlackNotificationUseCase, type SlackMessenger } from "./dispatch-slack-notification.ts"
 
-// custom.message doesn't call IssueRepository, but the use case's R
+// custom.message doesn't call SignalRepository, but the use case's R
 // channel includes it. Provide a no-op stub so Effect.provide is happy.
-const NoopIssueRepository = Layer.succeed(IssueRepository, {
-  findById: () => Effect.die(new Error("IssueRepository.findById not expected in this test")),
+const NoopSignalRepository = Layer.succeed(SignalRepository, {
+  findById: () => Effect.die(new Error("SignalRepository.findById not expected in this test")),
   findByIdForUpdate: () => Effect.die(new Error("not expected")),
   findByIds: () => Effect.die(new Error("not expected")),
   findBySlug: () => Effect.die(new Error("not expected")),
@@ -29,7 +32,12 @@ const NoopIssueRepository = Layer.succeed(IssueRepository, {
   countBySlug: () => Effect.die(new Error("not expected")),
 } as never)
 
-// Same rationale as NoopIssueRepository: custom.message never resolves a source name.
+// Same rationale as NoopSignalRepository: custom.message never resolves an assignee name.
+const NoopUserRepository = Layer.succeed(UserRepository, {
+  findById: () => Effect.die(new Error("UserRepository.findById not expected in this test")),
+} as never)
+
+// Same rationale as NoopSignalRepository: custom.message never resolves a source name.
 const NoopSavedSearchRepository = Layer.succeed(SavedSearchRepository, {
   findById: () => Effect.die(new Error("SavedSearchRepository.findById not expected in this test")),
 } as never)
@@ -37,6 +45,7 @@ const NoopSavedSearchRepository = Layer.succeed(SavedSearchRepository, {
 const ORG = OrganizationId("o".repeat(24))
 const PROJECT = ProjectId("p".repeat(24))
 const INTEGRATION = SlackIntegrationId("i".repeat(24))
+const SIGNAL = SignalId("s".repeat(24))
 
 // Org-repo layer for the test-mode guard the use case now resolves up
 // front. `parentOrgId` decides sandbox-ness: null = live, set = sandbox.
@@ -54,6 +63,22 @@ const orgRepoLayer = (parentOrgId: OrganizationId | null) =>
               metadata: null,
               settings: null,
               parentOrgId,
+              expiresAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            } satisfies Organization)
+          : Effect.fail(new NotFoundError({ entity: "Organization", id })),
+      findByIdForUpdate: (id) =>
+        id === ORG
+          ? Effect.succeed({
+              id: ORG,
+              name: "Acme",
+              slug: "acme",
+              logo: null,
+              metadata: null,
+              settings: null,
+              parentOrgId,
+              expiresAt: null,
               createdAt: new Date(),
               updatedAt: new Date(),
             } satisfies Organization)
@@ -61,7 +86,9 @@ const orgRepoLayer = (parentOrgId: OrganizationId | null) =>
       listByUserId: () => Effect.die("not used"),
       save: () => Effect.die("not used"),
       delete: () => Effect.die("not used"),
+      deleteIfExpiredUnclaimed: () => Effect.die("not used"),
       countBySlug: () => Effect.die("not used"),
+      listExpiredUnclaimed: () => Effect.die("not used"),
     }),
   )
 
@@ -78,6 +105,36 @@ const customMessagePayload = {
   title: "Heads up",
   content: "Please reboot",
   link: "https://docs.example.com",
+}
+
+const makeSignal = (): Signal => {
+  const now = new Date("2026-06-17T10:00:00.000Z")
+  return {
+    id: SIGNAL,
+    organizationId: ORG,
+    projectId: PROJECT,
+    slug: "bad-json-output",
+    name: "Bad JSON output",
+    description: "The model returns malformed JSON.",
+    source: "annotation",
+    origin: "system",
+    assigneeId: null,
+    priority: null,
+    centroid: {
+      base: [1, 0],
+      mass: 1,
+      model: "test",
+      decay: 1,
+      weights: { annotation: 1, custom: 0, evaluation: 0 },
+    },
+    clusteredAt: now,
+    resolvedAt: null,
+    ignoredAt: null,
+    regressedAt: null,
+    mutedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  }
 }
 
 const fakeMessenger = (): SlackMessenger & { calls: Array<unknown> } => {
@@ -118,8 +175,9 @@ describe("dispatchSlackNotificationUseCase", () => {
         messenger,
       }).pipe(
         Effect.provide(layer),
-        Effect.provide(NoopIssueRepository),
+        Effect.provide(NoopSignalRepository),
         Effect.provide(NoopSavedSearchRepository),
+        Effect.provide(NoopUserRepository),
         Effect.provide(NoopSqlClient),
         Effect.provide(LiveOrg),
       ),
@@ -127,6 +185,58 @@ describe("dispatchSlackNotificationUseCase", () => {
 
     expect(outcome.status).toBe("delivered")
     expect(messenger.calls).toHaveLength(1)
+  })
+
+  it("renders discovered signal details with a deep link", async () => {
+    const messenger = fakeMessenger()
+    const layer = InMemorySlackDeliveryRepositoryLive()
+    const { repository } = createFakeSignalRepository([makeSignal()])
+
+    const outcome = await Effect.runPromise(
+      dispatchSlackNotificationUseCase({
+        integrationId: INTEGRATION,
+        botToken: "xoxb-test",
+        channelId: "C123",
+        kind: "signal.discovered",
+        payload: { signalId: SIGNAL, discoveredAt: "2026-06-17T10:00:00.000Z" },
+        idempotencyKey: `signal.discovered:${SIGNAL}`,
+        context: ctx,
+        messenger,
+      }).pipe(
+        Effect.provide(layer),
+        Effect.provide(Layer.succeed(SignalRepository, repository)),
+        Effect.provide(NoopSavedSearchRepository),
+        Effect.provide(NoopUserRepository),
+        Effect.provide(NoopSqlClient),
+        Effect.provide(LiveOrg),
+      ),
+    )
+
+    expect(outcome.status).toBe("delivered")
+    expect(messenger.calls).toHaveLength(1)
+    expect(messenger.calls[0]).toMatchObject({
+      text: "Bad JSON output was discovered in Frontend.",
+      blocks: expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.objectContaining({
+            text: "A new signal was discovered: *<https://app.example.com/projects/frontend/signals/bad-json-output|Bad JSON output>*.",
+          }),
+        }),
+        expect.objectContaining({
+          text: expect.objectContaining({ text: "The model returns malformed JSON." }),
+        }),
+        expect.objectContaining({
+          elements: expect.arrayContaining([expect.objectContaining({ text: "signal · Project *Frontend* · Acme" })]),
+        }),
+        expect.objectContaining({
+          elements: expect.arrayContaining([
+            expect.objectContaining({
+              url: "https://app.example.com/projects/frontend/signals/bad-json-output",
+            }),
+          ]),
+        }),
+      ]),
+    })
   })
 
   it("short-circuits on second dispatch with the same idempotency + channel", async () => {
@@ -145,8 +255,9 @@ describe("dispatchSlackNotificationUseCase", () => {
         messenger,
       }).pipe(
         Effect.provide(layer),
-        Effect.provide(NoopIssueRepository),
+        Effect.provide(NoopSignalRepository),
         Effect.provide(NoopSavedSearchRepository),
+        Effect.provide(NoopUserRepository),
         Effect.provide(NoopSqlClient),
         Effect.provide(LiveOrg),
       ),
@@ -173,8 +284,9 @@ describe("dispatchSlackNotificationUseCase", () => {
         messenger,
       }).pipe(
         Effect.provide(layer),
-        Effect.provide(NoopIssueRepository),
+        Effect.provide(NoopSignalRepository),
         Effect.provide(NoopSavedSearchRepository),
+        Effect.provide(NoopUserRepository),
         Effect.provide(NoopSqlClient),
         Effect.provide(sandboxOrg),
       ),
@@ -200,8 +312,9 @@ describe("dispatchSlackNotificationUseCase", () => {
         messenger,
       }).pipe(
         Effect.provide(layer),
-        Effect.provide(NoopIssueRepository),
+        Effect.provide(NoopSignalRepository),
         Effect.provide(NoopSavedSearchRepository),
+        Effect.provide(NoopUserRepository),
         Effect.provide(NoopSqlClient),
         Effect.provide(LiveOrg),
       ),

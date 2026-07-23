@@ -1,14 +1,13 @@
+import { EMBEDDING_DIMENSIONS } from "@domain/ai"
 import { describe, expect, it } from "vitest"
-import { TAXONOMY_CENTROID_HALF_LIFE_SECONDS, TAXONOMY_EMBEDDING_DIMENSIONS } from "./constants.ts"
+import { TAXONOMY_CENTROID_HALF_LIFE_SECONDS } from "./constants.ts"
 import type { TaxonomyCentroid } from "./entities/cluster.ts"
 import {
   clamp,
   cosineSimilarity,
   cosineSimilarityNormalized,
   createTaxonomyCentroid,
-  diameterBoundedGreedyClusters,
   farthestPointSample,
-  meanNormalized,
   normalizeTaxonomyCentroid,
   normalizeTaxonomyEmbedding,
   softmax,
@@ -28,7 +27,7 @@ const normalize = (v: readonly number[]): number[] => normalizeTaxonomyEmbedding
 describe("taxonomy centroid helpers", () => {
   it("creates a centroid with the configured dimensions and weight scheme", () => {
     const centroid = createTaxonomyCentroid()
-    expect(centroid.base).toHaveLength(TAXONOMY_EMBEDDING_DIMENSIONS)
+    expect(centroid.base).toHaveLength(EMBEDDING_DIMENSIONS)
     expect(centroid.mass).toBe(0)
     expect(centroid.decay).toBe(TAXONOMY_CENTROID_HALF_LIFE_SECONDS)
     expect(centroid.weights).toEqual({ default: 1.0 })
@@ -40,7 +39,7 @@ describe("taxonomy centroid helpers", () => {
       ...createTaxonomyCentroid(),
       clusteredAt: baseTimestamp,
     }
-    const embedding = makeVector(TAXONOMY_EMBEDDING_DIMENSIONS, [
+    const embedding = makeVector(EMBEDDING_DIMENSIONS, [
       [0, 1],
       [1, 0],
     ])
@@ -64,7 +63,7 @@ describe("taxonomy centroid helpers", () => {
       ...createTaxonomyCentroid(),
       clusteredAt: start,
     }
-    const embedding = makeVector(TAXONOMY_EMBEDDING_DIMENSIONS, [[0, 1]])
+    const embedding = makeVector(EMBEDDING_DIMENSIONS, [[0, 1]])
     const afterFirst = updateTaxonomyCentroid({
       centroid,
       embedding,
@@ -95,7 +94,7 @@ describe("taxonomy centroid helpers", () => {
       ...createTaxonomyCentroid(),
       clusteredAt: start,
     }
-    const embedding = makeVector(TAXONOMY_EMBEDDING_DIMENSIONS, [[5, 1]])
+    const embedding = makeVector(EMBEDDING_DIMENSIONS, [[5, 1]])
     const added = updateTaxonomyCentroid({
       centroid,
       embedding,
@@ -166,40 +165,6 @@ describe("cosine + softmax", () => {
   })
 })
 
-describe("diameterBoundedGreedyClusters", () => {
-  it("splits chained components into tight centroid neighborhoods", () => {
-    const points = [normalize([1, 0]), normalize([0.7, 0.7]), normalize([0, 1])]
-    const candidates = diameterBoundedGreedyClusters({
-      embeddings: points,
-      connectivityThreshold: 0.65,
-      minMembers: 2,
-      maxDiameter: 0.2,
-    })
-    expect(candidates).toEqual([])
-  })
-
-  it("keeps repeated semantic neighborhoods birthable even when nearby variants exist", () => {
-    const points = [
-      normalize([1, 0, 0]),
-      normalize([0.99, 0.04, 0]),
-      normalize([0.98, -0.04, 0]),
-      normalize([0, 1, 0]),
-      normalize([0.04, 0.99, 0]),
-      normalize([-0.04, 0.98, 0]),
-    ]
-    const candidates = diameterBoundedGreedyClusters({
-      embeddings: points,
-      connectivityThreshold: 0.95,
-      minMembers: 2,
-      maxDiameter: 0.5,
-    })
-    expect(candidates).toHaveLength(2)
-    const memberSets = candidates.map((c) => c.members.slice().sort((a, b) => a - b))
-    expect(memberSets).toContainEqual([0, 1, 2])
-    expect(memberSets).toContainEqual([3, 4, 5])
-  })
-})
-
 describe("farthestPointSample", () => {
   it("returns all indices when the budget exceeds the input size", () => {
     const vectors = [normalize([1, 0]), normalize([0, 1])]
@@ -225,20 +190,10 @@ describe("farthestPointSample", () => {
   })
 })
 
-describe("clamp + meanNormalized", () => {
+describe("clamp", () => {
   it("clamps below min, above max, and within range", () => {
     expect(clamp(5, 1, 10)).toBe(5)
     expect(clamp(-1, 1, 10)).toBe(1)
     expect(clamp(11, 1, 10)).toBe(10)
-  })
-
-  it("meanNormalized returns a unit vector pointing at the input mean", () => {
-    const result = meanNormalized([normalize([1, 0]), normalize([0, 1])])
-    expect(result[0]).toBeCloseTo(Math.SQRT1_2, 5)
-    expect(result[1]).toBeCloseTo(Math.SQRT1_2, 5)
-  })
-
-  it("meanNormalized handles empty input", () => {
-    expect(meanNormalized([])).toEqual([])
   })
 })

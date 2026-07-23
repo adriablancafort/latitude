@@ -18,12 +18,13 @@ jobs:
   publish:
     name: Build and Publish
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'latitude-dev/latitude-llm' }}
     permissions:
       contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -45,13 +46,13 @@ jobs:
 
       - name: Setup Python
         if: steps.check_version.outputs.should_publish == 'true'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
 
       - name: Install uv
         if: steps.check_version.outputs.should_publish == 'true'
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.3.2
         with:
           enable-cache: true
 

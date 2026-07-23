@@ -627,3 +627,257 @@ describe("TravelPlanner trace — OpenInference (Arize Phoenix)", () => {
     })
   })
 })
+
+describe("OpenInference google-adk — tool call ↔ tool result pairing", () => {
+  // Mirrors the real ADK final call_llm span: assistant tool_call and tool result both omit ids.
+  function buildAdkFinalLlmSpan(): OtlpSpan {
+    return {
+      traceId: "11111111111111111111111111111111",
+      spanId: "1111111111111111",
+      name: "call_llm",
+      kind: 1,
+      startTimeUnixNano: "1710590400000000000",
+      endTimeUnixNano: "1710590401000000000",
+      attributes: [
+        str("openinference.span.kind", "LLM"),
+        str("llm.model_name", "gemini-2.5-flash"),
+        str("llm.input_messages.1.message.role", "user"),
+        str("llm.input_messages.1.message.contents.0.message_content.type", "text"),
+        str("llm.input_messages.1.message.contents.0.message_content.text", "What's the weather in Barcelona?"),
+        str("llm.input_messages.2.message.role", "model"),
+        str("llm.input_messages.2.message.tool_calls.0.tool_call.function.name", "get_weather"),
+        str("llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments", '{"city": "Barcelona"}'),
+        str("llm.input_messages.3.message.role", "tool"),
+        str("llm.input_messages.3.message.name", "get_weather"),
+        str("llm.input_messages.3.message.content", '{"status": "success", "report": "sunny"}'),
+        str("llm.output_messages.0.message.role", "model"),
+        str("llm.output_messages.0.message.contents.0.message_content.type", "text"),
+        str("llm.output_messages.0.message.contents.0.message_content.text", "It's sunny in Barcelona."),
+      ],
+      status: { code: 1 },
+    }
+  }
+
+  const request: OtlpExportTraceServiceRequest = {
+    resourceSpans: [
+      {
+        resource: { attributes: [str("service.name", "adk")] },
+        scopeSpans: [
+          {
+            scope: { name: "openinference.instrumentation.google_adk", version: "0.1.15" },
+            spans: [buildAdkFinalLlmSpan()],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("assigns the assistant tool_call and its tool result the same non-empty id", () => {
+    const span = transformOtlpToSpans(request, CONTEXT).spans[0]
+    if (!span) throw new Error("span not produced")
+
+    const assistant = span.inputMessages.find((m) => m.role === "assistant")
+    const tool = span.inputMessages.find((m) => m.role === "tool")
+    const toolCall = (assistant as { parts: { type: string; id?: string }[] }).parts.find((p) => p.type === "tool_call")
+    const toolResult = (tool as { parts: { type: string; id?: string | null }[] }).parts.find(
+      (p) => p.type === "tool_call_response",
+    )
+
+    const callId = (toolCall as { id?: string } | undefined)?.id
+    const resultId = (toolResult as { id?: string | null } | undefined)?.id
+
+    expect(callId).toBeTruthy()
+    expect(resultId).toBeTruthy()
+    expect(resultId).toBe(callId)
+  })
+})
+
+describe("OpenInference google-genai — function response on a role:user turn pairs via tool_call_id", () => {
+  // Gemini has no "tool" role: the openinference-google-genai instrumentor carries the function
+  // response on a role:"user" turn, tagging it only with message.tool_call_id. The parser must
+  // still recognize it as a tool result and pair it with the assistant tool_call.
+  function buildGeminiFinalLlmSpan(): OtlpSpan {
+    return {
+      traceId: "22222222222222222222222222222222",
+      spanId: "2222222222222222",
+      name: "GenerateContent",
+      kind: 1,
+      startTimeUnixNano: "1710590400000000000",
+      endTimeUnixNano: "1710590401000000000",
+      attributes: [
+        str("openinference.span.kind", "LLM"),
+        str("llm.provider", "google"),
+        str("llm.model_name", "gemini-3.5-flash"),
+        str("llm.input_messages.0.message.role", "user"),
+        str("llm.input_messages.0.message.content", "What's the weather in Barcelona?"),
+        str("llm.input_messages.1.message.role", "model"),
+        str("llm.input_messages.1.message.tool_calls.0.tool_call.id", "gem_call_1"),
+        str("llm.input_messages.1.message.tool_calls.0.tool_call.function.name", "get_weather"),
+        str("llm.input_messages.1.message.tool_calls.0.tool_call.function.arguments", '{"city": "Barcelona"}'),
+        // Gemini: the function response is a role:"user" turn carrying only tool_call_id.
+        str("llm.input_messages.2.message.role", "user"),
+        str("llm.input_messages.2.message.content", '{"report": "sunny"}'),
+        str("llm.input_messages.2.message.tool_call_id", "gem_call_1"),
+        str("llm.output_messages.0.message.role", "model"),
+        str("llm.output_messages.0.message.contents.0.message_content.type", "text"),
+        str("llm.output_messages.0.message.contents.0.message_content.text", "It's sunny in Barcelona."),
+      ],
+      status: { code: 1 },
+    }
+  }
+
+  const request: OtlpExportTraceServiceRequest = {
+    resourceSpans: [
+      {
+        resource: { attributes: [str("service.name", "gemini-app")] },
+        scopeSpans: [
+          {
+            scope: { name: "openinference.instrumentation.google_genai", version: "1.1.0" },
+            spans: [buildGeminiFinalLlmSpan()],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("relabels the user-role function response to role:tool and pairs it with the tool_call", () => {
+    const span = transformOtlpToSpans(request, CONTEXT).spans[0]
+    if (!span) throw new Error("span not produced")
+
+    const tool = span.inputMessages.find((m) => m.role === "tool")
+    expect(tool).toBeDefined()
+    const toolResult = (tool as { parts: { type: string; id?: string }[] }).parts.find(
+      (p) => p.type === "tool_call_response",
+    )
+    expect((toolResult as { id?: string } | undefined)?.id).toBe("gem_call_1")
+  })
+})
+
+describe("Latitude openai-agents TS bridge — function span", () => {
+  // The TS `openai-agents` bridge tags the tool span with
+  // `latitude.span.kind: "agents.function"` and carries the tool data under
+  // `openai.agents.function.*` (no standard GenAI/OpenInference attrs).
+  function buildFunctionSpan(): OtlpSpan {
+    return {
+      traceId: "22222222222222222222222222222222",
+      spanId: "2222222222222222",
+      parentSpanId: "b7ad6b7169203331",
+      name: "function get_weather",
+      kind: 1,
+      startTimeUnixNano: "1710590400000000000",
+      endTimeUnixNano: "1710590400500000000",
+      attributes: [
+        str("latitude.span.kind", "agents.function"),
+        str("openai.agents.function.name", "get_weather"),
+        str("openai.agents.function.input", '{"city":"Barcelona"}'),
+        str("openai.agents.function.output", "The weather in Barcelona is sunny and 22°C."),
+      ],
+      status: { code: 1 },
+    }
+  }
+
+  const request: OtlpExportTraceServiceRequest = {
+    resourceSpans: [
+      {
+        resource: { attributes: [str("service.name", "agents")] },
+        scopeSpans: [
+          {
+            scope: { name: "@latitude-data/instrumentation-openai-agents", version: "1.0.0" },
+            spans: [buildFunctionSpan()],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("resolves the function span to execute_tool with tool name/input/output populated", () => {
+    const span = transformOtlpToSpans(request, CONTEXT).spans[0]
+    if (!span) throw new Error("span not produced")
+
+    expect(span.operation).toBe("execute_tool")
+    expect(span.toolName).toBe("get_weather")
+    expect(span.toolInput).toBe('{"city":"Barcelona"}')
+    expect(span.toolOutput).toBe("The weather in Barcelona is sunny and 22°C.")
+  })
+})
+
+// ─── CrewAI: AGENT span carries the conversation in output.value (no LLM leaf) ──
+
+describe("CrewAI (OpenInference AGENT span)", () => {
+  const CREWAI_SCOPE = "openinference.instrumentation.crewai"
+  const CONVERSATION = [
+    { role: "system", content: "You are Weather Reporter." },
+    { role: "user", content: "What's the weather in San Francisco? Use the get_weather tool." },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"San Francisco"}' } },
+      ],
+    },
+    {
+      role: "tool",
+      content: '{"city": "San Francisco", "temperatureC": 21, "conditions": "sunny"}',
+      tool_call_id: "call_1",
+      name: "get_weather",
+    },
+    { role: "assistant", content: "The weather in San Francisco is sunny with a temperature of 21°C." },
+  ]
+
+  const crewaiTrace: OtlpExportTraceServiceRequest = {
+    resourceSpans: [
+      {
+        resource: { attributes: [str("service.name", "latitude-telemetry-python")] },
+        scopeSpans: [
+          {
+            scope: { name: CREWAI_SCOPE, version: "1.1.9" },
+            spans: [
+              {
+                traceId: TRACE_ID,
+                spanId: "c1c2c3c4c5c60009",
+                name: "Weather Reporter._execute_core",
+                kind: 1,
+                startTimeUnixNano: "1710590400000000000",
+                endTimeUnixNano: "1710590402000000000",
+                attributes: [
+                  str("openinference.span.kind", "AGENT"),
+                  str("input.value", JSON.stringify({ agent: { role: "Weather Reporter" }, tools: [] })),
+                  str("output.value", JSON.stringify({ raw: "...", messages: CONVERSATION })),
+                ],
+                status: { code: 1 },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  let span: SpanDetail
+  beforeAll(() => {
+    const s = transformOtlpToSpans(crewaiTrace, CONTEXT).spans[0] as SpanDetail | undefined
+    if (!s) throw new Error("span not produced")
+    span = s
+  })
+
+  it("reclassifies the CrewAI AGENT span to `chat` so the rollup gates include it", () => {
+    expect(span.operation).toBe("chat")
+  })
+
+  it("extracts system instructions from the output.value conversation", () => {
+    expect(span.systemInstructions.length).toBeGreaterThan(0)
+  })
+
+  it("recovers the input turns (user + assistant tool_call + tool result)", () => {
+    const parts = span.inputMessages.flatMap((m) => (m as { parts: { type: string; name?: string }[] }).parts)
+    const toolCall = parts.find((p) => p.type === "tool_call")
+    expect((toolCall as { name: string }).name).toBe("get_weather")
+    expect(parts.some((p) => p.type === "tool_call_response")).toBe(true)
+  })
+
+  it("recovers the final assistant answer as output", () => {
+    const assistant = span.outputMessages.find((m) => m.role === "assistant")
+    const parts = (assistant as { parts: { type: string; content?: string }[] }).parts
+    expect((parts.find((p) => p.type === "text") as { content: string }).content).toContain("sunny")
+  })
+})

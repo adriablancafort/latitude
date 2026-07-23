@@ -4,8 +4,7 @@ import {
 } from "@domain/annotations"
 import { type AnnotationScore, ScoreRepository, writeScoreUseCase } from "@domain/scores"
 import { BadRequestError, OrganizationId, ScoreId } from "@domain/shared"
-import { withAi } from "@platform/ai"
-import { AIGenerateLive } from "@platform/ai-vercel"
+import { AIGenerateLive, withAi } from "@platform/ai"
 import {
   ScoreAnalyticsRepositoryLive,
   SpanRepositoryLive,
@@ -51,9 +50,9 @@ const writePublishedAnnotationScoreEffect = Effect.fn("workflows.writePublishedA
       ),
     )
 
-  if (score.source !== "annotation") {
+  if (score.sourceType !== "annotation") {
     return yield* new BadRequestError({
-      message: `Score ${input.scoreId} is not an annotation (source: ${score.source})`,
+      message: `Score ${input.scoreId} is not an annotation (source: ${score.sourceType})`,
     })
   }
 

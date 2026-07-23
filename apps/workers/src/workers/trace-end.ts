@@ -1,43 +1,12 @@
-import {
-  AnnotationQueueRepository,
-  buildTraceEndLiveQueueSelectionInputs,
-  orchestrateTraceEndLiveQueueMaterializationUseCase,
-} from "@domain/annotation-queues"
-import { CONVERSATION_INTELLIGENCE_ANALYSIS_DEBOUNCE_MS } from "@domain/conversation-intelligence"
-import {
-  buildTraceEndEvaluationSelectionInputs,
-  listAllActiveEvaluations,
-  orchestrateTraceEndLiveEvaluationExecutesUseCase,
-} from "@domain/evaluations"
 import { SAVED_SEARCH_MONITORS_THROTTLE_MS, savedSearchMonitorsCheckDedupeKey } from "@domain/monitors"
-import type { QueueConsumer, QueuePublisherShape, WorkflowStarterShape } from "@domain/queue"
+import type { QueueConsumer, QueuePublisherShape } from "@domain/queue"
 import { OrganizationId } from "@domain/shared"
-import {
-  loadTraceForTraceEndUseCase,
-  selectTraceEndItemsUseCase,
-  summarizeTraceEndItemDecisions,
-  type TraceEndItemDecisionCounts,
-} from "@domain/spans"
-import { RedisCacheStoreLive, type RedisClient } from "@platform/cache-redis"
-import {
-  type ClickHouseClient,
-  ScoreAnalyticsRepositoryLive,
-  TraceRepositoryLive,
-  withClickHouse,
-} from "@platform/db-clickhouse"
-import {
-  AnnotationQueueItemRepositoryLive,
-  AnnotationQueueRepositoryLive,
-  EvaluationRepositoryLive,
-  OutboxEventWriterLive,
-  type PostgresClient,
-  ScoreRepositoryLive,
-  withPostgres,
-} from "@platform/db-postgres"
+import { loadTraceForTraceEndUseCase, SESSION_END_DEBOUNCE_MS } from "@domain/spans"
+import { type ClickHouseClient, TraceRepositoryLive, withClickHouse } from "@platform/db-clickhouse"
 import { createLogger, withTracing } from "@repo/observability"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 
-import { getClickhouseClient, getPostgresClient, getRedisClient, getWorkflowStarter } from "../clients.ts"
+import { getClickhouseClient } from "../clients.ts"
 
 const logger = createLogger("trace-end")
 const TRACE_END_QUEUE = "trace-end" as const
@@ -55,39 +24,18 @@ type TraceEndLogger = Pick<ReturnType<typeof createLogger>, "info" | "error">
 interface TraceEndDeps {
   consumer: QueueConsumer
   publisher: QueuePublisherShape
-  postgresClient?: PostgresClient
   clickhouseClient?: ClickHouseClient
-  redisClient?: RedisClient
   logger?: TraceEndLogger
-  workflowStarter?: WorkflowStarterShape
 }
 
 interface RunTraceEndDeps {
   readonly publisher: QueuePublisherShape
-  readonly postgresClient: PostgresClient
   readonly clickhouseClient: ClickHouseClient
-  readonly redisClient: RedisClient
-  readonly workflowStarter: WorkflowStarterShape
-}
-
-type EvaluationSummary = TraceEndItemDecisionCounts & {
-  readonly activeEvaluationsScanned: number
-  readonly skippedIneligibleCount: number
-  readonly skippedTurnCount: number
-  readonly publishedExecuteCount: number
-}
-
-type LiveQueueSummary = TraceEndItemDecisionCounts & {
-  readonly liveQueuesScanned: number
-  readonly insertedItemCount: number
 }
 
 type TraceEndRunSummary = {
   readonly traceId: string
   readonly sessionId: string | null
-  readonly evaluations: EvaluationSummary
-  readonly liveQueues: LiveQueueSummary
-  readonly deterministicFlaggersEnqueued: boolean
 }
 
 type TraceEndRunResult =
@@ -110,7 +58,7 @@ const buildRunLogContext = (payload: TraceEndPayload) => ({
 })
 
 export const runTraceEndJob =
-  ({ publisher, postgresClient, clickhouseClient, redisClient, workflowStarter }: RunTraceEndDeps) =>
+  ({ publisher, clickhouseClient }: RunTraceEndDeps) =>
   (payload: TraceEndPayload) =>
     Effect.gen(function* () {
       if (payload.isSandbox) {
@@ -129,104 +77,35 @@ export const runTraceEndJob =
 
       const traceDetail = loaded.traceDetail
 
-      const [activeEvaluations, liveQueues] = yield* Effect.all(
-        [
-          listAllActiveEvaluations({
-            projectId: traceDetail.projectId,
-          }),
-          Effect.gen(function* () {
-            const queueRepository = yield* AnnotationQueueRepository
-            return yield* queueRepository.listLiveQueuesByProject({
-              projectId: traceDetail.projectId,
-            })
-          }),
-        ],
-        { concurrency: "unbounded" },
-      )
+      // trace-end owns per-trace fan-out (trace-search, saved-search monitors);
+      // session-level work (signals:match, analysis, flagger screening) is session-end's.
 
-      const evalBuilt = buildTraceEndEvaluationSelectionInputs(activeEvaluations)
-      const liveBuilt = buildTraceEndLiveQueueSelectionInputs(liveQueues)
+      const canonicalSessionId =
+        traceDetail.sessionId && traceDetail.sessionId.length > 0 ? traceDetail.sessionId : traceDetail.traceId
 
-      const items = {
-        ...evalBuilt.items,
-        ...liveBuilt.items,
-      }
-
-      const decisions = yield* selectTraceEndItemsUseCase({
-        organizationId: payload.organizationId,
-        projectId: payload.projectId,
-        traceId: payload.traceId,
-        items,
-      })
-
-      const evaluationDecisionCounts = summarizeTraceEndItemDecisions([...evalBuilt.evaluationByKey.keys()], decisions)
-      const liveQueueDecisionCounts = summarizeTraceEndItemDecisions([...liveBuilt.liveQueueIdByKey.keys()], decisions)
-
-      const selectedEvaluations = [...evalBuilt.evaluationByKey.entries()]
-        .filter(([key]) => decisions[key]?.selected === true)
-        .map(([, evaluation]) => evaluation)
-      const selectedLiveQueueIds = [...liveBuilt.liveQueueIdByKey.entries()]
-        .filter(([key]) => decisions[key]?.selected === true)
-        .map(([, queueId]) => queueId)
-
-      const { skippedTurnCount, publishedExecuteCount } = yield* orchestrateTraceEndLiveEvaluationExecutesUseCase({
-        publishExecute: (pubInput) =>
-          publisher.publish(
-            "live-evaluations",
-            "execute",
-            {
-              organizationId: pubInput.organizationId,
-              projectId: pubInput.projectId,
-              evaluationId: pubInput.evaluationId,
-              traceId: pubInput.traceId,
-            },
-            {
-              ...(pubInput.dedupeKey !== undefined ? { dedupeKey: pubInput.dedupeKey } : {}),
-              ...(pubInput.debounceMs !== undefined ? { debounceMs: pubInput.debounceMs } : {}),
-            },
-          ),
-      })({
-        organizationId: payload.organizationId,
-        projectId: payload.projectId,
-        traceId: payload.traceId,
-        traceProjectId: traceDetail.projectId,
-        traceRowId: traceDetail.traceId,
-        sessionId: traceDetail.sessionId ?? null,
-        selectedEvaluations,
-      })
-
-      const { insertedItemCount } = yield* orchestrateTraceEndLiveQueueMaterializationUseCase({
-        traceProjectId: traceDetail.projectId,
-        traceRowId: traceDetail.traceId,
-        traceCreatedAt: traceDetail.startTime,
-        selectedLiveQueueIds,
-      })
-
-      // Hand the deterministic-flagger fan-out to its own worker. Per-strategy
-      // isolation (Effect.catch) lives there, so a broken detector can't
-      // fail the whole trace-end job.
-      const deterministicFlaggersEnqueued = yield* publisher
+      // Materialize the settled trace's memory-operation spans into the memory
+      // ledger, in its own worker + failure domain.
+      // Stamp the trace's canonical session id: memory spans often carry no
+      // session attribute even when sibling chat spans do.
+      yield* publisher
         .publish(
-          "deterministic-flaggers",
+          "memory-projection",
           "run",
           {
             organizationId: payload.organizationId,
             projectId: payload.projectId,
             traceId: payload.traceId,
+            sessionId: canonicalSessionId,
           },
           {
-            dedupeKey: `deterministic-flaggers:${payload.traceId}`,
+            dedupeKey: `org:${payload.organizationId}:memory-projection:${payload.projectId}:${payload.traceId}`,
           },
         )
         .pipe(
-          Effect.map(() => true),
           Effect.catch((error) =>
-            Effect.gen(function* () {
-              yield* Effect.logError("Failed to enqueue deterministic-flaggers", {
-                ...buildRunLogContext(payload),
-                error,
-              })
-              return false
+            Effect.logError("Failed to enqueue memory-projection", {
+              ...buildRunLogContext(payload),
+              error,
             }),
           ),
         )
@@ -240,6 +119,31 @@ export const runTraceEndJob =
         rootSpanName: traceDetail.rootSpanName,
         isSandbox: payload.isSandbox ?? false,
       })
+
+      // "Trace ends → session settles": hand session-level work (signals:match, session analysis) to
+      // the session-end worker, debounced per session so repeated trace-ends collapse to one firing
+      // once the session goes quiet. The debounce replaces the pending payload, so the surviving job
+      // carries the session's latest trace. Never fires for sandbox traces (sandbox returns early).
+      //
+      // Not caught: session-end is the single entry point for both signals:match and session analysis,
+      // so a dropped enqueue would silently lose all session-level work. Let it fail the trace-end job
+      // so its retry re-enqueues; the job's other publishes are idempotent under retry via dedupe keys.
+      yield* publisher.publish(
+        "session-end",
+        "run",
+        {
+          organizationId: payload.organizationId,
+          projectId: payload.projectId,
+          sessionId: canonicalSessionId,
+          latestTraceId: payload.traceId,
+          latestTraceStartTime: traceDetail.startTime.toISOString(),
+          isSandbox: payload.isSandbox ?? false,
+        },
+        {
+          dedupeKey: `org:${payload.organizationId}:session-end:${payload.projectId}:${canonicalSessionId}`,
+          debounceMs: SESSION_END_DEBOUNCE_MS,
+        },
+      )
 
       // Saved-search firing check, throttled to one run per project per 5 min.
       // Leading-edge: runs immediately so its trailing evaluation window covers
@@ -266,78 +170,14 @@ export const runTraceEndJob =
           ),
         )
 
-      const canonicalSessionId =
-        traceDetail.sessionId && traceDetail.sessionId.length > 0 ? traceDetail.sessionId : traceDetail.traceId
-      const analyzeSessionWorkflowId = `org:${payload.organizationId}:conversation-intelligence:analyzeSession:${payload.projectId}:${canonicalSessionId}`
-      yield* workflowStarter
-        .signalWithStart(
-          "analyzeSessionWorkflow",
-          {
-            organizationId: payload.organizationId,
-            projectId: payload.projectId,
-            sessionId: canonicalSessionId,
-            triggeringTraceId: payload.traceId,
-            triggeringStartTime: traceDetail.startTime.toISOString(),
-            reason: "trace_completed",
-            debounceMs: CONVERSATION_INTELLIGENCE_ANALYSIS_DEBOUNCE_MS,
-          },
-          {
-            workflowId: analyzeSessionWorkflowId,
-            signal: "traceCompleted",
-            signalArgs: [{ debounceMs: CONVERSATION_INTELLIGENCE_ANALYSIS_DEBOUNCE_MS }],
-          },
-        )
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logError("Failed to start conversation intelligence AnalyzeSessionWorkflow", {
-              ...buildRunLogContext(payload),
-              sessionId: canonicalSessionId,
-              workflowId: analyzeSessionWorkflowId,
-              error,
-            }),
-          ),
-        )
-
       return {
         action: "completed",
         summary: {
           traceId: traceDetail.traceId,
           sessionId: traceDetail.sessionId ?? null,
-          evaluations: {
-            ...evaluationDecisionCounts,
-            activeEvaluationsScanned: activeEvaluations.length,
-            skippedIneligibleCount: evalBuilt.skippedIneligibleCount,
-            skippedTurnCount,
-            publishedExecuteCount,
-          },
-          liveQueues: {
-            ...liveQueueDecisionCounts,
-            liveQueuesScanned: liveQueues.length,
-            insertedItemCount,
-          },
-          deterministicFlaggersEnqueued,
         },
       } satisfies TraceEndRunResult
-    }).pipe(
-      withPostgres(
-        Layer.mergeAll(
-          AnnotationQueueItemRepositoryLive,
-          AnnotationQueueRepositoryLive,
-          EvaluationRepositoryLive,
-          OutboxEventWriterLive,
-          ScoreRepositoryLive,
-        ),
-        postgresClient,
-        OrganizationId(payload.organizationId),
-      ),
-      withClickHouse(
-        Layer.mergeAll(ScoreAnalyticsRepositoryLive, TraceRepositoryLive),
-        clickhouseClient,
-        OrganizationId(payload.organizationId),
-      ),
-      Effect.provide(RedisCacheStoreLive(redisClient)),
-      withTracing,
-    )
+    }).pipe(withClickHouse(TraceRepositoryLive, clickhouseClient, OrganizationId(payload.organizationId)), withTracing)
 
 export const createRunHandler =
   ({ log, ...deps }: RunTraceEndDeps & { readonly log: TraceEndLogger }) =>
@@ -358,9 +198,6 @@ export const createRunHandler =
             ...buildRunLogContext(payload),
             outcome: result.action,
             sessionId: result.summary.sessionId,
-            evaluations: result.summary.evaluations,
-            liveQueues: result.summary.liveQueues,
-            deterministicFlaggersEnqueued: result.summary.deterministicFlaggersEnqueued,
           })
         }),
       ),
@@ -379,33 +216,17 @@ export const createRunHandler =
 export const createTraceEndWorker = ({
   consumer,
   publisher,
-  postgresClient,
   clickhouseClient,
-  redisClient,
   logger: injectedLogger,
-  workflowStarter,
 }: TraceEndDeps) => {
-  const pgClient = postgresClient ?? getPostgresClient()
   const chClient = clickhouseClient ?? getClickhouseClient()
-  const rdClient = redisClient ?? getRedisClient()
   const traceEndLogger = injectedLogger ?? logger
-  const temporalStarter =
-    workflowStarter ??
-    ({
-      start: (...args) =>
-        Effect.promise(() => getWorkflowStarter()).pipe(Effect.flatMap((starter) => starter.start(...args))),
-      signalWithStart: (...args) =>
-        Effect.promise(() => getWorkflowStarter()).pipe(Effect.flatMap((starter) => starter.signalWithStart(...args))),
-    } satisfies WorkflowStarterShape)
 
   consumer.subscribe(TRACE_END_QUEUE, {
     run: createRunHandler({
       log: traceEndLogger,
       publisher,
-      postgresClient: pgClient,
       clickhouseClient: chClient,
-      redisClient: rdClient,
-      workflowStarter: temporalStarter,
     }),
   })
 }

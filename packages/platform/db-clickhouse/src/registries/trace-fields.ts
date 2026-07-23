@@ -1,8 +1,8 @@
 import type { SessionOnlyFilterFieldName, TraceFilterFieldName } from "@domain/shared"
 import type { ChFieldRegistry } from "../filter-builder.ts"
-import { buildStatusClause, mapDateTime64UtcQueryParam } from "./helpers.ts"
+import { buildCacheHitRateClause, buildStatusClause, dateTime64BestEffortExpression } from "./helpers.ts"
 
-type InternalField = "startTime"
+type InternalField = "startTime" | "endTime"
 
 export const TRACE_FIELD_REGISTRY: ChFieldRegistry<
   Exclude<TraceFilterFieldName, SessionOnlyFilterFieldName> | InternalField
@@ -20,6 +20,8 @@ export const TRACE_FIELD_REGISTRY: ChFieldRegistry<
   models: { column: "models", chType: "String", isArray: true, arrayContains: true },
   providers: { column: "providers", chType: "String", isArray: true, arrayContains: true },
   serviceNames: { column: "service_names", chType: "String", isArray: true, arrayContains: true },
+  tools: { column: "tools", chType: "String", isArray: true, arrayContains: true },
+  definedTools: { column: "defined_tools", chType: "String", isArray: true, arrayContains: true },
   duration: { column: "duration_ns", chType: "Int64" },
   ttft: { column: "time_to_first_token_ns", chType: "Int64" },
   cost: { column: "cost_total_microcents", chType: "UInt64" },
@@ -27,5 +29,7 @@ export const TRACE_FIELD_REGISTRY: ChFieldRegistry<
   errorCount: { column: "error_count", chType: "UInt64" },
   tokensInput: { column: "tokens_input", chType: "UInt64" },
   tokensOutput: { column: "tokens_output", chType: "UInt64" },
-  startTime: { column: "start_time", chType: "DateTime64(9, 'UTC')", mapValue: mapDateTime64UtcQueryParam },
+  cacheHitRate: { kind: "synthetic", buildClause: buildCacheHitRateClause },
+  startTime: { column: "start_time", chType: "DateTime64(9, 'UTC')", valueExpression: dateTime64BestEffortExpression },
+  endTime: { column: "end_time", chType: "DateTime64(9, 'UTC')", valueExpression: dateTime64BestEffortExpression },
 }

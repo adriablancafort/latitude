@@ -2,16 +2,6 @@ import type { NotFoundError, OrganizationId, RepositoryError, SqlClient } from "
 import { Context, type Effect } from "effect"
 import type { Sandbox, SandboxStatus } from "../entities/sandbox.ts"
 
-/**
- * Sandbox lifecycle is *cross-org* management: a parent live org owns sibling
- * sandbox orgs, and the per-plan cap counts sandboxes across that family. The
- * `sandboxes` table's RLS scopes each row to its *own* sandbox org, so no
- * single live-org RLS context can see a parent's sandboxes. These methods are
- * therefore scoped by explicit `organizationId` / `parentOrgId` arguments and
- * run on an RLS-bypassing (admin) `SqlClient`, mirroring the cross-org reads in
- * `@domain/admin`. Authorization is the caller's responsibility (the use-cases
- * gate every call on parent-org membership before touching this port).
- */
 export class SandboxRepository extends Context.Service<
   SandboxRepository,
   {
@@ -22,6 +12,20 @@ export class SandboxRepository extends Context.Service<
       organizationId: OrganizationId,
     ) => Effect.Effect<Sandbox, NotFoundError | RepositoryError, SqlClient>
     countActiveByParentOrgId: (parentOrgId: OrganizationId) => Effect.Effect<number, RepositoryError, SqlClient>
+    archiveIdle: (cutoff: Date) => Effect.Effect<number, RepositoryError, SqlClient>
+    /**
+     * The sandboxes under a parent live org (active *and* archived), newest
+     * first. Powers the sidebar toggle, which needs the org's single sandbox
+     * id plus its status to prefer an active one — the parent scope can't read
+     * the sandbox's own RLS scope, so this is resolved on the admin client.
+     */
+    listByParentOrgId: (
+      parentOrgId: OrganizationId,
+    ) => Effect.Effect<
+      readonly { readonly organizationId: OrganizationId; readonly status: SandboxStatus }[],
+      RepositoryError,
+      SqlClient
+    >
     /**
      * Take a transaction-scoped advisory lock keyed on the parent org, so the
      * active-cap "count then write" sequence is serialized per parent and two

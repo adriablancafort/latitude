@@ -12,8 +12,8 @@ interface AnnotationPopoverContentProps {
   readonly createAutoFocus?: boolean
   readonly isCreateLoading?: boolean
   readonly isUpdateLoading?: boolean
-  readonly onSave: (data: { passed: boolean; comment: string; issueId: string | null }) => void
-  readonly onUpdate: (annotationId: string, data: { passed: boolean; comment: string; issueId: string | null }) => void
+  readonly onSave: (data: { passed: boolean; comment: string; signalId: string | null }) => void
+  readonly onUpdate: (annotationId: string, data: { passed: boolean; comment: string; signalId: string | null }) => void
   readonly onDelete?: () => void
 }
 
@@ -60,7 +60,7 @@ export function AnnotationPopoverContent({
 }
 
 const ANNOTATION_POPOVER_CONTENT_CLASS =
-  "w-[400px] max-h-[70vh] overflow-y-auto p-1 rounded-2xl bg-secondary border-0 shadow"
+  "w-[400px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto p-1 rounded-2xl bg-secondary border-0 shadow"
 
 function handleInteractOutside(e: Event) {
   const target = e.target as HTMLElement

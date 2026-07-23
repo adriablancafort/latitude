@@ -1,15 +1,9 @@
 import type { FilterCondition } from "@domain/shared"
 
-/**
- * ClickHouse `DateTime64(9, 'UTC')` bound parameters reject typical JS `toISOString()` output with a
- * trailing `Z` (BAD_QUERY_PARAMETER: parsed incompletely — the `Z` is an extra byte). Normalize to
- * `YYYY-MM-DD HH:MM:SS.sss...` without a timezone suffix so parameterized queries bind correctly.
- */
-export function mapDateTime64UtcQueryParam(value: FilterCondition["value"]): FilterCondition["value"] {
-  if (typeof value !== "string") return value
-  const t = value.trim()
-  const withoutZ = t.endsWith("Z") ? t.slice(0, -1) : t
-  return withoutZ.replace("T", " ")
+export function dateTime64BestEffortExpression(paramName: string, options: { readonly array: boolean }): string {
+  const parse = (value: string) => `parseDateTime64BestEffort(${value}, 9, 'UTC')`
+  if (options.array) return `arrayMap(x -> ${parse("x")}, {${paramName}:Array(String)})`
+  return parse(`{${paramName}:String}`)
 }
 
 type StatusEnum = "ok" | "error" | "unset"
@@ -53,6 +47,38 @@ export function buildStatusClause(
     }
     default:
       throw new Error(`Unsupported status filter operator: ${cond.op}`)
+  }
+}
+
+const COMPARISON_SQL_OPS: Readonly<Record<string, string>> = {
+  eq: "=",
+  neq: "!=",
+  gt: ">",
+  gte: ">=",
+  lt: "<",
+  lte: "<=",
+}
+
+const CACHE_HIT_RATE_DENOM = "(tokens_input + tokens_cache_read + tokens_cache_create)"
+const CACHE_HIT_RATE_EXPR = `(tokens_cache_read / ${CACHE_HIT_RATE_DENOM})`
+
+/**
+ * Cache hit rate is a ratio of aggregated token sums, so it filters via HAVING
+ * against the SELECT aliases (`tokens_cache_read` etc. are `sum(...) AS ...`).
+ * Rows with no input-side tokens have an undefined rate and must not match any
+ * threshold, so the divide-by-zero is guarded explicitly. The wire value is an
+ * integer percentage (0–100), so it is divided by 100 to compare against the
+ * 0..1 ratio.
+ */
+export function buildCacheHitRateClause(
+  cond: FilterCondition,
+  paramPrefix: string,
+): { readonly clause: string; readonly params: Record<string, unknown> } {
+  const sqlOp = COMPARISON_SQL_OPS[cond.op]
+  if (!sqlOp) throw new Error(`Unsupported cacheHitRate filter operator: ${cond.op}`)
+  return {
+    clause: `(${CACHE_HIT_RATE_DENOM} > 0 AND ${CACHE_HIT_RATE_EXPR} ${sqlOp} {${paramPrefix}:Float64} / 100)`,
+    params: { [paramPrefix]: cond.value },
   }
 }
 

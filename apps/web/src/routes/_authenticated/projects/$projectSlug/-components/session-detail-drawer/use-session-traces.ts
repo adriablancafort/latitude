@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { sandboxOrgIdForScope, useProjectScope } from "../../../../../../domains/projects/project-scope.tsx"
 import { listTracesByProject, type TraceRecord } from "../../../../../../domains/traces/traces.functions.ts"
 
 const EMPTY: readonly TraceRecord[] = []
@@ -19,8 +20,8 @@ const SESSION_TRACES_HARD_CAP = 500
  */
 const TRACE_ID_CHUNK_SIZE = 100
 
-const sessionTracesQueryKey = (projectId: string, sessionId: string) =>
-  ["session-traces", projectId, sessionId] as const
+const sessionTracesQueryKey = (sandboxOrgId: string | undefined, projectId: string, sessionId: string) =>
+  ["session-traces", sandboxOrgId, projectId, sessionId] as const
 
 /**
  * Fetches a session's traces by its authoritative `traceIds` (from the
@@ -34,8 +35,13 @@ const sessionTracesQueryKey = (projectId: string, sessionId: string) =>
  * The query key stays `(projectId, sessionId)` only — `traceIds` is left out so
  * the session panel and the inline expanded row keep sharing one cache entry.
  */
-export const sessionTracesQueryOptions = (projectId: string, sessionId: string, traceIds: readonly string[]) => ({
-  queryKey: sessionTracesQueryKey(projectId, sessionId),
+export const sessionTracesQueryOptions = (
+  sandboxOrgId: string | undefined,
+  projectId: string,
+  sessionId: string,
+  traceIds: readonly string[],
+) => ({
+  queryKey: sessionTracesQueryKey(sandboxOrgId, projectId, sessionId),
   queryFn: async () => {
     const ordered = traceIds.slice(0, SESSION_TRACES_HARD_CAP)
     if (ordered.length === 0) return [] as TraceRecord[]
@@ -45,21 +51,22 @@ export const sessionTracesQueryOptions = (projectId: string, sessionId: string, 
       const chunk = ordered.slice(i, i + TRACE_ID_CHUNK_SIZE)
       const page = await listTracesByProject({
         data: {
+          ...(sandboxOrgId ? { sandboxOrgId } : {}),
           projectId,
           limit: chunk.length,
           sortBy: "startTime",
-          sortDirection: "asc",
+          sortDirection: "desc",
           filters: { traceId: [{ op: "in" as const, value: chunk }] },
         },
       })
       if (page?.traces.length) traces.push(...page.traces)
     }
 
-    // Child traces are shown in chronological order — they form a conversation,
-    // and reading order is what users want. Each chunk is fetched asc, but the
-    // chunks are independent queries, so re-sort the merged set (tiebreak on
-    // traceId for deterministic "Trace N" labels).
-    traces.sort((a, b) => a.startTime.localeCompare(b.startTime) || a.traceId.localeCompare(b.traceId))
+    // Child traces are shown newest-first, matching the sessions table's
+    // last-activity ordering. Each chunk is fetched desc, but the chunks are
+    // independent queries, so re-sort the merged set (tiebreak on traceId for
+    // deterministic "Trace N" labels).
+    traces.sort((a, b) => b.startTime.localeCompare(a.startTime) || b.traceId.localeCompare(a.traceId))
     return traces
   },
   staleTime: 30_000,
@@ -76,8 +83,9 @@ export function useSessionTraces({
   readonly traceIds: readonly string[]
   readonly enabled?: boolean
 }) {
+  const scope = useProjectScope()
   const query = useQuery({
-    ...sessionTracesQueryOptions(projectId, sessionId, traceIds),
+    ...sessionTracesQueryOptions(sandboxOrgIdForScope(scope), projectId, sessionId, traceIds),
     enabled: enabled && projectId.length > 0 && sessionId.length > 0 && traceIds.length > 0,
   })
 

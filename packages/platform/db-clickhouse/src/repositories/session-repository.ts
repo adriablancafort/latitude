@@ -45,8 +45,9 @@ import { buildScoreRollupSubquery, splitScoreFilters } from "../score-filter-sub
 import { buildSessionIntelligenceFilters } from "../session-intelligence-filters.ts"
 import { countSessionsBySearchQuery, type FetchFullSessions, listSessionsBySearchQuery } from "./search-by-project.ts"
 import { isActiveSearch } from "./search-plan.ts"
+import { TOKEN_ANALYTICS_SUM_SELECT, toTokenAnalytics } from "./token-analytics.ts"
 
-const LIST_SELECT = `
+export const LIST_SELECT = `
   organization_id,
   project_id,
   session_id,
@@ -82,11 +83,15 @@ const LIST_SELECT = `
   sum(cost_output_microcents)  AS cost_output_microcents,
   sum(cost_total_microcents)   AS cost_total_microcents,
   argMaxIfMerge(user_id)       AS user_id,
+  argMaxIfMerge(user_email)    AS user_email,
   groupUniqArrayArray(tags)    AS tags,
   maxMap(metadata)             AS metadata,
   groupUniqArrayIfMerge(models)        AS models,
   groupUniqArrayIfMerge(providers)     AS providers,
   groupUniqArrayIfMerge(service_names) AS service_names,
+  groupUniqArrayIfMerge(agent_names)   AS agent_names,
+  groupUniqArrayIfMerge(tools)         AS tools,
+  groupUniqArrayArray(defined_tools)   AS defined_tools,
   argMaxIfMerge(simulation_id)         AS simulation_id,
   argMinIfMerge(root_span_id)          AS root_span_id,
   argMinIfMerge(root_span_name)        AS root_span_name
@@ -122,11 +127,15 @@ type SessionListRow = {
   cost_output_microcents: string
   cost_total_microcents: string
   user_id: string
+  user_email: string
   tags: string[]
   metadata: Record<string, string>
   models: string[]
   providers: string[]
   service_names: string[]
+  agent_names: string[]
+  tools: string[]
+  defined_tools: string[]
   simulation_id: string
   root_span_id: string
   root_span_name: string
@@ -162,6 +171,10 @@ type SessionMetricsRow = {
   tokens_avg: string
   tokens_median: string
   tokens_sum: string
+  tokens_input_sum: string
+  tokens_output_sum: string
+  tokens_cache_read_sum: string
+  tokens_cache_create_sum: string
   ttft_min: string
   ttft_max: string
   ttft_avg: string
@@ -197,7 +210,10 @@ const HISTOGRAM_BUCKET_SELECT = `count() AS session_count,
   quantileTDigest(0.5)(duration_ns) AS duration_median,
   sum(tokens_total) AS tokens_sum,
   sum(span_count) AS span_sum,
-  quantileTDigestIf(0.5)(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_median`
+  quantileTDigestIf(0.5)(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_median,
+  sum(tokens_input) AS tokens_input_sum,
+  sum(tokens_cache_read) AS tokens_cache_read_sum,
+  sum(tokens_cache_create) AS tokens_cache_create_sum`
 
 type SessionHistogramBucketRow = {
   bucket_start: string
@@ -208,6 +224,9 @@ type SessionHistogramBucketRow = {
   tokens_sum: string
   span_sum: string
   ttft_median: string
+  tokens_input_sum: string
+  tokens_cache_read_sum: string
+  tokens_cache_create_sum: string
 }
 
 const toSessionHistogramBucket = (row: SessionHistogramBucketRow): TraceTimeHistogramBucket => ({
@@ -219,6 +238,9 @@ const toSessionHistogramBucket = (row: SessionHistogramBucketRow): TraceTimeHist
   tokensTotalSum: Number(row.tokens_sum),
   spanCountSum: Number(row.span_sum),
   timeToFirstTokenNsMedian: finiteOrZero(row.ttft_median),
+  tokensInputSum: Number(row.tokens_input_sum),
+  tokensCacheReadSum: Number(row.tokens_cache_read_sum),
+  tokensCacheCreateSum: Number(row.tokens_cache_create_sum),
 })
 
 const toSessionMetrics = (row: SessionMetricsRow | undefined): SessionMetrics => {
@@ -248,6 +270,7 @@ const toSessionMetrics = (row: SessionMetricsRow | undefined): SessionMetrics =>
     ),
     timeToFirstTokenNs: toTtftRollup(row),
     traceCount: Number(row.trace_count_sum),
+    tokenAnalytics: toTokenAnalytics(row),
   }
 }
 
@@ -293,12 +316,15 @@ const toDomainSession = (row: SessionListRow): Session => ({
   costOutputMicrocents: Number(row.cost_output_microcents),
   costTotalMicrocents: Number(row.cost_total_microcents),
   userId: ExternalUserId(normalizeCHString(row.user_id)),
+  userEmail: normalizeCHString(row.user_email),
   simulationId: SimulationId(normalizeCHString(row.simulation_id)),
   tags: row.tags.map(normalizeCHString),
   metadata: row.metadata ?? {},
   models: row.models.map(normalizeCHString),
   providers: row.providers.map(normalizeCHString),
   serviceNames: row.service_names.map(normalizeCHString),
+  agentNames: row.agent_names.map(normalizeCHString),
+  definedTools: row.defined_tools.map(normalizeCHString),
   rootSpanId: SpanId(normalizeCHString(row.root_span_id)),
   rootSpanName: normalizeCHString(row.root_span_name),
 })
@@ -327,7 +353,7 @@ const SORT_COLUMNS: Record<string, SortColumn> = {
   traceCount: { expr: "trace_count", chType: "UInt64", rowKey: "trace_count" },
 }
 
-function buildSessionFilterClauses(filters: FilterSet | undefined): {
+export function buildSessionFilterClauses(filters: FilterSet | undefined): {
   havingClauses: string[]
   whereClauses: string[]
   params: Record<string, unknown>
@@ -427,7 +453,7 @@ function collectPercentileRequests(filters: FilterSet | undefined): {
   return { requests, cloned }
 }
 
-const resolvePercentileFilters = (
+export const resolvePercentileFilters = (
   organizationId: OrganizationId,
   projectId: ProjectId,
   filters: FilterSet | undefined,
@@ -831,6 +857,7 @@ export const SessionRepositoryLive = Layer.effect(
                         avg(tokens_total) AS tokens_avg,
                         quantileTDigest(0.5)(tokens_total) AS tokens_median,
                         sum(tokens_total) AS tokens_sum,
+                        ${TOKEN_ANALYTICS_SUM_SELECT},
                         minIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_min,
                         maxIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_max,
                         avgIf(time_to_first_token_ns, time_to_first_token_ns > 0) AS ttft_avg,
@@ -941,6 +968,34 @@ export const SessionRepositoryLive = Layer.effect(
             )
         }),
 
+      listBySessionIds: ({ organizationId, projectId, sessionIds }) =>
+        Effect.gen(function* () {
+          if (sessionIds.length === 0) return []
+          const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
+          return yield* chSqlClient
+            .query(async (client) => {
+              const result = await client.query({
+                query: `SELECT ${LIST_SELECT}
+                      FROM sessions
+                      WHERE organization_id = {organizationId:String}
+                        AND project_id = {projectId:String}
+                        AND session_id IN ({sessionIds:Array(String)})
+                      GROUP BY organization_id, project_id, session_id`,
+                query_params: {
+                  organizationId: organizationId as string,
+                  projectId: projectId as string,
+                  sessionIds: sessionIds.map((sessionId) => sessionId as string),
+                },
+                format: "JSONEachRow",
+              })
+              return result.json<SessionListRow>()
+            })
+            .pipe(
+              Effect.map((rows): readonly Session[] => rows.map(toDomainSession)),
+              Effect.mapError((error) => toRepositoryError(error, "listBySessionIds")),
+            )
+        }),
+
       getDistribution: ({ organizationId, projectId, field }) =>
         Effect.gen(function* () {
           const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
@@ -994,21 +1049,19 @@ export const SessionRepositoryLive = Layer.effect(
         Effect.gen(function* () {
           const chSqlClient = (yield* ChSqlClient) as ChSqlClientShape<ClickHouseClient>
           const COLUMN_EXPRS: Record<string, string> = {
+            userId: "argMaxIfMerge(user_id)",
             tags: "arrayJoin(groupUniqArrayArray(tags))",
             models: "arrayJoin(groupUniqArrayIfMerge(models))",
             providers: "arrayJoin(groupUniqArrayIfMerge(providers))",
             serviceNames: "arrayJoin(groupUniqArrayIfMerge(service_names))",
+            tools: "arrayJoin(groupUniqArrayIfMerge(tools))",
+            definedTools: "arrayJoin(groupUniqArrayArray(defined_tools))",
           }
-          const expr = COLUMN_EXPRS[column]
-          if (!expr) return []
-
           const searchClause = search ? " AND val ILIKE {search:String}" : ""
 
-          return yield* chSqlClient
-            .query(async (client) => {
-              const result = await client.query({
-                query: `SELECT DISTINCT val FROM (
-                        SELECT ${expr} AS val
+          const query = COLUMN_EXPRS[column]
+            ? `SELECT DISTINCT val FROM (
+                        SELECT ${COLUMN_EXPRS[column]} AS val
                         FROM sessions
                         WHERE organization_id = {organizationId:String}
                           AND project_id = {projectId:String}
@@ -1016,7 +1069,14 @@ export const SessionRepositoryLive = Layer.effect(
                       )
                       WHERE val != ''${searchClause}
                       ORDER BY val
-                      LIMIT {limit:UInt32}`,
+                      LIMIT {limit:UInt32}`
+            : undefined
+          if (!query) return []
+
+          return yield* chSqlClient
+            .query(async (client) => {
+              const result = await client.query({
+                query,
                 query_params: {
                   organizationId: organizationId as string,
                   projectId: projectId as string,

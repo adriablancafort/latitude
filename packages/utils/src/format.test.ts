@@ -1,13 +1,39 @@
 import { describe, expect, it } from "vitest"
 import {
+  cacheHitRate,
   formatBytes,
+  formatChartWindowCaption,
   formatCount,
   formatDuration,
+  formatPercentage,
   formatPrice,
   isBlankCHString,
   normalizeCHString,
   parseCHDate,
 } from "./format.ts"
+
+describe("formatChartWindowCaption", () => {
+  it("omits the start year when both ends share a year and always shows the end year", () => {
+    // Midday UTC keeps the calendar day stable across the runner's timezone.
+    const result = formatChartWindowCaption("2026-06-25T12:00:00.000Z", "2026-07-01T12:00:00.000Z")
+    expect(result).toContain("–")
+    expect(result).toMatch(/, 2026$/)
+    const [start] = result.split(" – ")
+    expect(start).not.toContain("2026")
+  })
+
+  it("shows both years when the window crosses a year boundary", () => {
+    const result = formatChartWindowCaption("2025-12-28T12:00:00.000Z", "2026-01-03T12:00:00.000Z")
+    const [start, end] = result.split(" – ")
+    expect(start).toContain("2025")
+    expect(end).toContain("2026")
+  })
+
+  it("returns an empty string for unparseable input", () => {
+    expect(formatChartWindowCaption("nope", "2026-07-01T00:00:00.000Z")).toBe("")
+    expect(formatChartWindowCaption("2026-07-01T00:00:00.000Z", "")).toBe("")
+  })
+})
 
 describe("formatBytes", () => {
   it("formats whole bytes without decimals", () => {
@@ -25,6 +51,10 @@ describe("formatBytes", () => {
 
   it("handles negative values", () => {
     expect(formatBytes(-1536)).toBe("-1.5 KB")
+  })
+
+  it("promotes to the next unit when rounding reaches 1024", () => {
+    expect(formatBytes(1024 * 1024 - 1)).toBe("1 MB")
   })
 })
 
@@ -55,6 +85,11 @@ describe("formatCount", () => {
 
   it("formats billions", () => {
     expect(formatCount(1000000000)).toBe("1B")
+  })
+
+  it("promotes to the next unit when rounding reaches 1000", () => {
+    expect(formatCount(999999)).toBe("1M")
+    expect(formatCount(999500)).toBe("1M")
   })
 
   it("handles negative numbers", () => {
@@ -114,6 +149,33 @@ describe("formatPrice", () => {
     expect(formatPrice(0.0000075)).toBe("$0.0000075")
     expect(formatPrice(0.0001)).toBe("$0.0001")
     expect(formatPrice(0.0009)).toBe("$0.0009")
+  })
+})
+
+describe("formatPercentage", () => {
+  it("formats whole percentages without decimals", () => {
+    expect(formatPercentage(0.8)).toBe("80%")
+    expect(formatPercentage(1)).toBe("100%")
+    expect(formatPercentage(0)).toBe("0%")
+  })
+
+  it("shows up to one decimal for fractional percentages", () => {
+    expect(formatPercentage(0.3333)).toBe("33.3%")
+    expect(formatPercentage(0.9962)).toBe("99.6%")
+  })
+})
+
+describe("cacheHitRate", () => {
+  it("is cacheRead over total input (input + cacheRead + cacheCreate)", () => {
+    expect(cacheHitRate({ input: 10, cacheRead: 80, cacheCreate: 10 })).toBe(0.8)
+  })
+
+  it("returns null when there are no input-side tokens (undefined, not 0)", () => {
+    expect(cacheHitRate({ input: 0, cacheRead: 0, cacheCreate: 0 })).toBeNull()
+  })
+
+  it("is 0 when nothing was served from cache but input exists", () => {
+    expect(cacheHitRate({ input: 100, cacheRead: 0, cacheCreate: 0 })).toBe(0)
   })
 })
 

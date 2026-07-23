@@ -9,6 +9,7 @@ import { cn } from "../../utils/cn.ts"
 import {
   type BarChartOverlay,
   type BarChartOverlayArea,
+  type BarChartOverlayHorizontalLine,
   type BarChartOverlayLine,
   buildBarChartOption,
 } from "./bar-chart-option.ts"
@@ -16,7 +17,7 @@ import { chartThemeFallback } from "./chart-css-theme.ts"
 import { echarts } from "./register-echarts.ts"
 import { useChartCssTheme } from "./use-chart-css-theme.ts"
 
-export type { BarChartOverlay, BarChartOverlayArea, BarChartOverlayLine }
+export type { BarChartOverlay, BarChartOverlayArea, BarChartOverlayHorizontalLine, BarChartOverlayLine }
 
 export type BarChartDataPoint = {
   readonly category: string
@@ -42,6 +43,8 @@ export type BarChartProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "o
   readonly xAxisLabelFontSize?: number
   /** Visual overlays drawn over the bar series — vertical mark lines and shaded ranges. */
   readonly overlay?: BarChartOverlay
+  /** Format the value-axis tick labels (e.g. raw nanoseconds → "500ms"). */
+  readonly formatYAxisLabel?: (value: number) => string
   /**
    * Called when user selects a range via brush (e.g., drag on the histogram).
    * Receives the selected data range [startIndex, endIndex] or null if cleared.
@@ -111,6 +114,7 @@ function BarChart({
   showYAxis = true,
   xAxisLabelFontSize,
   overlay,
+  formatYAxisLabel,
   onSelect,
   onBucketAxisPointerChange,
   className,
@@ -148,8 +152,20 @@ function BarChart({
         hasBrush,
         xAxisLabelFontSize,
         overlay,
+        formatYAxisLabel,
       ),
-    [categories, values, tooltipCategories, colors, formatTooltip, showYAxis, hasBrush, xAxisLabelFontSize, overlay],
+    [
+      categories,
+      values,
+      tooltipCategories,
+      colors,
+      formatTooltip,
+      showYAxis,
+      hasBrush,
+      xAxisLabelFontSize,
+      overlay,
+      formatYAxisLabel,
+    ],
   )
 
   // Stable event handlers that read the latest onSelect from a ref.

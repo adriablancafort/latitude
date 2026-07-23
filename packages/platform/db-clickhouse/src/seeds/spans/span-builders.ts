@@ -1,4 +1,4 @@
-import type { ModelConfig, ToolConfig } from "@domain/shared/seeding"
+import type { ModelConfig, SeedUser, ToolConfig } from "@domain/shared/seeding"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -9,6 +9,8 @@ export type SpanRow = {
   project_id: string
   session_id: string
   user_id: string
+  /** Optional so hand-built test rows can omit it; ClickHouse defaults it to ''. */
+  user_email?: string
   trace_id: string
   span_id: string
   parent_span_id: string
@@ -27,6 +29,7 @@ export type SpanRow = {
   operation: string
   provider: string
   model: string
+  agent_name: string
   response_model: string
   tokens_input: number
   tokens_output: number
@@ -66,6 +69,7 @@ type SpanBase = {
   serviceName: string
   sessionId: string
   userId: string
+  userEmail: string
   organizationId: string
   projectId: string
   apiKeyId: string
@@ -237,6 +241,7 @@ function makeBaseSpan(base: SpanBase): SpanRow {
     project_id: base.projectId,
     session_id: base.sessionId,
     user_id: base.userId,
+    user_email: base.userEmail,
     trace_id: base.traceId,
     span_id: randomHex(16),
     parent_span_id: base.parentSpanId,
@@ -255,6 +260,7 @@ function makeBaseSpan(base: SpanBase): SpanRow {
     operation: "unspecified",
     provider: "",
     model: "",
+    agent_name: "",
     response_model: "",
     tokens_input: 0,
     tokens_output: 0,
@@ -333,8 +339,10 @@ export function makeLlmSpan({
   span.cost_is_estimated = 1
   span.response_id = randomResponseId(modelConfig.provider)
   span.finish_reasons = [finishReason]
-  span.input_messages = JSON.stringify(inputMessages)
-  span.output_messages = JSON.stringify(outputMessages)
+  // Empty lists serialize to "" (not "[]") to match the real span writer: the
+  // trace/session rollups select messages with `input_messages != ''`.
+  span.input_messages = inputMessages.length > 0 ? JSON.stringify(inputMessages) : ""
+  span.output_messages = outputMessages.length > 0 ? JSON.stringify(outputMessages) : ""
   span.system_instructions = systemInstructions ? JSON.stringify([{ type: "text", content: systemInstructions }]) : ""
   span.tool_definitions = toolDefinitions ? JSON.stringify(toolDefinitions.map(toolToDefinition)) : ""
   span.scope_name = modelConfig.scopeName
@@ -353,7 +361,17 @@ export function makeLlmSpan({
   return span
 }
 
-export function makeToolSpan({ base, tool, callId }: { base: SpanBase; tool: ToolConfig; callId: string }): SpanRow {
+export function makeToolSpan({
+  base,
+  tool,
+  callId,
+  error,
+}: {
+  base: SpanBase
+  tool: ToolConfig
+  callId: string
+  error?: { type: string; message: string }
+}): SpanRow {
   const span = makeBaseSpan(base)
   span.name = `execute_tool ${tool.name}`
   span.operation = "execute_tool"
@@ -366,6 +384,12 @@ export function makeToolSpan({ base, tool, callId }: { base: SpanBase; tool: Too
     "gen_ai.tool.name": tool.name,
     "gen_ai.tool.call.id": callId,
     "gen_ai.tool.type": "function",
+  }
+  if (error) {
+    span.status_code = 2
+    span.status_message = error.message
+    span.error_type = error.type
+    span.tool_output = ""
   }
   return span
 }
@@ -423,6 +447,7 @@ export type TraceContext = {
   startTime: Date
   sessionId: string
   userId: string
+  userEmail: string
   serviceName: string
   tags: string[]
   metadata: Record<string, string>
@@ -443,6 +468,7 @@ export function toBase(
     serviceName: ctx.serviceName,
     sessionId: ctx.sessionId,
     userId: ctx.userId,
+    userEmail: ctx.userEmail,
     organizationId: ctx.organizationId,
     projectId: ctx.projectId,
     apiKeyId: ctx.apiKeyId,
@@ -464,4 +490,9 @@ export function pickByWeight<T extends { weight: number }>(items: readonly T[]):
     if (r <= 0) return item
   }
   return items[items.length - 1] as T
+}
+
+/** Rolls whether a trace/session gets an end-user, then weighted-picks one from the pool. */
+export function pickSeedUser(pool: readonly SeedUser[], probability: number): SeedUser | undefined {
+  return Math.random() < probability && pool.length > 0 ? pickByWeight(pool) : undefined
 }

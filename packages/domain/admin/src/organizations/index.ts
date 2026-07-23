@@ -1,8 +1,3 @@
-export {
-  type CreateDemoProjectInput,
-  type CreateDemoProjectResult,
-  createDemoProjectUseCase,
-} from "./create-demo-project.ts"
 export { type GetOrganizationDetailsInput, getOrganizationDetailsUseCase } from "./get-organization-details.ts"
 export {
   type ListOrganizationsByUsageInput,
@@ -16,9 +11,11 @@ export {
   type AdminOrganizationDetails,
   type AdminOrganizationMember,
   type AdminOrganizationProject,
+  type AdminOrganizationSandbox,
   adminOrganizationDetailsSchema,
   adminOrganizationMemberSchema,
   adminOrganizationProjectSchema,
+  adminOrganizationSandboxSchema,
 } from "./organization-details.ts"
 export { AdminOrganizationRepository, type AdminOrganizationSummary } from "./organization-repository.ts"
 export {
@@ -38,3 +35,8 @@ export {
   type ResetSystemMonitorsResult,
   resetSystemMonitorsUseCase,
 } from "./reset-system-monitors.ts"
+export {
+  type SetOrganizationShowcaseError,
+  type SetOrganizationShowcaseInput,
+  setOrganizationShowcaseUseCase,
+} from "./set-organization-showcase.ts"

@@ -1,13 +1,26 @@
 import type { FilterSet } from "@domain/shared"
-import { Button, CloseTrigger, FormWrapper, Input, Modal, useToast } from "@repo/ui"
+import { Button, CloseTrigger, FormWrapper, Icon, Input, Modal, Switch, Text, Tooltip, useToast } from "@repo/ui"
 import { useForm } from "@tanstack/react-form"
+import { useNavigate } from "@tanstack/react-router"
+import { BellRingIcon, ChevronRightIcon, FlaskConicalIcon, ShieldAlertIcon } from "lucide-react"
+import { useState } from "react"
+import { useCreateExperimentFromSearch } from "../../../../../domains/experiments/experiments.collection.ts"
 import {
   useCreateSavedSearch,
   useUpdateSavedSearch,
 } from "../../../../../domains/saved-searches/saved-searches.collection.ts"
 import type { SavedSearchRecord } from "../../../../../domains/saved-searches/saved-searches.functions.ts"
-import { toUserMessage } from "../../../../../lib/errors.ts"
+import { extractFieldErrors, toUserMessage } from "../../../../../lib/errors.ts"
 import { createFormSubmitHandler, fieldErrorsAsStrings } from "../../../../../lib/form-server-action.ts"
+import { AlertCardForm } from "../monitors/-components/alert-card-form.tsx"
+import {
+  type AlertDraft,
+  type AlertFieldErrors,
+  alertFieldErrorsFrom,
+  draftToCondition,
+  emptyAlertDraft,
+} from "../monitors/-components/alert-form-helpers.ts"
+import { searchHasSemanticPart } from "./semantic-monitor-notice.tsx"
 
 interface BaseProps {
   readonly open: boolean
@@ -17,9 +30,12 @@ interface BaseProps {
 
 interface CreateProps extends BaseProps {
   readonly mode: "create"
+  readonly projectSlug: string
   readonly query: string | null
   readonly filterSet: FilterSet
   readonly onCreated: (record: SavedSearchRecord) => void
+  /** Navigates to the Signals builder with these filters seeded (the parent owns the navigation). */
+  readonly onCreateSignal: () => void
 }
 
 interface RenameProps extends BaseProps {
@@ -35,17 +51,104 @@ export function SaveSearchModal(props: SaveSearchModalProps) {
   return props.mode === "create" ? <CreateModal {...props} /> : <RenameModal {...props} />
 }
 
-function CreateModal({ open, onClose, projectId, query, filterSet, onCreated }: CreateProps) {
+const MONITOR_ERROR_PREFIX = "monitor."
+type SavedSearchAlertKind = "savedSearch.match" | "savedSearch.threshold" | "savedSearch.escalating"
+
+const isSavedSearchAlertKind = (kind: string): kind is SavedSearchAlertKind => kind.startsWith("savedSearch.")
+
+function monitorAlertErrorsFrom(error: unknown): AlertFieldErrors {
+  const fieldErrors = extractFieldErrors(error)
+  if (!fieldErrors) return {}
+  const scoped: Record<string, string[]> = {}
+  for (const [path, messages] of Object.entries(fieldErrors)) {
+    if (path.startsWith(MONITOR_ERROR_PREFIX)) scoped[path.slice(MONITOR_ERROR_PREFIX.length)] = messages
+  }
+  return alertFieldErrorsFrom(scoped, null)
+}
+
+function CreateModal({
+  open,
+  onClose,
+  projectId,
+  projectSlug,
+  query,
+  filterSet,
+  onCreated,
+  onCreateSignal,
+}: CreateProps) {
   const { toast } = useToast()
+  const navigate = useNavigate()
   const createMutation = useCreateSavedSearch(projectId)
+  const createExperimentMutation = useCreateExperimentFromSearch(projectId)
+  const [withMonitor, setWithMonitor] = useState(false)
+  const [withExperiment, setWithExperiment] = useState(false)
+  const [alertDraft, setAlertDraft] = useState<AlertDraft>(() => emptyAlertDraft({ sourceId: "pending" }))
+  const [alertErrors, setAlertErrors] = useState<AlertFieldErrors>({})
+
+  // Searches with a semantic part have no exact match rule for a monitor to count against.
+  const semanticQuery = searchHasSemanticPart(query)
+  const createMonitor = withMonitor && !semanticQuery
+  // A signal seeds its scope from the filter set; a query-only search has nothing to seed.
+  const canCreateSignal = Object.keys(filterSet).length > 0
 
   const form = useForm({
     defaultValues: { name: "" },
     onSubmit: createFormSubmitHandler(
-      async (value) => createMutation.mutateAsync({ name: value.name.trim(), query, filterSet }),
+      async (value) => {
+        try {
+          return await createMutation.mutateAsync({
+            name: value.name.trim(),
+            query,
+            filterSet,
+            ...(createMonitor
+              ? {
+                  monitor: {
+                    kind: isSavedSearchAlertKind(alertDraft.kind) ? alertDraft.kind : "savedSearch.match",
+                    condition: draftToCondition(alertDraft),
+                    severity: alertDraft.severity,
+                    metric: { kind: "count" },
+                  },
+                }
+              : {}),
+          })
+        } catch (error) {
+          // `createFormSubmitHandler` only maps Zod errors onto form fields;
+          // the alert section isn't a form field, so route `monitor.*` errors
+          // to it here before the handler swallows them.
+          setAlertErrors(monitorAlertErrorsFrom(error))
+          throw error
+        }
+      },
       {
-        onSuccess: (record) => {
-          toast({ title: "Search saved", description: `"${record.name}" is now available in your saved searches.` })
+        onSuccess: async (record) => {
+          toast({
+            title: "Search saved",
+            description: createMonitor
+              ? `"${record.name}" was saved and a monitor is now watching it.`
+              : `"${record.name}" is now available in your saved searches.`,
+          })
+          if (withExperiment) {
+            try {
+              const experiment = await createExperimentMutation.mutateAsync({
+                name: record.name,
+                filterSet,
+                query,
+              })
+              onClose()
+              void navigate({
+                to: "/projects/$projectSlug/experiments/$experimentSlug",
+                params: { projectSlug, experimentSlug: experiment.slug },
+                search: { created: true },
+              })
+              return
+            } catch (error) {
+              toast({
+                variant: "destructive",
+                title: "Could not create experiment",
+                description: toUserMessage(error),
+              })
+            }
+          }
           onCreated(record)
           onClose()
         },
@@ -93,6 +196,113 @@ function CreateModal({ open, onClose, projectId, query, filterSet, onCreated }: 
               />
             )}
           </form.Field>
+          <div className="flex flex-col gap-1.5">
+            {semanticQuery ? (
+              <Tooltip
+                asChild
+                trigger={
+                  <div className="flex flex-col rounded-lg border border-border opacity-60">
+                    <div className="flex items-center justify-between gap-3 p-3">
+                      <div className="flex items-start gap-2">
+                        <Icon icon={BellRingIcon} size="sm" color="foregroundMuted" className="mt-0.5 shrink-0" />
+                        <div className="flex flex-col gap-0.5">
+                          <Text.H5M>Monitor this search</Text.H5M>
+                          <Text.H6 color="foregroundMuted">
+                            Open incidents when this search matches or its metrics change
+                          </Text.H6>
+                        </div>
+                      </div>
+                      <Switch id="save-search-monitor-toggle" disabled checked={false} />
+                    </div>
+                  </div>
+                }
+              >
+                Semantic searches can’t be monitored. Use exact text or filters to create a sessions monitor.
+              </Tooltip>
+            ) : (
+              <div className="flex flex-col rounded-lg border border-border">
+                <label
+                  htmlFor="save-search-monitor-toggle"
+                  className="flex cursor-pointer items-center justify-between gap-3 p-3"
+                >
+                  <div className="flex items-start gap-2">
+                    <Icon icon={BellRingIcon} size="sm" color="foregroundMuted" className="mt-0.5 shrink-0" />
+                    <div className="flex flex-col gap-0.5">
+                      <Text.H5M>Monitor this search</Text.H5M>
+                      <Text.H6 color="foregroundMuted">
+                        Open incidents when this search matches or its metrics change
+                      </Text.H6>
+                    </div>
+                  </div>
+                  <Switch
+                    id="save-search-monitor-toggle"
+                    checked={withMonitor}
+                    onCheckedChange={(checked) => {
+                      setWithMonitor(checked)
+                      if (!checked) setAlertErrors({})
+                    }}
+                  />
+                </label>
+                {createMonitor ? (
+                  <div className="border-t border-border p-3">
+                    <form.Subscribe selector={(state) => state.values.name}>
+                      {(name) => (
+                        <AlertCardForm
+                          value={alertDraft}
+                          onChange={(next) => {
+                            setAlertDraft(next)
+                            setAlertErrors({})
+                          }}
+                          projectId={projectId}
+                          projectSlug={projectSlug}
+                          showSourcePicker={false}
+                          sourceName={name.trim() || "this search"}
+                          errors={alertErrors}
+                        />
+                      )}
+                    </form.Subscribe>
+                  </div>
+                ) : null}
+              </div>
+            )}
+            <div className="flex flex-col rounded-lg border border-border">
+              <label
+                htmlFor="save-search-experiment-toggle"
+                className="flex cursor-pointer items-center justify-between gap-3 p-3"
+              >
+                <div className="flex items-start gap-2">
+                  <Icon icon={FlaskConicalIcon} size="sm" color="foregroundMuted" className="mt-0.5 shrink-0" />
+                  <div className="flex flex-col gap-0.5">
+                    <Text.H5M>Compare this search</Text.H5M>
+                    <Text.H6 color="foregroundMuted">Create a new experiment with this search as the baseline</Text.H6>
+                  </div>
+                </div>
+                <Switch
+                  id="save-search-experiment-toggle"
+                  checked={withExperiment}
+                  onCheckedChange={setWithExperiment}
+                />
+              </label>
+            </div>
+            {canCreateSignal ? (
+              <button
+                type="button"
+                onClick={onCreateSignal}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-left transition-colors hover:bg-muted/50"
+              >
+                <div className="flex items-start gap-2">
+                  <Icon icon={ShieldAlertIcon} size="sm" color="foregroundMuted" className="mt-0.5 shrink-0" />
+                  <div className="flex flex-col gap-0.5">
+                    <Text.H5M>Create a signal from this search</Text.H5M>
+                    <Text.H6 color="foregroundMuted">
+                      Continuously detect and track traces matching these filters
+                    </Text.H6>
+                  </div>
+                </div>
+                <Icon icon={ChevronRightIcon} size="sm" color="foregroundMuted" className="shrink-0" />
+              </button>
+            ) : null}
+          </div>
         </FormWrapper>
       </form>
     </Modal>

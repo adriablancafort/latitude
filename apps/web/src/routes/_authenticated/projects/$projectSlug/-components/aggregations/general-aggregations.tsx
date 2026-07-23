@@ -30,7 +30,7 @@ function AggregationItem({
       className={cn(
         "flex basis-[176px] min-w-[176px] shrink-0 cursor-pointer flex-col gap-2 rounded-md p-2 text-left",
         "transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        isSelected && "bg-muted ring-1 ring-border",
+        isSelected && "bg-muted",
       )}
     >
       <Text.H6 color="foregroundMuted">{label}</Text.H6>
@@ -52,7 +52,7 @@ const METRIC_ORDER: readonly TraceHistogramMetric[] = [
   "cost",
   "duration",
   "tokens",
-  "ttft",
+  "cacheHitRate",
   "traces",
   "spans",
 ]
@@ -103,13 +103,12 @@ export function GeneralAggregations({
   const traceCardLoading = isSessionsMode ? sessionMetricsLoading : traceCountLoading
   const metricsCardLoading = isSessionsMode ? sessionMetricsLoading : traceMetricsLoading
 
-  // TTFT card is hidden when no row in the current view recorded a first-token timestamp
-  // (`> 0`); showing it would just render "—" forever for projects that don't stream.
-  const showTtft = !!activeMetrics && activeMetrics.timeToFirstTokenNs.max > 0
-
-  const visibleMetrics = METRIC_ORDER.filter((id) => id !== "ttft" || showTtft).map(
-    (id) => HISTOGRAM_METRIC_DEFINITIONS[id],
-  )
+  // Each metric declares its own visibility via `isAvailable` (e.g. cache hit
+  // rate hides itself when there are no input-side tokens). The Boolean filter
+  // defends the panel against a metric id with no definition.
+  const visibleMetrics = METRIC_ORDER.map((id) => HISTOGRAM_METRIC_DEFINITIONS[id])
+    .filter((def): def is HistogramMetricDefinition => Boolean(def))
+    .filter((def) => def.isAvailable?.(activeMetrics) ?? true)
 
   const [showLeftFade, setShowLeftFade] = useState(false)
 

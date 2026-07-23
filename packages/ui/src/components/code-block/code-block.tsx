@@ -10,6 +10,9 @@ export interface CodeBlockProps {
   readonly language?: string
   readonly className?: string
   readonly wrapLines?: boolean
+  readonly onReady?: () => void
+  /** Fill a height-bounded parent and scroll inside the block instead of growing to fit content. */
+  readonly fillHeight?: boolean
 }
 
 const CodeMirrorReadonly = lazy(() =>
@@ -31,6 +34,8 @@ export function CodeBlock({
   language,
   className,
   wrapLines = true,
+  onReady,
+  fillHeight = false,
 }: CodeBlockProps) {
   const [mounted, setMounted] = useState(false)
 
@@ -39,13 +44,20 @@ export function CodeBlock({
   })
 
   if (!mounted) {
-    return <CodeBlockFallback {...(className != null && { className })} />
+    return onReady ? null : <CodeBlockFallback {...(className != null && { className })} />
   }
 
   return (
-    <div className="group relative">
-      <Suspense fallback={<CodeBlockFallback {...(className != null && { className })} />}>
-        <CodeMirrorReadonly value={value} wrapLines={wrapLines} {...(className != null && { className })} />
+    <div className={cn("group relative", { "h-full": fillHeight })}>
+      <Suspense fallback={onReady ? null : <CodeBlockFallback {...(className != null && { className })} />}>
+        <CodeMirrorReadonly
+          value={value}
+          wrapLines={wrapLines}
+          fillHeight={fillHeight}
+          {...(language != null && { language })}
+          {...(className != null && { className })}
+          {...(onReady ? { onReady } : {})}
+        />
       </Suspense>
       <CodeBlockControls
         content={value}

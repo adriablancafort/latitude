@@ -1,8 +1,8 @@
 import { BILLING_OVERAGE_SYNC_THROTTLE_MS } from "@domain/billing"
 import type { EventEnvelope } from "@domain/events"
-import { ESCALATION_CHECK_THROTTLE_MS, ISSUE_REFRESH_THROTTLE_MS } from "@domain/issues"
 import { createFakeQueuePublisher } from "@domain/queue/testing"
 import { SCORE_PUBLICATION_DEBOUNCE } from "@domain/scores"
+import { ESCALATION_CHECK_THROTTLE_MS, SIGNAL_REFRESH_THROTTLE_MS } from "@domain/signals"
 import { TRACE_END_DEBOUNCE_MS } from "@domain/spans"
 
 import { hash } from "@repo/utils"
@@ -104,6 +104,7 @@ describe("domain-events dispatcher", () => {
 
     await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
 
+    // signals:match is no longer fanned out here — trace-end publishes it once the trace settles.
     expect(published.map((p) => `${p.queue}:${p.task}`).sort()).toEqual(["projects:checkFirstTrace", "trace-end:run"])
 
     const traceEnd = published.find((p) => p.queue === "trace-end")
@@ -118,7 +119,10 @@ describe("domain-events dispatcher", () => {
     expect(traceEnd?.options).toEqual({
       dedupeKey: "trace-end:run:org-1:proj-1:trace-abc",
       debounceMs: TRACE_END_DEBOUNCE_MS,
+      attempts: 10,
+      backoff: { type: "exponential", delayMs: 1_000 },
     })
+    expect(published.some((p) => p.queue === "signals")).toBe(false)
     expect(firstTrace?.options?.dedupeKey).toBe("projects:first-trace:proj-1")
   })
 
@@ -150,6 +154,8 @@ describe("domain-events dispatcher", () => {
     expect((traceEnd?.payload as { isSandbox?: boolean }).isSandbox).toBe(true)
     expect((billing?.payload as { isSandbox?: boolean }).isSandbox).toBe(true)
     expect(published.map((p) => `${p.queue}:${p.task}`)).toContain("projects:checkFirstTrace")
+    // signals:match is not fanned out here anymore; trace-end publishes it (and skips sandbox itself).
+    expect(published.some((p) => p.queue === "signals")).toBe(false)
   })
 
   it("routes TracesIngested billing snapshots to billing:recordTraceUsageBatch", async () => {
@@ -240,13 +246,13 @@ describe("domain-events dispatcher", () => {
     }
   })
 
-  it("fans ScoreAssignedToIssue out to refresh + throttled and debounced escalation checks", async () => {
+  it("fans ScoreAssignedToSignal out to refresh + throttled and debounced escalation checks", async () => {
     const { consumer, published } = setupDispatcher()
 
-    const envelope = makeEnvelope("ScoreAssignedToIssue", {
+    const envelope = makeEnvelope("ScoreAssignedToSignal", {
       organizationId: "org-1",
       projectId: "proj-1",
-      issueId: "issue-42",
+      signalId: "issue-42",
     })
 
     await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
@@ -258,10 +264,10 @@ describe("domain-events dispatcher", () => {
     expect(refresh?.payload).toEqual({
       organizationId: "org-1",
       projectId: "proj-1",
-      issueId: "issue-42",
+      signalId: "issue-42",
     })
     expect(refresh?.options?.dedupeKey).toBe("issues:refresh:issue-42")
-    expect(refresh?.options?.throttleMs).toBe(ISSUE_REFRESH_THROTTLE_MS)
+    expect(refresh?.options?.throttleMs).toBe(SIGNAL_REFRESH_THROTTLE_MS)
     expect(refresh?.options?.debounceMs).toBeUndefined()
 
     const escalationChecks = published.filter((p) => p.task === "checkEscalation")
@@ -273,6 +279,41 @@ describe("domain-events dispatcher", () => {
     expect(throttled?.options?.debounceMs).toBeUndefined()
   })
 
+  it("routes SignalCreated to discovery notification requests", async () => {
+    const { consumer, published } = setupDispatcher()
+
+    const envelope = makeEnvelope("SignalCreated", {
+      organizationId: "org-1",
+      projectId: "proj-1",
+      signalId: "signal-1",
+      createdAt: "2026-05-07T10:00:00.000Z",
+    })
+
+    await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
+
+    expect(published).toHaveLength(2)
+
+    const notifications = published.find((p) => p.queue === "notifications")
+    expect(notifications?.task).toBe("request-signal-discovered-notifications")
+    expect(notifications?.payload).toEqual({
+      organizationId: "org-1",
+      projectId: "proj-1",
+      signalId: "signal-1",
+      discoveredAt: "2026-05-07T10:00:00.000Z",
+    })
+    expect(notifications?.options?.dedupeKey).toBe("notifications:request-signal-discovered:signal-1")
+
+    const agentDispatch = published.find((p) => p.queue === "agent-dispatch")
+    expect(agentDispatch?.task).toBe("request")
+    expect(agentDispatch?.payload).toEqual({
+      organizationId: "org-1",
+      projectId: "proj-1",
+      signalId: "signal-1",
+      source: "signal",
+    })
+    expect(agentDispatch?.options?.dedupeKey).toBe("agent-dispatch:request-signal:signal-1")
+  })
+
   it("routes IncidentCreated to notifications:request-incident-notifications with stable dedupe key", async () => {
     const { consumer, published } = setupDispatcher()
 
@@ -280,19 +321,28 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       alertIncidentId: "ai-1",
-      kind: "issue.new",
-      sourceType: "issue",
+      kind: "signal.discovered",
+      sourceType: "signal",
       sourceId: "issue-1",
     })
 
     await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
 
-    expect(published).toHaveLength(1)
-    const job = published[0]
-    expect(job?.queue).toBe("notifications")
-    expect(job?.task).toBe("request-incident-notifications")
-    expect(job?.payload).toEqual({ organizationId: "org-1", alertIncidentId: "ai-1", transition: "created" })
-    expect(job?.options?.dedupeKey).toBe("notifications:request-incident-created:ai-1")
+    expect(published).toHaveLength(2)
+
+    const notifications = published.find((p) => p.queue === "notifications")
+    expect(notifications?.task).toBe("request-incident-notifications")
+    expect(notifications?.payload).toEqual({ organizationId: "org-1", alertIncidentId: "ai-1", transition: "created" })
+    expect(notifications?.options?.dedupeKey).toBe("notifications:request-incident-created:ai-1")
+
+    const agentDispatch = published.find((p) => p.queue === "agent-dispatch")
+    expect(agentDispatch?.task).toBe("request")
+    expect(agentDispatch?.payload).toEqual({
+      organizationId: "org-1",
+      alertIncidentId: "ai-1",
+      source: "incident",
+    })
+    expect(agentDispatch?.options?.dedupeKey).toBe("agent-dispatch:request-incident:ai-1")
   })
 
   it("routes IncidentClosed to notifications:request-incident-notifications with stable dedupe key", async () => {
@@ -302,8 +352,8 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       alertIncidentId: "ai-1",
-      kind: "issue.escalating",
-      sourceType: "issue",
+      kind: "signal.escalating",
+      sourceType: "signal",
       sourceId: "issue-1",
     })
 
@@ -317,6 +367,72 @@ describe("domain-events dispatcher", () => {
     expect(job?.options?.dedupeKey).toBe("notifications:request-incident-closed:ai-1")
   })
 
+  it("routes SignalAssigneeChanged to notifications:request-signal-assigned-notifications", async () => {
+    const { consumer, published } = setupDispatcher()
+
+    const envelope = makeEnvelope("SignalAssigneeChanged", {
+      organizationId: "org-1",
+      projectId: "proj-1",
+      signalId: "issue-1",
+      assigneeId: "user-b",
+      previousAssigneeId: "user-a",
+      actorUserId: "user-a",
+      assignedAt: "2026-05-07T10:00:00.000Z",
+    })
+
+    await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
+
+    expect(published).toHaveLength(1)
+    const job = published[0]
+    expect(job?.queue).toBe("notifications")
+    expect(job?.task).toBe("request-signal-assigned-notifications")
+    expect(job?.payload).toEqual({
+      organizationId: "org-1",
+      signalId: "issue-1",
+      assigneeId: "user-b",
+      actorUserId: "user-a",
+      assignedAt: "2026-05-07T10:00:00.000Z",
+    })
+    expect(job?.options?.dedupeKey).toBe("notifications:request-signal-assigned:issue-1:2026-05-07T10:00:00.000Z")
+  })
+
+  it("skips SignalAssigneeChanged for cleared assignments and self-assignments", async () => {
+    const { consumer, published } = setupDispatcher()
+
+    await consumer.dispatchTask(
+      "domain-events",
+      "dispatch",
+      envelopeToDispatchPayload(
+        makeEnvelope("SignalAssigneeChanged", {
+          organizationId: "org-1",
+          projectId: "proj-1",
+          signalId: "issue-1",
+          assigneeId: null,
+          previousAssigneeId: "user-a",
+          actorUserId: "user-b",
+          assignedAt: "2026-05-07T10:00:00.000Z",
+        }),
+      ),
+    )
+    await consumer.dispatchTask(
+      "domain-events",
+      "dispatch",
+      envelopeToDispatchPayload(
+        makeEnvelope("SignalAssigneeChanged", {
+          organizationId: "org-1",
+          projectId: "proj-1",
+          signalId: "issue-1",
+          assigneeId: "user-a",
+          previousAssigneeId: null,
+          actorUserId: "user-a",
+          assignedAt: "2026-05-07T11:00:00.000Z",
+        }),
+      ),
+    )
+
+    expect(published).toHaveLength(0)
+  })
+
   it("still notifies on an organic IncidentClosed (reason=threshold)", async () => {
     const { consumer, published } = setupDispatcher()
 
@@ -324,8 +440,8 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       alertIncidentId: "ai-1",
-      kind: "issue.escalating",
-      sourceType: "issue",
+      kind: "signal.escalating",
+      sourceType: "signal",
       sourceId: "issue-1",
       reason: "threshold",
     })
@@ -346,8 +462,8 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       alertIncidentId: "ai-1",
-      kind: "issue.escalating",
-      sourceType: "issue",
+      kind: "signal.escalating",
+      sourceType: "signal",
       sourceId: "issue-1",
       reason,
     })
@@ -357,7 +473,7 @@ describe("domain-events dispatcher", () => {
     expect(published).toEqual([])
   })
 
-  it("routes ProjectDeleted to notifications:delete-by-project for cascade cleanup", async () => {
+  it("routes ProjectDeleted to notifications and destinations delete-by-project for cascade cleanup", async () => {
     const { consumer, published } = setupDispatcher()
 
     const envelope = makeEnvelope("ProjectDeleted", {
@@ -371,6 +487,10 @@ describe("domain-events dispatcher", () => {
     const notif = published.find((p) => p.queue === "notifications" && p.task === "delete-by-project")
     expect(notif?.payload).toEqual({ organizationId: "org-1", projectId: "proj-x" })
     expect(notif?.options?.dedupeKey).toBe("notifications:delete-by-project:proj-x")
+
+    const dest = published.find((p) => p.queue === "destinations" && p.task === "delete-by-project")
+    expect(dest?.payload).toEqual({ organizationId: "org-1", projectId: "proj-x" })
+    expect(dest?.options?.dedupeKey).toBe("destinations:delete-by-project:proj-x")
   })
 
   it("fans out whitelisted events to posthog-analytics:track in addition to the primary handler", async () => {
@@ -421,21 +541,20 @@ describe("domain-events dispatcher", () => {
     expect(published.some((p) => p.queue === "posthog-analytics")).toBe(false)
   })
 
-  it("routes ScoreCreated to issues:discovery, annotation-scores publish, and markReviewStarted with status-aware dedupe", async () => {
+  it("routes ScoreCreated to issues:discovery and annotation-scores publish with status-aware dedupe", async () => {
     const { consumer, published } = setupDispatcher()
 
     const envelope = makeEnvelope("ScoreCreated", {
       organizationId: "org-1",
       projectId: "proj-1",
       scoreId: "score-3",
-      issueId: null,
+      signalId: null,
       status: "published",
     })
 
     await consumer.dispatchTask("domain-events", "dispatch", envelopeToDispatchPayload(envelope))
 
     expect(published.map((p) => `${p.queue}:${p.task}`).sort()).toEqual([
-      "annotation-scores:markReviewStarted",
       "annotation-scores:publishHumanAnnotation",
       "issues:discovery",
     ])
@@ -448,9 +567,6 @@ describe("domain-events dispatcher", () => {
       dedupeKey: "annotation-scores:publish-human:score-3",
       debounceMs: SCORE_PUBLICATION_DEBOUNCE,
     })
-
-    const review = published.find((p) => p.task === "markReviewStarted")
-    expect(review?.options?.dedupeKey).toBe("annotation-scores:mark-review-started:score-3")
   })
 
   it("uses distinct discovery dedupe keys for draft vs published scores", async () => {
@@ -460,7 +576,7 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       scoreId: "score-3",
-      issueId: null,
+      signalId: null,
       status: "draft",
     })
 
@@ -468,7 +584,7 @@ describe("domain-events dispatcher", () => {
       organizationId: "org-1",
       projectId: "proj-1",
       scoreId: "score-3",
-      issueId: null,
+      signalId: null,
       status: "published",
     })
 

@@ -16,12 +16,13 @@ import type { QueueConsumer } from "@domain/queue"
 import { NotificationId, OrganizationId, ProjectId, SlackIntegrationId } from "@domain/shared"
 import { type RedisClient, RedisSlackRefreshLockRepositoryLive } from "@platform/cache-redis"
 import {
-  IssueRepositoryLive,
   OrganizationRepositoryLive,
   ProjectRepositoryLive,
   SavedSearchRepositoryLive,
+  SignalRepositoryLive,
   SlackDeliveryRepositoryLive,
   SlackIntegrationRepositoryLive,
+  UserRepositoryLive,
   withPostgres,
 } from "@platform/db-postgres"
 import { parseEnv } from "@platform/env"
@@ -60,12 +61,13 @@ const buildSlackRefresherLayer = () => {
 }
 
 const repoLayer = Layer.mergeAll(
-  IssueRepositoryLive,
+  SignalRepositoryLive,
   SavedSearchRepositoryLive,
   OrganizationRepositoryLive,
   ProjectRepositoryLive,
   SlackIntegrationRepositoryLive,
   SlackDeliveryRepositoryLive,
+  UserRepositoryLive,
 )
 
 const resolveWebAppUrl = (): string => {

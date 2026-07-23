@@ -1,22 +1,23 @@
+import { agentDispatchSeeders } from "./agent-dispatch/index.ts"
 import { alertIncidentSeeders } from "./alert-incidents/index.ts"
-import { annotationQueueSeeders } from "./annotation-queues/index.ts"
 import { apiKeySeeders } from "./api-keys/index.ts"
+import { customBehaviorQaSeeders } from "./custom-behaviors/index.ts"
 import { datasetSeeders } from "./datasets/index.ts"
 import { evaluationSeeders } from "./evaluations/index.ts"
 import { bootstrapTelemetryFlaggerSeeders, flaggerSeeders } from "./flaggers/index.ts"
-import { issueSeeders } from "./issues/index.ts"
 import { monitorSeeders } from "./monitors/index.ts"
 import { notificationSeeders } from "./notifications/index.ts"
 import { organizationSeeders } from "./organizations/index.ts"
 import { projectSeeders } from "./projects/index.ts"
 import { scoreSeeders } from "./scores/index.ts"
+import { signalSeeders } from "./signals/index.ts"
 import { simulationSeeders } from "./simulations/index.ts"
 import type { Seeder } from "./types.ts"
 import { wrappedReportSeeders } from "./wrapped-reports/index.ts"
 
 /**
- * Per-project ("content") seeders — datasets, evaluations, issues,
- * simulations, scores, annotation queues. Re-used by the runtime
+ * Per-project ("content") seeders — datasets, evaluations, signals,
+ * simulations, scores. Re-used by the runtime
  * "Create Demo Project" Temporal activity, which threads a per-project
  * `SeedScope` so all entity ids derive fresh under the new project.
  *
@@ -27,13 +28,12 @@ import { wrappedReportSeeders } from "./wrapped-reports/index.ts"
  */
 export const contentSeeders: readonly Seeder[] = [
   ...datasetSeeders,
-  ...issueSeeders,
+  ...signalSeeders,
   ...evaluationSeeders,
   ...simulationSeeders,
   ...scoreSeeders,
-  ...annotationQueueSeeders,
   ...flaggerSeeders,
-  // Runs after issues + scores so it can derive "currently escalating"
+  // Runs after signals + scores so it can derive "currently escalating"
   // from real occurrence patterns in the seeded data via the same
   // threshold the production worker uses, instead of a fixture flag.
   ...alertIncidentSeeders,
@@ -45,6 +45,9 @@ export const contentSeeders: readonly Seeder[] = [
   // Must run after notificationSeeders so it fully controls which of its own
   // incidents read as "Notified" vs "Muted".
   ...monitorSeeders,
+  // Attaches agent-dispatch ledger rows to seeded signals; only depends on
+  // signalSeeders having run.
+  ...agentDispatchSeeders,
 ]
 
 export const allSeeders: readonly Seeder[] = [
@@ -60,4 +63,9 @@ export const allSeeders: readonly Seeder[] = [
   // and the public Wrapped share URLs. All created "today" so they appear
   // in the backoffice list and form a single leaderboard cohort.
   ...wrappedReportSeeders,
+  // Bootstrap-only: QA custom behaviors on the seed project. Excluded from
+  // `contentSeeders` so the demo workflow never provisions them; their backing
+  // sessions + observations come from the ClickHouse `spans/custom-behavior-qa`
+  // seeder.
+  ...customBehaviorQaSeeders,
 ]

@@ -2,16 +2,16 @@ import { hashOptimizationCandidateText } from "@domain/optimizations"
 import { Effect } from "effect"
 import { generateBaselinePromptText } from "../../alignment/baseline-prompt.ts"
 import type { GeneratedEvaluationDraft } from "../../alignment/types.ts"
+import { wrapPromptAsEvaluationScript } from "../../codegen/judge-script-template.ts"
 import { defaultEvaluationTrigger } from "../../entities/evaluation.ts"
-import { wrapPromptAsEvaluationScript } from "../../runtime/evaluation-execution.ts"
 
 // TODO(eval-sandbox): restore LLM-based baseline generation for arbitrary scripts when sandbox
 // is available.
 export const generateBaselineDraftUseCase = Effect.fn("evaluations.generateBaselineDraft")(function* (input: {
-  readonly issueName: string
-  readonly issueDescription: string
+  readonly signalName: string
+  readonly signalDescription: string
 }) {
-  const promptText = generateBaselinePromptText(input.issueName, input.issueDescription)
+  const promptText = generateBaselinePromptText(input.signalName, input.signalDescription)
   const script = wrapPromptAsEvaluationScript(promptText)
 
   return {

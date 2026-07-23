@@ -5,13 +5,8 @@ import { first, fromString } from "./utils.ts"
 
 const VERCEL_PROVIDER_SUFFIX = /\.(chat|messages|responses|generative-ai|embed)$/
 
-/**
- * Strip ANSI SGR escape sequences and trailing terminal noise from model strings.
- *
- * Claude Code emits the `model` attribute with ANSI color codes embedded (e.g.
- * `"\x1b[32mclaude-opus-4-5\x1b[0m"`) because it renders the value in a terminal
- * before writing it to the span. No other instrumentation source we know of does this.
- */
+// Claude Code embeds ANSI color codes in the `model` attribute (e.g.
+// `"\x1b[32mclaude-opus-4-5\x1b[0m"`); strip them. No other source does this.
 const ANSI_SGR_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g")
 function sanitizeModelName(raw: string): string {
   return raw
@@ -34,19 +29,45 @@ const PROVIDER_ALIASES: Record<string, string> = {
   mistral_ai: "mistral",
   together_ai: "togetherai",
   fireworks_ai: "fireworks-ai",
+  workersai: "cloudflare-workers-ai",
+  "workersai.chat": "cloudflare-workers-ai",
+  // OTel GenAI well-known names from Vercel AI SDK v7's @ai-sdk/otel.
+  "gcp.vertex_ai": "google-vertex",
+  "gcp.gemini": "google",
+  "aws.bedrock": "amazon-bedrock",
+  "azure.ai.openai": "azure",
+  "azure.ai.inference": "azure",
+  x_ai: "xai",
+  "gcp.vertex.agent": "google-vertex", // Google ADK generate_content leaves
 }
 
-const aliasProvider = (v: string) => PROVIDER_ALIASES[v] ?? v
+// Case-fold before alias lookup so non-canonical casings (`Google`, `OpenAI`) resolve to
+// the same canonical key. Alias keys are lowercase.
+const aliasProvider = (v: string) => {
+  const lower = v.toLowerCase()
+  return PROVIDER_ALIASES[lower] ?? lower
+}
+
+// OpenInference's LangChain instrumentation nests the provider in a JSON `metadata` attribute as
+// LangSmith's `ls_provider` (e.g. "openai") rather than emitting llm.system / llm.provider.
+function providerFromOpenInferenceMetadata(attrs: readonly OtlpKeyValue[]): string | undefined {
+  const raw = stringAttr(attrs, "metadata")
+  if (!raw) return undefined
+  try {
+    const meta = JSON.parse(raw) as { ls_provider?: unknown }
+    return typeof meta.ls_provider === "string" ? aliasProvider(meta.ls_provider) : undefined
+  } catch {
+    return undefined
+  }
+}
 
 const providerCandidates: Candidate<string>[] = [
   fromString("gen_ai.provider.name", aliasProvider), // OTEL GenAI v1.37+
   fromString("gen_ai.system", aliasProvider), // OTEL GenAI v1.36 deprecated
   fromString("llm.system", aliasProvider), // OpenInference / Arize Phoenix
-  fromString("ai.model.provider", (v) => {
-    // Vercel AI SDK
-    const stripped = v.replace(VERCEL_PROVIDER_SUFFIX, "")
-    return PROVIDER_ALIASES[stripped] ?? stripped
-  }),
+  fromString("llm.provider", aliasProvider), // OpenInference (DSPy, LiteLLM) — no llm.system
+  { resolve: (attrs) => providerFromOpenInferenceMetadata(attrs) }, // OpenInference LangChain (LangSmith metadata)
+  fromString("ai.model.provider", (v) => aliasProvider(v.replace(VERCEL_PROVIDER_SUFFIX, ""))), // Vercel AI SDK
   { resolve: (attrs) => (stringAttr(attrs, "span.type") === "llm_request" ? "anthropic" : undefined) }, // Claude Code
 ]
 
@@ -78,6 +99,19 @@ export const modelCandidates: Candidate<string>[] = [
   }, // Claude Code (strips ANSI escape codes)
 ]
 
+// Agent name (subagent/agent identity), names preferred over ids. Resolved ungated like
+// `model`: several sources stamp it on every span in scope, which is what feeds the rollup.
+export const agentNameCandidates: Candidate<string>[] = [
+  fromString("gen_ai.agent.name"), // OTEL GenAI semconv (Vercel AI SDK v7, generic OTEL)
+  fromString("openai.agents.name"), // OpenAI Agents SDK bridge
+  fromString("subagent.name"), // Claude Code
+  fromString("subagent.type"), // Claude Code
+  fromString("subagent.id", (v) => v.split(":")[0]?.trim() || undefined), // Claude Code
+  fromString("openclaw.subagent.label"), // OpenClaw wrapper span
+  fromString("openclaw.agent.name"), // OpenClaw agent span + children
+  fromString("latitude.capture.name"), // Latitude capture wrapper
+]
+
 export const responseModelCandidates = [
   fromString("gen_ai.response.model"), // OTEL GenAI semconv
   fromString("ai.response.model"), // Vercel AI SDK
@@ -91,6 +125,7 @@ export const sessionIdCandidates = [
   fromString("traceloop.association.properties.session_id"), // Traceloop / OpenLLMetry
   fromString("langsmith.trace.session_id"), // LangSmith
   fromString("session_id"), // Datadog / HoneyHive
+  fromString("eve.session.id"), // Eve framework
 
   // Fallbacks
   // These do not actually represent sessions, they represent specific threads.
@@ -98,12 +133,20 @@ export const sessionIdCandidates = [
   fromString("wandb.thread_id"), // W&B Weave
   fromString("ai.telemetry.metadata.threadId"), // Opik (via Vercel AI SDK metadata)
   fromString("gen_ai.conversation.id"), // GenAI semconv
+  fromString("eve.turn.id"), // Eve framework (per-turn thread fallback)
 ]
 
 export const userIdCandidates = [
   fromString("user.id"), // OpenInference / Arize Phoenix
+  fromString("enduser.id"), // OTEL enduser semconv
   fromString("gen_ai.request.user"), // OpenLIT (mirrors OpenAI API user param)
   fromString("traceloop.association.properties.user_id"), // Traceloop / OpenLLMetry
   fromString("langsmith.metadata.user_id"), // LangSmith
   fromString("langfuse.user.id"), // Langfuse
+]
+
+export const userEmailCandidates = [
+  fromString("user.email"), // Latitude / OpenInference
+  fromString("enduser.email"), // OTEL enduser semconv
+  fromString("langfuse.user.email"), // Langfuse
 ]

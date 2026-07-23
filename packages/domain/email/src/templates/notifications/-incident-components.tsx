@@ -1,6 +1,12 @@
-import { formatHumanReadableAlert } from "@domain/monitors"
+import { formatHumanReadableRule } from "@domain/monitors"
 import type { IncidentSampleAuthor, IncidentSampleExcerpt } from "@domain/notifications"
-import type { AlertIncidentCondition, AlertIncidentKind, AlertSeverity } from "@domain/shared"
+import {
+  type AlertIncidentCondition,
+  type AlertSeverity,
+  type IncidentNotificationKey,
+  SEVERITY_BADGE_COLOR,
+} from "@domain/shared"
+import type { SignalPriority } from "@domain/signals"
 import { Img, Link, Section, Text } from "@react-email/components"
 import type { CSSProperties, ReactNode } from "react"
 // @ts-expect-error TS6133 - React required at runtime for JSX in workers
@@ -44,7 +50,7 @@ export function buildMonitorAttribution(input: {
   readonly projectSlug: string | undefined
   readonly monitorName: string | undefined
   readonly monitorSlug: string | undefined
-  readonly incidentKind: AlertIncidentKind
+  readonly incidentKind: IncidentNotificationKey
   readonly condition: AlertIncidentCondition | null | undefined
 }): MonitorAttributionInfo | undefined {
   if (!input.monitorName) return undefined
@@ -56,7 +62,7 @@ export function buildMonitorAttribution(input: {
         }
       : {}),
     ...(input.condition
-      ? { conditionSummary: formatHumanReadableAlert({ kind: input.incidentKind, condition: input.condition }) }
+      ? { conditionSummary: formatHumanReadableRule({ trigger: input.condition.trigger, condition: input.condition }) }
       : {}),
   }
 }
@@ -133,13 +139,42 @@ export function EmailMetadataTable({
   )
 }
 
-/**
- * Colored severity pill. Medium = amber, high = red. AlertSeverity is
- * a closed set of two today; if a third is added, this falls back to
- * the medium styling and the build doesn't break.
- */
+/** Colored severity pill — low blue, medium amber, high red, from the shared severity palette. */
 export function SeverityBadge({ severity }: { readonly severity: AlertSeverity }) {
-  const palette = severity === "high" ? { bg: "#FEE2E2", fg: "#991B1B" } : { bg: "#FEF3C7", fg: "#92400E" }
+  const palette = SEVERITY_BADGE_COLOR[severity]
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 8px",
+        borderRadius: 999,
+        backgroundColor: palette.background,
+        color: palette.foreground,
+        fontSize: 12,
+        fontWeight: 600,
+        textTransform: "capitalize",
+      }}
+    >
+      {severity}
+    </span>
+  )
+}
+
+const PRIORITY_PALETTE: Record<SignalPriority, { readonly bg: string; readonly fg: string }> = {
+  urgent: { bg: "#FEE2E2", fg: "#991B1B" },
+  high: { bg: "#FEF3C7", fg: "#92400E" },
+  medium: { bg: "#DBEAFE", fg: "#1E40AF" },
+  low: { bg: "#F1F5F9", fg: "#475569" },
+}
+
+/**
+ * Colored priority pill for the issue's manual triage priority — same
+ * shape as `SeverityBadge` so the metadata table reads as one system.
+ * Only rendered when the incident payload snapshotted a non-null
+ * priority.
+ */
+export function PriorityBadge({ priority }: { readonly priority: SignalPriority }) {
+  const palette = PRIORITY_PALETTE[priority]
   return (
     <span
       style={{
@@ -153,7 +188,7 @@ export function SeverityBadge({ severity }: { readonly severity: AlertSeverity }
         textTransform: "capitalize",
       }}
     >
-      {severity}
+      {priority}
     </span>
   )
 }
@@ -437,7 +472,7 @@ export function IncidentTrendChartImage({ src }: { readonly src: string }) {
  * pairs this with an issue id in a two-column row; we surface the full
  * id separately at the card footer so it doesn't get truncated.
  */
-export function IssueTimestamp({ timestamp }: { readonly timestamp: Date }) {
+export function SignalTimestamp({ timestamp }: { readonly timestamp: Date }) {
   return <Text style={{ margin: "8px 0 0 0", color: "#64748B", fontSize: 12 }}>{formatEmailTimestamp(timestamp)}</Text>
 }
 
@@ -447,7 +482,7 @@ export function IssueTimestamp({ timestamp }: { readonly timestamp: Date }) {
  * Sits below the per-kind content so the rest of the card stays
  * scannable.
  */
-export function IssueIdFooter({ issueId }: { readonly issueId: string }) {
+export function SignalIdFooter({ signalId }: { readonly signalId: string }) {
   return (
     <Text
       style={{
@@ -458,7 +493,7 @@ export function IssueIdFooter({ issueId }: { readonly issueId: string }) {
         wordBreak: "break-all",
       }}
     >
-      Issue ID: {issueId}
+      Signal ID: {signalId}
     </Text>
   )
 }

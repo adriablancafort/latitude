@@ -5,7 +5,7 @@ import { defaultActivityRetryPolicy } from "./retry-policy.ts"
 type OptimizeEvaluationWorkflowInput = {
   readonly organizationId: string
   readonly projectId: string
-  readonly issueId: string
+  readonly signalId: string
   readonly evaluationId: string | null
   readonly jobId: string
   readonly billingOperationId: string
@@ -13,7 +13,6 @@ type OptimizeEvaluationWorkflowInput = {
 
 export type OptimizeEvaluationWorkflowResult =
   | { readonly status: "inactive" }
-  | { readonly status: "blocked"; readonly reason: "no-credits-remaining" }
   | {
       readonly status: "optimized"
       readonly evaluationId: string
@@ -64,14 +63,14 @@ const { evaluateBaselineEvaluationDraft } = proxyActivities<typeof activities>({
 
 // Linear full-optimization pipeline. Serves three entry points with the same
 // body:
-//   - initial generation from an issue (`evaluationId === null`)
+//   - initial generation from a signal (`evaluationId === null`)
 //   - manual realignment of an existing evaluation
 //   - automatic re-optimization triggered by the throttled
 //     `evaluations:automaticOptimization` queue task (8h, first-publish-wins)
 //
-// The evaluation's name/description are inherited from the linked Issue at
+// The evaluation's name/description are inherited from the linked Signal at
 // persist time, so every run (create, manual realign, auto re-optimize) writes
-// the current Issue values onto the evaluation row.
+// the current Signal values onto the evaluation row.
 export const optimizeEvaluationWorkflow = async (
   input: OptimizeEvaluationWorkflowInput,
 ): Promise<OptimizeEvaluationWorkflowResult> => {
@@ -79,7 +78,7 @@ export const optimizeEvaluationWorkflow = async (
     const existing = await loadEvaluationAlignmentStateOrInactive({
       organizationId: input.organizationId,
       projectId: input.projectId,
-      issueId: input.issueId,
+      signalId: input.signalId,
       evaluationId: input.evaluationId,
     })
 
@@ -88,30 +87,23 @@ export const optimizeEvaluationWorkflow = async (
     }
   }
 
-  const billingAllowed = await authorizeEvaluationGenerationBilling({
+  await authorizeEvaluationGenerationBilling({
     organizationId: input.organizationId,
     projectId: input.projectId,
     evaluationId: input.evaluationId,
     billingOperationId: input.billingOperationId,
   })
 
-  if (!billingAllowed) {
-    return {
-      status: "blocked",
-      reason: "no-credits-remaining",
-    }
-  }
-
   const collected = await collectEvaluationAlignmentExamples({
     organizationId: input.organizationId,
     projectId: input.projectId,
-    issueId: input.issueId,
+    signalId: input.signalId,
   })
 
   const baselineDraft = await generateBaselineEvaluationDraft({
     jobId: input.jobId,
-    issueName: collected.issueName,
-    issueDescription: collected.issueDescription,
+    signalName: collected.signalName,
+    signalDescription: collected.signalDescription,
     positiveExamples: collected.positiveExamples,
     negativeExamples: collected.negativeExamples,
   })
@@ -119,12 +111,12 @@ export const optimizeEvaluationWorkflow = async (
   const optimizedDraft = await optimizeEvaluationDraft({
     organizationId: input.organizationId,
     projectId: input.projectId,
-    issueId: input.issueId,
+    signalId: input.signalId,
     evaluationId: input.evaluationId ?? null,
     jobId: input.jobId,
     draft: baselineDraft,
-    issueName: collected.issueName,
-    issueDescription: collected.issueDescription,
+    signalName: collected.signalName,
+    signalDescription: collected.signalDescription,
     positiveExamples: collected.positiveExamples,
     negativeExamples: collected.negativeExamples,
   })
@@ -145,11 +137,11 @@ export const optimizeEvaluationWorkflow = async (
   const baselineEvaluation = await evaluateBaselineEvaluationDraft({
     organizationId: input.organizationId,
     projectId: input.projectId,
-    issueId: input.issueId,
+    signalId: input.signalId,
     evaluationId: input.evaluationId ?? null,
     jobId: input.jobId,
-    issueName: collected.issueName,
-    issueDescription: collected.issueDescription,
+    signalName: collected.signalName,
+    signalDescription: collected.signalDescription,
     draft: optimizedDraft,
     positiveExamples: collected.positiveExamples,
     negativeExamples: collected.negativeExamples,
@@ -158,7 +150,7 @@ export const optimizeEvaluationWorkflow = async (
   const persisted = await persistEvaluationAlignmentResult({
     organizationId: input.organizationId,
     projectId: input.projectId,
-    issueId: input.issueId,
+    signalId: input.signalId,
     evaluationId: input.evaluationId ?? null,
     script: optimizedDraft.script,
     evaluationHash: optimizedDraft.evaluationHash,

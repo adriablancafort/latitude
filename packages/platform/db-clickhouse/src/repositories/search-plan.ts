@@ -1,9 +1,9 @@
-import { AI } from "@domain/ai"
+import { AI, resolveEmbeddingConfig } from "@domain/ai"
 import {
   normalizeLiteralPhrase,
   type ParsedSearchQuery,
-  TRACE_SEARCH_EMBEDDING_DIMENSIONS,
-  TRACE_SEARCH_EMBEDDING_MODEL,
+  TRACE_SEARCH_BOILERPLATE_MIN_TRACES,
+  TRACE_SEARCH_BOILERPLATE_TRACE_FRACTION,
   TRACE_SEARCH_MIN_RELEVANCE_SCORE,
   tokenizePhrase,
 } from "@domain/spans"
@@ -20,26 +20,23 @@ import { Effect, Option } from "effect"
  */
 
 /**
- * Cap on the semantic-side **chunk-row** candidate pool. Each trace can carry
- * multiple chunks now, so the cap is sized for chunks, not traces. Cosine scan
- * stays linear over the embeddings table; above ~30k chunk rows per project
- * latency becomes user-visible. The cap trades recall on the long tail for
- * bounded query time — at the average ~3-chunks-per-trace ratio that's ~10k
- * traces, comfortably above realistic project sizes inside the 30-day TTL
- * window.
+ * Candidate window for indexed vector retrieval. ClickHouse defaults
+ * `max_limit_for_vector_search_queries` to 100, so semantic plans also carry a
+ * per-query setting that raises the guardrail to this value.
  */
-const SEMANTIC_SCAN_LIMIT = 30_000
+const SEMANTIC_VECTOR_LIMIT = 1_000
+const SEMANTIC_VECTOR_SEARCH_SETTINGS = {
+  max_limit_for_vector_search_queries: SEMANTIC_VECTOR_LIMIT,
+} as const
 
 /**
  * Hard cap on the per-trace candidate set returned to the application by
- * `fetchSearchCandidates` (session-level search). Semantic plans already
- * enforce `SEMANTIC_SCAN_LIMIT` server-side, but the lexical and hybrid
- * shapes have no inherent bound — a broad phrase on an XL project could
- * match hundreds of thousands of trace documents. Without this cap those
- * rows stream into the Node worker as a single result set and then ship
- * straight back to ClickHouse as a query parameter, which (a) risks OOMing
- * the worker and (b) inflates the rollup query payload past anything the
- * PREWHERE win can recoup.
+ * `fetchSearchCandidates` (session-level search). Lexical and hybrid shapes
+ * have no inherent bound — a broad phrase on an XL project could match
+ * hundreds of thousands of trace documents. Without this cap those rows stream
+ * into the Node worker as a single result set and then ship straight back to
+ * ClickHouse as a query parameter, which (a) risks OOMing the worker and (b)
+ * inflates the rollup query payload past anything the PREWHERE win can recoup.
  *
  * 50k is generous: well above realistic ranked-search recall and small
  * enough that `Array(FixedString(32))` serialization stays under ~2 MB.
@@ -112,40 +109,57 @@ function buildLexicalSearchSubquery(parsed: ParsedSearchQuery): {
 }
 
 /**
- * Builds a subquery for semantic search candidates using a pre-computed query
- * embedding. The embedding table holds one row per trace **chunk**, so we
- * compute per-chunk cosine similarity and roll up to a per-trace score via
- * `max(...) GROUP BY trace_id` — a trace's relevance is its best-matching
- * chunk's similarity. The inner `ORDER BY semantic_score DESC LIMIT N` bounds
- * the per-project cosine scan cost by keeping the nearest chunks first; the
- * outer rollup collapses surviving chunks back into one row per trace for the
- * downstream join.
+ * Boilerplate (stop-message) filter shared by the listing subquery and the
+ * highlight query. Shared embeddings are deduplicated by content hash, so a
+ * canned message is ONE vector joined back to nearly every trace — under the
+ * max-pool rollup that single vector would set the score of every trace
+ * containing it ("Hi! How can I help you today?" scores ~0.35 against any
+ * service-flavored prompt and lives in ~99% of demo traces, flooding every
+ * search). A hash whose document frequency reaches
+ * `max(MIN_TRACES, FRACTION × project traces)` is excluded from semantic
+ * scoring; it still participates in lexical search.
  *
- * When `semanticMetadata` is `true`, the rollup also surfaces `argMax(...)`
- * of `chunk_index`, `first_message_index`, `last_message_index` aligned to the
- * winning `semantic_score` — used by `getTraceSearchHighlights` (LAT-601) to
- * paint the matched conversational region as a semantic-region highlight.
- * `false` keeps the SQL byte-identical to the pre-PR-2 listing query so
- * existing callers see no change.
+ * The scalar subquery (total project traces) is evaluated once per query by
+ * ClickHouse. The aggregation scans the project's occurrence rows — the same
+ * table the occurrence-side of the join already scans — so it roughly
+ * doubles that read; revisit with a projection if XL projects make it hot.
  */
-function buildSemanticSearchSubquery(
+export const BOILERPLATE_HASH_FILTER = `o.content_hash NOT IN (
+                  SELECT content_hash
+                  FROM trace_message_occurrences
+                  WHERE organization_id = {organizationId:String}
+                    AND project_id = {projectId:String}
+                  GROUP BY content_hash
+                  HAVING uniqExact(trace_id) >= greatest(
+                    {boilerplateMinTraces:UInt32},
+                    (
+                      SELECT uniqExact(trace_id)
+                      FROM trace_message_occurrences
+                      WHERE organization_id = {organizationId:String}
+                        AND project_id = {projectId:String}
+                    ) * {boilerplateTraceFraction:Float64}
+                  )
+                )`
+
+export const BOILERPLATE_FILTER_PARAMS = {
+  boilerplateMinTraces: TRACE_SEARCH_BOILERPLATE_MIN_TRACES,
+  boilerplateTraceFraction: TRACE_SEARCH_BOILERPLATE_TRACE_FRACTION,
+} as const
+
+function buildSharedMessageSemanticSearchSubquery(
   queryEmbedding: readonly number[],
   semanticMetadata: boolean,
+  embeddingModel: string,
 ): {
   subquery: string
   params: Record<string, unknown>
+  clickhouseSettings?: Record<string, string | number | boolean>
 } {
-  const innerExtraCols = semanticMetadata
-    ? `,
-                  chunk_index,
-                  first_message_index,
-                  last_message_index`
-    : ""
   const outerExtraCols = semanticMetadata
     ? `,
-                argMax(chunk_index, semantic_score)         AS matched_chunk_index,
-                argMax(first_message_index, semantic_score) AS matched_first_message_index,
-                argMax(last_message_index, semantic_score)  AS matched_last_message_index`
+                argMax(message_index, semantic_score) AS matched_chunk_index,
+                argMax(message_index, semantic_score) AS matched_first_message_index,
+                argMax(message_index, semantic_score) AS matched_last_message_index`
     : ""
 
   return {
@@ -154,20 +168,58 @@ function buildSemanticSearchSubquery(
                 max(semantic_score) AS semantic_score${outerExtraCols}
               FROM (
                 SELECT
-                  CAST(trace_id AS String) AS trace_id,
-                  (1 - cosineDistance(embedding, {queryEmbedding:Array(Float32)})) AS semantic_score${innerExtraCols}
-                FROM trace_search_embeddings
-                WHERE organization_id = {organizationId:String}
-                  AND project_id = {projectId:String}
+                  CAST(o.trace_id AS String) AS trace_id,
+                  o.message_index AS message_index,
+                  e.semantic_score AS semantic_score
+                FROM (
+                  SELECT
+                    organization_id,
+                    project_id,
+                    trace_id,
+                    message_index,
+                    argMax(content_hash, indexed_at) AS content_hash,
+                    argMax(role, indexed_at) AS role
+                  FROM trace_message_occurrences
+                  WHERE organization_id = {organizationId:String}
+                    AND project_id = {projectId:String}
+                  GROUP BY organization_id, project_id, trace_id, message_index
+                ) AS o
+                INNER JOIN (
+                  SELECT
+                    content_hash,
+                    (1 - cosineDistance(embedding, {queryEmbedding:Array(Float32)})) AS semantic_score
+                  FROM message_embeddings
+                  WHERE organization_id = {organizationId:String}
+                    AND project_id = {projectId:String}
+                    AND embedding_model = {embeddingModel:String}
+                  ORDER BY cosineDistance(embedding, {queryEmbedding:Array(Float32)}) ASC
+                  LIMIT {semanticVectorLimit:UInt32}
+                ) AS e ON o.content_hash = e.content_hash
+                WHERE o.role IN ('user', 'assistant')
+                  AND ${BOILERPLATE_HASH_FILTER}
                 ORDER BY semantic_score DESC
-                LIMIT {semanticScanLimit:UInt32}
-              )
+              ) AS semantic_candidates
               GROUP BY trace_id`,
     params: {
       queryEmbedding: [...queryEmbedding],
-      semanticScanLimit: SEMANTIC_SCAN_LIMIT,
+      embeddingModel,
+      semanticVectorLimit: SEMANTIC_VECTOR_LIMIT,
+      ...BOILERPLATE_FILTER_PARAMS,
     },
+    clickhouseSettings: SEMANTIC_VECTOR_SEARCH_SETTINGS,
   }
+}
+
+function buildSemanticSearchSubquery(
+  queryEmbedding: readonly number[],
+  semanticMetadata: boolean,
+  embeddingModel: string,
+): {
+  subquery: string
+  params: Record<string, unknown>
+  clickhouseSettings?: Record<string, string | number | boolean>
+} {
+  return buildSharedMessageSemanticSearchSubquery(queryEmbedding, semanticMetadata, embeddingModel)
 }
 
 /**
@@ -190,6 +242,7 @@ export type SearchPlan = {
   readonly ranked: boolean
   readonly subquery: string
   readonly params: Record<string, unknown>
+  readonly clickhouseSettings?: Record<string, string | number | boolean>
   readonly semanticMetadata: boolean
 }
 
@@ -210,14 +263,19 @@ export type SearchPlan = {
  * or to a deliberate empty result when there are no phrases — same fallback
  * shape the previous design relied on.
  */
+type QueryEmbedding = {
+  readonly embedding: readonly number[]
+  readonly model: string
+}
+
 function buildSearchPlan(
   parsed: ParsedSearchQuery,
-  queryEmbedding: readonly number[] | undefined,
+  queryEmbedding: QueryEmbedding | undefined,
   semanticMetadata: boolean,
 ): SearchPlan {
   const hasPhrases = parsed.literalPhrases.length > 0 || parsed.tokenPhrases.length > 0
   const hasSemantic = parsed.semanticPrompt.length > 0
-  const hasEmbedding = !!queryEmbedding && queryEmbedding.length > 0
+  const hasEmbedding = !!queryEmbedding && queryEmbedding.embedding.length > 0
 
   // Outer projection for plans that don't actually carry semantic metadata
   // (phrase-only, semantic-without-embedding). The columns are present so
@@ -253,7 +311,7 @@ function buildSearchPlan(
         semanticMetadata,
       }
     }
-    const sem = buildSemanticSearchSubquery(queryEmbedding, semanticMetadata)
+    const sem = buildSemanticSearchSubquery(queryEmbedding.embedding, semanticMetadata, queryEmbedding.model)
     const semanticPassthrough = semanticMetadata
       ? `,
                  matched_chunk_index,
@@ -269,6 +327,7 @@ function buildSearchPlan(
         ...sem.params,
         minRelevanceScore: TRACE_SEARCH_MIN_RELEVANCE_SCORE,
       },
+      ...(sem.clickhouseSettings ? { clickhouseSettings: sem.clickhouseSettings } : {}),
       semanticMetadata,
     }
   }
@@ -283,7 +342,7 @@ function buildSearchPlan(
       semanticMetadata,
     }
   }
-  const sem = buildSemanticSearchSubquery(queryEmbedding, semanticMetadata)
+  const sem = buildSemanticSearchSubquery(queryEmbedding.embedding, semanticMetadata, queryEmbedding.model)
   // LEFT JOIN keeps phrase-matching traces without an embedding (semantic_score
   // defaults to 0.0 in CH for the missing side of an outer join). The lexical
   // filter is the precision gate, so no semantic floor here.
@@ -308,6 +367,7 @@ function buildSearchPlan(
                  ON lex.trace_id = sem.trace_id
                GROUP BY lex.trace_id`,
     params: { ...lex.params, ...sem.params },
+    ...(sem.clickhouseSettings ? { clickhouseSettings: sem.clickhouseSettings } : {}),
     semanticMetadata,
   }
 }
@@ -328,16 +388,24 @@ export function isActiveSearch(parsed: ParsedSearchQuery): boolean {
  * `Effect.serviceOption` keeps `AI` an *optional* dependency — the effect type
  * stays `never` in its requirements channel.
  */
-const generateQueryEmbedding = (semanticPrompt: string): Effect.Effect<readonly number[] | undefined, never> =>
+const generateQueryEmbedding = (semanticPrompt: string): Effect.Effect<QueryEmbedding | undefined, never> =>
   Effect.gen(function* () {
     const aiOption = yield* Effect.serviceOption(AI)
     if (Option.isNone(aiOption)) return undefined
 
+    const embedding = yield* resolveEmbeddingConfig().pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("trace-search: invalid embedding configuration; falling back to lexical-only", error),
+      ),
+      Effect.orElseSucceed(() => undefined),
+    )
+    if (embedding === undefined) return undefined
+
     const result = yield* aiOption.value
       .embed({
         text: semanticPrompt,
-        model: TRACE_SEARCH_EMBEDDING_MODEL,
-        dimensions: TRACE_SEARCH_EMBEDDING_DIMENSIONS,
+        provider: embedding.provider,
+        model: embedding.model,
         inputType: "query",
       })
       .pipe(
@@ -347,7 +415,7 @@ const generateQueryEmbedding = (semanticPrompt: string): Effect.Effect<readonly 
         Effect.orElseSucceed(() => undefined),
       )
 
-    return result?.embedding
+    return result ? { embedding: result.embedding, model: embedding.model } : undefined
   })
 
 interface PlanSearchOptions {

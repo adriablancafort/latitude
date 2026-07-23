@@ -10,23 +10,23 @@ export const BILLING_OVERAGE_SYNC_THROTTLE_MS = 5 * 60_000 // 5 minutes
 
 export const SELF_SERVE_PLAN_SLUGS: readonly PlanSlug[] = ["pro"] as const
 
-export const CHARGEABLE_ACTIONS = ["trace", "flagger-scan", "live-eval-scan", "eval-generation"] as const
+export const CHARGEABLE_ACTIONS = [
+  "trace",
+  "flagger-scan",
+  "deterministic-eval-scan",
+  "live-eval-scan",
+  "eval-generation",
+] as const
 
 export type ChargeableAction = (typeof CHARGEABLE_ACTIONS)[number]
 
 export const ACTION_CREDITS: Record<ChargeableAction, number> = {
   trace: 1,
   "flagger-scan": 30,
+  "deterministic-eval-scan": 1,
   "live-eval-scan": 30,
   "eval-generation": 1000,
 } as const
-
-/**
- * Test Mode active-sandbox cap for Enterprise. A finite "high number" rather
- * than `Infinity` so it round-trips through the integer plan schema; no real
- * org approaches it, so it acts as effectively unbounded.
- */
-export const ENTERPRISE_SANDBOX_ACTIVE_CAP = 1000
 
 export const FREE_PLAN_CONFIG = {
   slug: "free" as const,
@@ -53,7 +53,7 @@ export const PRO_PLAN_CONFIG = {
   overageCreditsPerUnit: 10_000,
   overagePriceCentsPerUnit: 2000,
   spanQuotaPerPeriod: 1_000_000,
-  sandboxActiveCap: 15,
+  sandboxActiveCap: 1,
 } as const
 
 /** Upper bound for `billing_usage_periods.included_credits` (Postgres `integer`). */
@@ -68,7 +68,7 @@ export const ENTERPRISE_PLAN_CONFIG = {
   hardCapped: false,
   priceCents: null as null,
   spanQuotaPerPeriod: Number.POSITIVE_INFINITY,
-  sandboxActiveCap: ENTERPRISE_SANDBOX_ACTIVE_CAP,
+  sandboxActiveCap: 1,
 } as const
 
 export type PlanConfig = {

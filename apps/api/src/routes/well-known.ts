@@ -15,6 +15,7 @@
  */
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi"
 import { parseEnv } from "@platform/env"
+import { PUBLIC_SECURITY } from "@repo/operations/openapi/schemas"
 import { Effect } from "effect"
 import type { AppEnv } from "../types.ts"
 
@@ -35,6 +36,7 @@ const oauthProtectedResourceRoute = createRoute({
   summary: "OAuth protected resource metadata",
   description:
     "RFC 9728 metadata document advertising the authorization server(s) trusted to issue access tokens for this API.",
+  security: PUBLIC_SECURITY,
   // Discovery endpoint consumed by MCP clients during the OAuth handshake —
   // not part of the product surface. Fern skips it during SDK generation.
   "x-fern-ignore": true,

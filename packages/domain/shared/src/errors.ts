@@ -200,6 +200,19 @@ export class PermissionError extends Data.TaggedError("PermissionError")<{
   }
 }
 
+export class ReadOnlyProjectError extends Data.TaggedError("ReadOnlyProjectError")<{
+  readonly serverFnName?: string
+  readonly message?: string
+}> {
+  readonly httpStatus = 403
+  get httpMessage() {
+    // `||` not `??`: Data.TaggedError sets `this.message` to "" (not undefined)
+    // when constructed without a message, so the nullish fallback would leak an
+    // empty string across the server→client boundary. Empty must fall back too.
+    return this.message || "This project is read-only"
+  }
+}
+
 export type DomainError =
   | RepositoryError
   | ConcurrentSqlTransactionError
@@ -207,8 +220,11 @@ export type DomainError =
   | NotFoundError
   | ConflictError
   | UnauthorizedError
+  | ForbiddenError
+  | RateLimitError
   | BadRequestError
   | PermissionError
+  | ReadOnlyProjectError
 
 export const toRepositoryError = (cause: unknown, operation: string): RepositoryError =>
   new RepositoryError({ cause, operation })
@@ -223,6 +239,22 @@ export const causesIncludePostgresUniqueViolation = (error: unknown): boolean =>
   while (current !== null && current !== undefined && !seen.has(current)) {
     seen.add(current)
     if (isRecord(current) && current.code === "23505") {
+      return true
+    }
+    current = isRecord(current) ? current.cause : undefined
+  }
+
+  return false
+}
+
+/** Walks nested `cause` chains for Postgres SQLSTATE `55P03` (lock_not_available). */
+export const causesIncludePostgresLockNotAvailable = (error: unknown): boolean => {
+  const seen = new Set<unknown>()
+  let current: unknown = error
+
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current)
+    if (isRecord(current) && current.code === "55P03") {
       return true
     }
     current = isRecord(current) ? current.cause : undefined
@@ -265,6 +297,29 @@ export const findPostgresUniqueViolationConstraint = (error: unknown): string | 
   return null
 }
 
+/**
+ * Walks `error` and nested `cause` chains for a transient TCP connection reset —
+ * `ECONNRESET` / `EPIPE` / a "socket hang up". These surface when a pooled
+ * keep-alive socket is reused in the narrow window after the server (or an
+ * intervening load balancer) has already closed it: the request never reaches
+ * the server, so the operation is safe to retry.
+ */
+export const causesIncludeConnectionReset = (error: unknown): boolean => {
+  const seen = new Set<unknown>()
+  let current: unknown = error
+
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current)
+    if (isRecord(current)) {
+      if (current.code === "ECONNRESET" || current.code === "EPIPE") return true
+      if (typeof current.message === "string" && current.message.includes("socket hang up")) return true
+    }
+    current = isRecord(current) ? current.cause : undefined
+  }
+
+  return false
+}
+
 export const isNotFoundError = (error: unknown): error is NotFoundError => error instanceof NotFoundError
 
 export const isConflictError = (error: unknown): error is ConflictError => error instanceof ConflictError
@@ -303,3 +358,9 @@ export class StorageError extends Data.TaggedError("StorageError")<{
   readonly httpStatus = 500
   readonly httpMessage = "Storage operation failed"
 }
+
+/** Best-effort human-readable message from an unknown error, for transport-level result payloads. */
+export const describeError = (error: unknown): string =>
+  typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message: unknown }).message)
+    : String(error)
