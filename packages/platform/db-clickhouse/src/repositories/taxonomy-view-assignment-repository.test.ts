@@ -161,7 +161,7 @@ describe("TaxonomyViewAssignmentRepositoryLive", () => {
         const repo = yield* TaxonomyViewAssignmentRepository
         yield* repo.upsertMany([
           makeAssignment({ observationId: "topic".padEnd(24, "0"), facetId: null }),
-          // Same scope + cluster but a facet lens — a different projection space
+          // Same scope + cluster but a different facet: a different projection space
           // that topic reads (facet_id = '') must never surface.
           makeAssignment({ observationId: "facetrow".padEnd(24, "0"), facetId }),
         ])
@@ -225,8 +225,150 @@ describe("TaxonomyViewAssignmentRepositoryLive", () => {
     // Only clusterA members of THIS behavior, newest-first — excludes clusterB (m3)
     // and the other behavior's clusterA assignment (m4). The joined rows carry the
     // global observation's embedding + summary the naming step reads.
-    expect(observations.map((o) => o.observationId)).toEqual([m2, m1])
-    expect(observations[0]?.projectionMetadata).toEqual({ summary: "user asks about refunds" })
+    expect(observations.map((o) => o.projectionMetadata.summary)).toEqual([
+      "user asks about refunds",
+      "user asks about billing",
+    ])
     expect(observations[0]?.embedding).toEqual([1, 0, 0])
+  })
+
+  it("deleteByBehavior purges the cohort's edges across BOTH the topic and facet slices", async () => {
+    const cb = CustomBehaviorId("del".padEnd(24, "0"))
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* TaxonomyViewAssignmentRepository
+        yield* repo.upsertMany([
+          makeAssignment({ observationId: "dt".padEnd(24, "0"), customBehaviorId: cb, facetId: null }),
+          makeAssignment({ observationId: "df".padEnd(24, "0"), customBehaviorId: cb, facetId }),
+        ])
+        yield* repo.deleteByBehavior({ organizationId, projectId, customBehaviorId: cb })
+      }),
+    )
+    const result = await ch.client.query({
+      query: `SELECT count() AS c FROM taxonomy_view_assignments FINAL WHERE custom_behavior_id = {cb:String}`,
+      query_params: { cb: cb as string },
+      format: "JSONEachRow",
+    })
+    const [row] = await result.json<{ c: string | number }>()
+    expect(Number(row?.c ?? -1)).toBe(0)
+  })
+
+  it("reads facet-scoped cluster members from taxonomy_facet_projections (not taxonomy_observations)", async () => {
+    const fp = "fp".padEnd(24, "0")
+    await ch.client.insert({
+      table: "taxonomy_facet_projections",
+      values: [
+        {
+          organization_id: organizationId as string,
+          project_id: projectId as string,
+          facet_id: facetId as string,
+          session_observation_id: fp,
+          session_id: "session-fp",
+          extracted_text: "the user wants to cancel a subscription",
+          analysis_hash: "a".repeat(64),
+          embedding: [0, 1, 0],
+          start_time: toCh(now),
+          retention_days: 90,
+          indexed_at: toCh(now),
+        },
+      ],
+      format: "JSONEachRow",
+    })
+
+    const members = await run(
+      Effect.gen(function* () {
+        const repo = yield* TaxonomyViewAssignmentRepository
+        yield* repo.upsertMany([makeAssignment({ observationId: fp, assignedClusterId: clusterA, facetId })])
+        return yield* repo.listClusterMemberObservations({
+          organizationId,
+          projectId,
+          customBehaviorId,
+          facetId,
+          clusterId: clusterA,
+          limit: 100,
+        })
+      }),
+    )
+
+    expect(members).toHaveLength(1)
+    expect(members[0]?.projectionMetadata.summary).toBe("the user wants to cancel a subscription")
+    expect(members[0]?.embedding).toEqual([0, 1, 0])
+  })
+
+  it("counts assigned rows per UTC day, excluding rows a rebuild orphaned", async () => {
+    const cb = CustomBehaviorId("cov".padEnd(24, "0"))
+    const counts = await run(
+      Effect.gen(function* () {
+        const repo = yield* TaxonomyViewAssignmentRepository
+        yield* repo.upsertMany([
+          makeAssignment({
+            observationId: "c1".padEnd(24, "0"),
+            customBehaviorId: cb,
+            facetId,
+            startTime: new Date("2026-06-01T01:00:00.000Z"),
+          }),
+          makeAssignment({
+            observationId: "c2".padEnd(24, "0"),
+            customBehaviorId: cb,
+            facetId,
+            startTime: new Date("2026-06-01T23:30:00.000Z"),
+          }),
+          makeAssignment({
+            observationId: "c3".padEnd(24, "0"),
+            customBehaviorId: cb,
+            facetId,
+            startTime: new Date("2026-06-02T05:00:00.000Z"),
+          }),
+          // Orphaned by a rebuild: physically present, invisible to every other
+          // read, so it must not make 2026-06-03 look covered.
+          makeAssignment({
+            observationId: "c4".padEnd(24, "0"),
+            customBehaviorId: cb,
+            facetId,
+            assignedClusterId: clusterB,
+            startTime: new Date("2026-06-03T05:00:00.000Z"),
+          }),
+          // The same cohort's topic slice, and an older day outside the scan.
+          makeAssignment({ observationId: "c5".padEnd(24, "0"), customBehaviorId: cb, facetId: null }),
+          makeAssignment({
+            observationId: "c6".padEnd(24, "0"),
+            customBehaviorId: cb,
+            facetId,
+            startTime: new Date("2026-05-01T05:00:00.000Z"),
+          }),
+        ])
+        return yield* repo.getAssignedCountsByDay({
+          organizationId,
+          projectId,
+          customBehaviorId: cb,
+          facetId,
+          clusterIds: [clusterA],
+          since: new Date("2026-05-25T00:00:00.000Z"),
+        })
+      }),
+    )
+
+    expect(counts).toEqual([
+      { day: new Date("2026-06-01T00:00:00.000Z"), count: 2 },
+      { day: new Date("2026-06-02T00:00:00.000Z"), count: 1 },
+    ])
+  })
+
+  it("returns no coverage days when the tree has no active clusters", async () => {
+    const counts = await run(
+      Effect.gen(function* () {
+        const repo = yield* TaxonomyViewAssignmentRepository
+        return yield* repo.getAssignedCountsByDay({
+          organizationId,
+          projectId,
+          customBehaviorId,
+          facetId,
+          clusterIds: [],
+          since: new Date("2026-05-25T00:00:00.000Z"),
+        })
+      }),
+    )
+
+    expect(counts).toEqual([])
   })
 })

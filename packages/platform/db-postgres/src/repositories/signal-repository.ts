@@ -69,6 +69,13 @@ const isEscalatingExpr = sql<boolean>`exists (
     and ${incidents.endedAt} is null
 )`
 
+// Both halves of "this signal exists for the product": not soft-deleted, and
+// promoted. Shared rather than inlined per clause because the visibility rule is
+// repeated across a dozen `and(...)`s, and the next read added here has to
+// inherit it instead of remembering it. Write paths, the slug-uniqueness reads,
+// and the discovery opt-ins deliberately sit outside it — see the port docs.
+const userVisibleSignal = and(isNull(signals.deletedAt), isNotNull(signals.promotedAt))
+
 const signalColumnsWithLifecycle = {
   ...getTableColumns(signals),
   isEscalating: isEscalatingExpr,
@@ -93,10 +100,12 @@ const toDomainSignal = (row: typeof signals.$inferSelect): Signal =>
     priority: row.priority,
     centroid: row.centroid,
     clusteredAt: row.clusteredAt,
+    promotedAt: row.promotedAt,
     resolvedAt: row.resolvedAt,
     ignoredAt: row.ignoredAt,
     regressedAt: row.regressedAt,
     mutedAt: row.mutedAt,
+    feedback: row.feedback,
     deletedAt: row.deletedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -199,10 +208,12 @@ const toInsertRow = (issue: Signal, centroidEmbedding: readonly number[] | null)
   centroid: issue.centroid,
   centroidEmbedding: centroidEmbedding === null ? null : [...centroidEmbedding],
   clusteredAt: issue.clusteredAt,
+  promotedAt: issue.promotedAt,
   resolvedAt: issue.resolvedAt,
   ignoredAt: issue.ignoredAt,
   regressedAt: issue.regressedAt,
   mutedAt: issue.mutedAt,
+  feedback: issue.feedback,
   deletedAt: issue.deletedAt,
   createdAt: issue.createdAt,
   updatedAt: issue.updatedAt,
@@ -217,18 +228,14 @@ const signalRepositoryCoreLive = Layer.effect(
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           return yield* sqlClient
             .query((db, organizationId) => {
-              // Every non-deleted signal is listed regardless of occurrence count: user-created
+              // Every promoted signal is listed regardless of occurrence count: user-created
               // signals are deliberate (and may have zero occurrences until traffic arrives), and
-              // discovered signals are surfaced as soon as they exist.
+              // discovered signals are surfaced as soon as they clear the promotion gate.
               return db
                 .select(signalColumnsWithLifecycle)
                 .from(signals)
                 .where(
-                  and(
-                    eq(signals.organizationId, organizationId),
-                    eq(signals.projectId, projectId),
-                    isNull(signals.deletedAt),
-                  ),
+                  and(eq(signals.organizationId, organizationId), eq(signals.projectId, projectId), userVisibleSignal),
                 )
                 .orderBy(desc(signals.createdAt))
                 .limit(limit + 1)
@@ -287,7 +294,7 @@ const signalRepositoryCoreLive = Layer.effect(
               const where = and(
                 eq(signals.organizationId, organizationId),
                 eq(signals.projectId, projectId),
-                isNull(signals.deletedAt),
+                userVisibleSignal,
                 lifecycleGroup === "active"
                   ? and(isNull(signals.resolvedAt), isNull(signals.ignoredAt))
                   : lifecycleGroup === "archived"
@@ -344,11 +351,13 @@ const signalRepositoryCoreLive = Layer.effect(
               // Primary-state rank mirroring `LIFECYCLE_STATE_PRIORITY` in the
               // analytics list path: escalating < regressed < new < ongoing <
               // resolved < ignored. WHEN order encodes "min priority wins" over
-              // the derived state set.
+              // the derived state set. The "new" branch has to age from the same
+              // timestamp as `signalFirstVisibleAt`, or a promoted signal sorts
+              // differently here than the derived state the row renders.
               const stateRank = sql<number>`case
                 when ${isEscalatingExpr} then 0
                 when ${signals.regressedAt} is not null then 1
-                when ${signals.createdAt} > now() - (${NEW_SIGNAL_AGE_DAYS} * interval '1 day') then 2
+                when coalesce(${signals.promotedAt}, ${signals.createdAt}) > now() - (${NEW_SIGNAL_AGE_DAYS} * interval '1 day') then 2
                 when ${signals.resolvedAt} is not null then 4
                 when ${signals.ignoredAt} is not null then 5
                 else 3
@@ -404,7 +413,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   and(
                     eq(signals.organizationId, organizationId),
                     eq(signals.projectId, projectId),
-                    isNull(signals.deletedAt),
+                    userVisibleSignal,
                     timeRange.from ? gte(signals.createdAt, timeRange.from) : undefined,
                     timeRange.to ? lte(signals.createdAt, timeRange.to) : undefined,
                   ),
@@ -413,7 +422,7 @@ const signalRepositoryCoreLive = Layer.effect(
             .pipe(Effect.map((rows) => rows.map((row) => SignalId(row.id))))
         }),
 
-      findById: (id: SignalId) =>
+      findById: (id: SignalId, options?: { readonly includeUnpromoted?: boolean }) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           return yield* sqlClient
@@ -421,7 +430,13 @@ const signalRepositoryCoreLive = Layer.effect(
               db
                 .select(signalColumnsWithLifecycle)
                 .from(signals)
-                .where(and(eq(signals.organizationId, organizationId), eq(signals.id, id), isNull(signals.deletedAt)))
+                .where(
+                  and(
+                    eq(signals.organizationId, organizationId),
+                    eq(signals.id, id),
+                    options?.includeUnpromoted ? isNull(signals.deletedAt) : userVisibleSignal,
+                  ),
+                )
                 .limit(1),
             )
             .pipe(
@@ -476,7 +491,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   and(
                     eq(signals.organizationId, organizationId),
                     eq(signals.projectId, projectId),
-                    isNull(signals.deletedAt),
+                    userVisibleSignal,
                     inArray(signals.id, signalIds),
                   ),
                 )
@@ -484,7 +499,7 @@ const signalRepositoryCoreLive = Layer.effect(
             .pipe(Effect.map((rows) => rows.map(toSignalWithLifecycle)))
         }),
 
-      hybridSearch: ({ projectId, query, normalizedEmbedding }) =>
+      hybridSearch: ({ projectId, query, normalizedEmbedding, includeUnpromoted }) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           const vector = yield* validateVector(normalizedEmbedding, "SignalRepository.hybridSearch")
@@ -517,7 +532,7 @@ const signalRepositoryCoreLive = Layer.effect(
                 and(
                   eq(signals.organizationId, organizationId),
                   eq(signals.projectId, projectId),
-                  isNull(signals.deletedAt),
+                  includeUnpromoted ? isNull(signals.deletedAt) : userVisibleSignal,
                   isNotNull(signals.centroidEmbedding),
                   sql`(${score} >= ${SIGNAL_DISCOVERY_MIN_SIMILARITY} OR ${vectorScore} >= ${SIGNAL_DISCOVERY_MIN_VECTOR_SIMILARITY})`,
                 ),
@@ -549,7 +564,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   eq(signals.organizationId, organizationId),
                   eq(signals.projectId, projectId),
                   eq(signals.id, signalId),
-                  isNull(signals.deletedAt),
+                  userVisibleSignal,
                 ),
               )
               .limit(1),
@@ -564,9 +579,9 @@ const signalRepositoryCoreLive = Layer.effect(
 
           // Exact cosine scan over the project's other signals — no ANN index by
           // design (see the schema comment on `centroidEmbedding`). Resolved and
-          // ignored signals are deliberately included. `save()` only persists
-          // embeddings for the configured embedding model, so every non-null
-          // row is in the same embedding space by construction.
+          // ignored signals are deliberately included; unpromoted ones are not.
+          // `save()` only persists embeddings for the configured embedding model,
+          // so every non-null row is in the same embedding space by construction.
           const similarity = sql<number>`(1::double precision - (${signals.centroidEmbedding} <=> ${queryVector}))`
           const rows = yield* sqlClient.query((db, organizationId) =>
             db
@@ -577,7 +592,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   eq(signals.organizationId, organizationId),
                   eq(signals.projectId, projectId),
                   ne(signals.id, signalId),
-                  isNull(signals.deletedAt),
+                  userVisibleSignal,
                   isNotNull(signals.centroidEmbedding),
                 ),
               )
@@ -617,7 +632,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   and(
                     eq(signals.organizationId, organizationId),
                     isNull(projects.deletedAt),
-                    isNull(signals.deletedAt),
+                    userVisibleSignal,
                     isNull(signals.resolvedAt),
                     isNull(signals.ignoredAt),
                     or(sql`${signals.searchDocument} @@ ${lexicalQuery}`, ilike(signals.name, `%${query}%`)),
@@ -660,7 +675,7 @@ const signalRepositoryCoreLive = Layer.effect(
                   isNull(projects.deletedAt),
                   isNull(signals.resolvedAt),
                   isNull(signals.ignoredAt),
-                  isNull(signals.deletedAt),
+                  userVisibleSignal,
                   isNotNull(signals.centroidEmbedding),
                   sql`(${score} >= ${SIGNAL_DISCOVERY_MIN_SIMILARITY} OR ${vectorScore} >= ${SIGNAL_DISCOVERY_MIN_VECTOR_SIMILARITY})`,
                 ),
@@ -696,10 +711,17 @@ const signalRepositoryCoreLive = Layer.effect(
                   centroid: row.centroid,
                   centroidEmbedding: row.centroidEmbedding,
                   clusteredAt: row.clusteredAt,
+                  // Promotion is a one-way latch, enforced here rather than trusted to
+                  // callers: `save` takes a whole `Signal`, so a writer holding a copy
+                  // read before promotion would otherwise clear it, and a signal that
+                  // silently becomes unpromoted disappears from the product.
+                  promotedAt: sql`coalesce(${signals.promotedAt}, ${row.promotedAt})`,
                   resolvedAt: row.resolvedAt,
                   ignoredAt: row.ignoredAt,
                   regressedAt: row.regressedAt,
                   mutedAt: row.mutedAt,
+                  // `feedback` is absent on purpose: only `claimFeedback` writes it, so a caller
+                  // holding a copy read before the verdict landed cannot clear the latch.
                   deletedAt: row.deletedAt,
                   updatedAt: row.updatedAt,
                 },
@@ -729,6 +751,26 @@ const signalRepositoryCoreLive = Layer.effect(
           return rows.length > 0
         }),
 
+      claimFeedback: ({ signalId, feedback, now }) =>
+        Effect.gen(function* () {
+          const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
+          const rows = yield* sqlClient.query((db, organizationId) =>
+            db
+              .update(signals)
+              .set({ feedback, updatedAt: now })
+              .where(
+                and(
+                  eq(signals.organizationId, organizationId),
+                  eq(signals.id, signalId),
+                  isNull(signals.deletedAt),
+                  isNull(signals.feedback),
+                ),
+              )
+              .returning({ id: signals.id }),
+          )
+          return rows.length > 0
+        }),
+
       softDelete: (id: SignalId) =>
         Effect.gen(function* () {
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
@@ -745,7 +787,6 @@ const signalRepositoryCoreLive = Layer.effect(
           const sqlClient = (yield* SqlClient) as SqlClientShape<Operator>
           const conditions = and(
             eq(signals.organizationId, sqlClient.organizationId),
-            eq(signals.projectId, input.projectId),
             eq(signals.slug, input.slug),
             isNull(signals.deletedAt),
             ...(input.excludeSignalId ? [ne(signals.id, input.excludeSignalId)] : []),
@@ -769,7 +810,7 @@ const signalRepositoryCoreLive = Layer.effect(
                     eq(signals.organizationId, organizationId),
                     eq(signals.projectId, projectId),
                     eq(signals.slug, slug),
-                    isNull(signals.deletedAt),
+                    userVisibleSignal,
                   ),
                 )
                 .limit(1),

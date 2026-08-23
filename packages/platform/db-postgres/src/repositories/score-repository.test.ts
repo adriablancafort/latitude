@@ -692,6 +692,7 @@ describe("ScoreRepositoryLive + score use cases", () => {
         return yield* repository.countAnnotationsByTraceIds({
           projectId: annotationProjectId,
           traceIds: [positiveTraceId, mixedTraceId, TraceId("cccccccccccccccccccccccccccccccc")],
+          source: "annotation",
           options: { draftMode: "include" },
         })
       }).pipe(withPostgres(ScoreRepositoryLive, database.appPostgresClient, OrganizationId(organizationId))),
@@ -702,6 +703,152 @@ describe("ScoreRepositoryLive + score use cases", () => {
     expect(countsByTraceId.get(positiveTraceId)).toMatchObject({ positiveCount: 1, negativeCount: 0 })
     expect(countsByTraceId.get(mixedTraceId)).toMatchObject({ positiveCount: 1, negativeCount: 1 })
     expect(countsByTraceId.has(TraceId("cccccccccccccccccccccccccccccccc"))).toBe(false)
+  })
+
+  it("counts every score source by trace when source is omitted, except absent evaluations", async () => {
+    const organizationId = "dddddddddddddddddddddddd"
+    const mixedTraceId = TraceId("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "annotation",
+        sourceId: "UI",
+        traceId: mixedTraceId,
+        value: 0.1,
+        passed: false,
+        feedback: "Bad answer",
+        metadata: { rawFeedback: "Bad answer" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "evaluation",
+        sourceId: evaluationSourceId,
+        traceId: mixedTraceId,
+        value: 0,
+        passed: false,
+        feedback: "Issue absent",
+        metadata: { evaluationHash: "eval-hash-counts" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "evaluation",
+        sourceId: "ffffffffffffffffffffffff",
+        signalId: SignalId("iiiiiiiiiiiiiiiiiiiiiiii"),
+        traceId: mixedTraceId,
+        value: 0,
+        passed: false,
+        feedback: "Failed evaluation already linked to a signal",
+        metadata: { evaluationHash: "eval-hash-signaled-fail" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "custom",
+        sourceId: "api-source",
+        traceId: mixedTraceId,
+        value: 0.99,
+        passed: true,
+        feedback: "Custom score",
+        metadata: { channel: "api" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    const counts = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* ScoreRepository
+        return yield* repository.countAnnotationsByTraceIds({
+          projectId: annotationProjectId,
+          traceIds: [mixedTraceId],
+          options: { draftMode: "include" },
+        })
+      }).pipe(withPostgres(ScoreRepositoryLive, database.appPostgresClient, OrganizationId(organizationId))),
+    )
+
+    expect(counts).toEqual([expect.objectContaining({ traceId: mixedTraceId, positiveCount: 1, negativeCount: 2 })])
+  })
+
+  it("omits absent evaluation runs from listByTraceId when asked", async () => {
+    const organizationId = "ffffffffffffffffffffaaaa"
+    const traceId = TraceId("ffffffffffffffffffffffffffffffff")
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "evaluation",
+        sourceId: evaluationSourceId,
+        traceId,
+        value: 0,
+        passed: false,
+        feedback: "No condition matched",
+        metadata: { evaluationHash: "eval-hash-absent" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "evaluation",
+        sourceId: "ffffffffffffffffffffffff",
+        traceId,
+        value: 1,
+        passed: true,
+        feedback: "Issue present",
+        metadata: { evaluationHash: "eval-hash-present" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "annotation",
+        sourceId: "UI",
+        traceId,
+        value: 0,
+        passed: false,
+        feedback: "Human thumbs down",
+        metadata: { rawFeedback: "Human thumbs down" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await Effect.runPromise(
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "evaluation",
+        sourceId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+        signalId: SignalId("iiiiiiiiiiiiiiiiiiiiiiii"),
+        traceId,
+        value: 0,
+        passed: false,
+        feedback: "Failed evaluation already linked to a signal",
+        metadata: { evaluationHash: "eval-hash-signaled-fail" },
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    const page = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* ScoreRepository
+        return yield* repository.listByTraceId({
+          projectId: annotationProjectId,
+          traceId,
+          options: { draftMode: "include", omitAbsentEvaluations: true },
+        })
+      }).pipe(withPostgres(ScoreRepositoryLive, database.appPostgresClient, OrganizationId(organizationId))),
+    )
+
+    const evaluationScores = page.items.filter((score) => score.sourceType === "evaluation")
+    expect(page.items.map((score) => score.sourceType).sort()).toEqual(["annotation", "evaluation", "evaluation"])
+    expect(evaluationScores.some((score) => score.passed)).toBe(true)
+    expect(evaluationScores.some((score) => !score.passed && score.signalId !== null)).toBe(true)
+    expect(evaluationScores.every((score) => score.passed || score.signalId !== null)).toBe(true)
   })
 
   it("findPublishedSystemAnnotationByTraceAndFeedback finds existing system annotation score", async () => {
@@ -972,5 +1119,77 @@ describe("ScoreRepositoryLive + score use cases", () => {
     )
 
     expect(slugs).toEqual(["beta", "alpha"])
+  })
+
+  it("countDistinctSessionsBySignalId counts sessions, falls back to trace then score id, and honors the window", async () => {
+    const organizationId = "y".repeat(24)
+    const signal = SignalId("c".repeat(24))
+    const otherSignal = SignalId("d".repeat(24))
+    const traceId = TraceId("f".repeat(32))
+    const windowStart = new Date("2026-05-10T00:00:00.000Z")
+
+    const write = (input: {
+      readonly feedback: string
+      readonly signalId: SignalId
+      readonly sessionId?: string
+      readonly traceId?: TraceId
+      readonly draftedAt?: Date
+    }) =>
+      writeScoreUseCase({
+        projectId: annotationProjectId,
+        sourceType: "annotation",
+        sourceId: "SYSTEM",
+        signalId: input.signalId,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+        value: 0,
+        passed: false,
+        feedback: input.feedback,
+        metadata: { rawFeedback: input.feedback, flaggerSlug: "alpha" },
+        draftedAt: input.draftedAt ?? null,
+      })
+
+    const created = await Effect.runPromise(
+      Effect.gen(function* () {
+        return {
+          // Two scores in one session are one piece of evidence, not two.
+          sessionOneA: yield* write({ feedback: "one a", signalId: signal, sessionId: "session-1" }),
+          sessionOneB: yield* write({ feedback: "one b", signalId: signal, sessionId: "session-1" }),
+          sessionTwo: yield* write({ feedback: "two", signalId: signal, sessionId: "session-2" }),
+          // No session: stands in for itself, keyed by trace.
+          traceOnly: yield* write({ feedback: "trace only", signalId: signal, traceId }),
+          // Neither session nor trace: keyed by its own id.
+          bare: yield* write({ feedback: "bare", signalId: signal }),
+          drafted: yield* write({
+            feedback: "drafted",
+            signalId: signal,
+            sessionId: "session-9",
+            draftedAt: new Date(),
+          }),
+          other: yield* write({ feedback: "other signal", signalId: otherSignal, sessionId: "session-3" }),
+          stale: yield* write({ feedback: "stale", signalId: signal, sessionId: "session-4" }),
+        }
+      }).pipe(createWriteProvider(database, organizationId)),
+    )
+
+    await database.db
+      .update(scoresTable)
+      .set({ createdAt: new Date("2026-05-01T00:00:00.000Z") })
+      .where(eq(scoresTable.id, created.stale.id as string))
+
+    const count = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* ScoreRepository
+        return yield* repository.countDistinctSessionsBySignalId({
+          projectId: annotationProjectId,
+          signalId: signal,
+          since: windowStart,
+        })
+      }).pipe(withPostgres(ScoreRepositoryLive, database.appPostgresClient, OrganizationId(organizationId))),
+    )
+
+    // session-1 (twice, counted once) + session-2 + the trace-keyed row + the bare
+    // row. The draft, the other signal's row, and the pre-window row are excluded.
+    expect(count).toBe(4)
   })
 })

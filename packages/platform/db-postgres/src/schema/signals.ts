@@ -1,6 +1,6 @@
 import { EMBEDDING_DIMENSIONS } from "@domain/ai"
 import type { FilterSet, SignalOrigin } from "@domain/shared"
-import type { SignalCentroid, SignalPriority, SignalSource } from "@domain/signals"
+import type { SignalCentroid, SignalFeedback, SignalPriority, SignalSource } from "@domain/signals"
 import { sql } from "drizzle-orm"
 import { customType, index, jsonb, text, uniqueIndex, uuid, varchar, vector } from "drizzle-orm/pg-core"
 import { cuid, latitudeSchema, organizationRLSPolicy, timestamps, tzTimestamp } from "../schemaHelpers.ts"
@@ -16,7 +16,7 @@ export const signals = latitudeSchema.table(
     uuid: uuid("uuid").notNull().unique().defaultRandom(), // legacy stable UUID retained for backwards compatibility; issue search uses the canonical id. New rows get the value from the DB default so the application layer never has to populate it.
     organizationId: cuid("organization_id").notNull(),
     projectId: cuid("project_id").notNull(),
-    slug: varchar("slug", { length: 128 }).notNull(), // url-safe identifier derived from name; regenerated on rename. Unique per (organization_id, project_id). Length matches `SLUG_MAX_LENGTH` in `@domain/shared/slug`. Backfilled from `name` in the M1 migration cascade; new rows get a slug from `createSignalFromScoreUseCase` (and `refreshSignalDetailsUseCase` regenerates on rename).
+    slug: varchar("slug", { length: 128 }).notNull(), // url-safe identifier assigned once at creation; never regenerated on rename. Unique per organization (D15), spanning projects, so a GitHub reference resolves to one signal org-wide. Length matches `SLUG_MAX_LENGTH` in `@domain/shared/slug`. Backfilled from `name` in the M1 migration cascade; new rows get a slug from `createSignalFromScoreUseCase`.
     name: varchar("name", { length: 128 }).notNull(), // generated from clustered score feedback and related context; generic enough to represent the shared failure pattern across different backgrounds
     description: text("description").notNull(), // generated from clustered score feedback; focused on the underlying problem rather than one specific conversation
     source: varchar("source", { length: 32 }).$type<SignalSource>().notNull(), // provenance of the first creating score
@@ -37,7 +37,9 @@ export const signals = latitudeSchema.table(
         `,
       )
       .notNull(),
+    feedback: jsonb("feedback").$type<SignalFeedback>(), // nullable; the customer's one-shot verdict on this signal. Non-null is a one-way latch: feedback is never edited or cleared.
     clusteredAt: tzTimestamp("clustered_at"), // nullable; last time the centroid/cluster state was refreshed (discovered signals only). Authoritative decay anchor (not updatedAt).
+    promotedAt: tzTimestamp("promoted_at"), // one-way latch stamped once the signal accumulated enough distinct sessions; null = discovered but not promoted. Backfilled to created_at for pre-existing rows.
     resolvedAt: tzTimestamp("resolved_at"), // manual resolve; archived, detector keeps running unless keepMonitoring was declined
     ignoredAt: tzTimestamp("ignored_at"), // manual ignore; archived + auto-muted, detector archived
     regressedAt: tzTimestamp("regressed_at"), // set when a new occurrence reopens a resolved signal; cleared by resolve/ignore
@@ -47,19 +49,16 @@ export const signals = latitudeSchema.table(
   },
   (t) => [
     organizationRLSPolicy("signals"),
-    // project-scoped lifecycle filtering and management actions.
-    index("signals_project_lifecycle_idx").on(
-      t.organizationId,
-      t.projectId,
-      t.ignoredAt,
-      t.resolvedAt,
-      t.mutedAt,
-      t.createdAt,
-    ),
+    // project-scoped lifecycle filtering and management actions. Partial on the
+    // visibility rule every user-facing read carries (`userVisibleSignal` in the
+    // repository), which shrinks the index rather than widening it — the
+    // discovery and write paths that must see candidates go through the primary
+    // key or an exact vector scan anyway.
+    index("signals_project_lifecycle_idx")
+      .on(t.organizationId, t.projectId, t.ignoredAt, t.resolvedAt, t.mutedAt, t.createdAt)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.promotedAt} IS NOT NULL`),
     index("signals_search_document_idx").using("gin", t.searchDocument),
-    // Soft-delete-aware: a deleted signal frees its slug for reuse.
-    uniqueIndex("signals_unique_slug_per_project_idx")
-      .on(t.organizationId, t.projectId, t.slug)
-      .where(sql`${t.deletedAt} IS NULL`),
+    // Organization-unique (D15), spanning projects. Soft-delete-aware: a deleted signal frees its slug for reuse.
+    uniqueIndex("signals_unique_slug_per_org_idx").on(t.organizationId, t.slug).where(sql`${t.deletedAt} IS NULL`),
   ],
 )

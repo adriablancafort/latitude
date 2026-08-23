@@ -51,7 +51,7 @@ export function createEcs(
     settings: [
       {
         name: "containerInsights",
-        value: "enabled",
+        value: "disabled",
       },
     ],
     tags: {
@@ -483,7 +483,6 @@ function createTaskDefinition(
           { name: "LAT_OBSERVABILITY_OTLP_TRACES_ENDPOINT", value: "http://localhost:4318/v1/traces" },
           { name: "LAT_OSS_TELEMETRY_ENABLED", value: "false" },
           { name: "LAT_POSTHOG_HOST", value: "https://eu.i.posthog.com" },
-          { name: "LAT_TAXONOMY_ADAPTIVE_CLUSTERING_MODE", value: config.name === "production" ? "shadow" : "off" },
         ]
 
         const baseSecrets: { name: string; valueFrom: string }[] = [
@@ -671,7 +670,7 @@ function createTaskDefinition(
             { name: "DD_OTLP_CONFIG_TRACES_ENABLED", value: "true" },
             { name: "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT", value: "0.0.0.0:4318" },
             { name: "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT", value: "0.0.0.0:4317" },
-            { name: "DD_LOG_LEVEL", value: "debug" },
+            { name: "DD_LOG_LEVEL", value: "info" },
           ],
           secrets: [
             { name: "DD_API_KEY", valueFrom: datadogApiKeyArn },

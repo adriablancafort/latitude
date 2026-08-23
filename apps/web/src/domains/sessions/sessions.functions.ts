@@ -68,6 +68,7 @@ export const serializeSession = (session: Session) => ({
   costInputMicrocents: session.costInputMicrocents,
   costOutputMicrocents: session.costOutputMicrocents,
   costTotalMicrocents: session.costTotalMicrocents,
+  unpricedSpanCount: session.unpricedSpanCount,
   userId: session.userId,
   simulationId: session.simulationId,
   tags: session.tags,
@@ -367,7 +368,8 @@ export interface SessionSignalRecord {
   readonly traceIds: readonly string[]
 }
 
-export const listSessionSignals = createServerFn({ method: "GET" })
+// POST keeps the up-to-500 trace-id payload below HTTP request-line limits.
+export const listSessionSignals = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       projectId: z.string(),

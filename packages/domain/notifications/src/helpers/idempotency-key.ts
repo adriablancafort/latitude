@@ -1,5 +1,6 @@
 import { generateId } from "@domain/shared"
 import type {
+  BillingLimitReachedPayload,
   CustomMessagePayload,
   DestinationQuarantinedPayload,
   IncidentClosedPayload,
@@ -8,6 +9,7 @@ import type {
   SignalAssignedPayload,
   SignalDiscoveredPayload,
   SignalRegressedPayload,
+  SignalReprioritizedPayload,
   WrappedReportPayload,
 } from "../entities/notification.ts"
 
@@ -37,9 +39,14 @@ export type BuildIdempotencyKeyInput =
   | { readonly kind: "issue.assigned"; readonly payload: SignalAssignedPayload }
   | { readonly kind: "signal.discovered"; readonly payload: SignalDiscoveredPayload }
   | { readonly kind: "signal.regressed"; readonly payload: SignalRegressedPayload }
+  | { readonly kind: "signal.reprioritized"; readonly payload: SignalReprioritizedPayload }
   | {
       readonly kind: "destination.quarantined"
       readonly payload: DestinationQuarantinedPayload
+    }
+  | {
+      readonly kind: "billing.limit-reached"
+      readonly payload: BillingLimitReachedPayload
     }
 
 export const buildIdempotencyKey = (input: BuildIdempotencyKeyInput): string => {
@@ -62,10 +69,19 @@ export const buildIdempotencyKey = (input: BuildIdempotencyKeyInput): string => 
       // Per regression cycle: the reopen claim guarantees one trigger score
       // per cycle, so the score id discriminates repeat regressions.
       return `${input.kind}:${input.payload.signalId}:${input.payload.triggerScoreId}`
+    case "signal.reprioritized":
+      // Per triage edit: the permanent index would otherwise suppress a later
+      // priority change on the same signal forever (mirrors issue.assigned).
+      return `${input.kind}:${input.payload.signalId}:${input.payload.reprioritizedAt}`
     case "destination.quarantined":
       // Per-occurrence: a destination recovered then re-quarantined is a new
       // event the permanent index must not suppress, so the flip timestamp
       // joins the id (mirrors issue.assigned).
       return `${input.kind}:${input.payload.destinationId}:${input.payload.quarantinedAt}`
+    case "billing.limit-reached":
+      // Once per billing period per limit kind. Period bounds alone collide
+      // across orgs for multi-org users, and create-notification BullMQ
+      // dedupe keys are built from this string (not the PG unique index).
+      return `${input.kind}:org:${input.payload.organizationId}:${input.payload.periodStart}:${input.payload.limitKind}`
   }
 }

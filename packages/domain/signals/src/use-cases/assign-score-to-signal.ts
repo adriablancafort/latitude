@@ -1,15 +1,28 @@
 import { OutboxEventWriter } from "@domain/events"
 import { type Score, ScoreRepository } from "@domain/scores"
-import { type CacheError, ProjectId, type RepositoryError, ScoreId, SignalId, SqlClient } from "@domain/shared"
+import {
+  type CacheError,
+  type CacheStore,
+  type ChSqlClient,
+  OrganizationId,
+  ProjectId,
+  type RepositoryError,
+  ScoreId,
+  SignalId,
+  SqlClient,
+} from "@domain/shared"
+import type { SessionRepository } from "@domain/spans"
 import { Effect } from "effect"
-import { SIGNAL_UPDATE_LOCK_KEY, SIGNAL_UPDATE_LOCK_TTL_SECONDS } from "../constants.ts"
+import { PROMOTION_WINDOW_DAYS, SIGNAL_UPDATE_LOCK_KEY, SIGNAL_UPDATE_LOCK_TTL_SECONDS } from "../constants.ts"
 import type { Signal } from "../entities/signal.ts"
 import type { CheckEligibilityError, SignalDiscoveryLockUnavailableError } from "../errors.ts"
 import { ScoreAlreadyOwnedBySignalError, SignalNotFoundForAssignmentError } from "../errors.ts"
 import { updateSignalCentroid } from "../helpers.ts"
 import { withSignalDiscoveryLock } from "../locks.ts"
 import { SignalRepository } from "../ports/signal-repository.ts"
+import { promotionThresholdForVolume } from "../promotion.ts"
 import { checkEligibilityUseCase } from "./check-eligibility.ts"
+import { resolveProjectSessionVolumeUseCase } from "./resolve-project-session-volume.ts"
 
 export interface AssignScoreToSignalInput {
   readonly organizationId: string
@@ -69,6 +82,27 @@ const loadEligibleScoreOrCurrentOwner = (input: {
     ),
   )
 
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
+
+/**
+ * Distinct sessions this signal must reach to be promoted, resolved before the
+ * transaction opens because it reads Redis and ClickHouse.
+ *
+ * Only called when an unlocked pre-read says the signal is still unpromoted, so
+ * the cost is paid on the small minority of assignments that could change
+ * anything. A degraded volume lookup falls back to the floor: an unavailable
+ * cache makes promotion easier, never harder.
+ */
+const resolvePromotionThreshold = (input: AssignScoreToSignalInput) =>
+  Effect.gen(function* () {
+    const volume = yield* resolveProjectSessionVolumeUseCase({
+      organizationId: OrganizationId(input.organizationId),
+      projectId: ProjectId(input.projectId),
+    })
+
+    return { threshold: promotionThresholdForVolume(volume), volume }
+  })
+
 const buildSignalWithAssignedScore = ({
   issue,
   score,
@@ -121,6 +155,22 @@ export const assignScoreToSignalUseCase = (input: AssignScoreToSignalInput) =>
     }
 
     const score = scoreResult.score
+
+    // `includeUnpromoted` is load-bearing: a default-deny lookup would report every
+    // candidate as already promoted and the latch would never fire.
+    //
+    // Resolved before the lock: promotion needs the project's session volume,
+    // which lives in ClickHouse behind a Redis cache, and neither belongs inside
+    // the Postgres transaction below. The extra unlocked read buys that
+    // separation; it is a primary-key lookup against a path that already does
+    // several. Promotion is a one-way latch, so this can only be stale in the
+    // harmless direction — the transaction re-checks it under the row lock.
+    const signals = yield* SignalRepository
+    const unpromotedBeforeAssignment = yield* signals
+      .findById(SignalId(input.signalId), { includeUnpromoted: true })
+      .pipe(Effect.map((signal) => signal.promotedAt === null))
+      .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(false)))
+    const promotion = unpromotedBeforeAssignment ? yield* resolvePromotionThreshold(input) : null
 
     return yield* withSignalDiscoveryLock(
       {
@@ -184,6 +234,37 @@ export const assignScoreToSignalUseCase = (input: AssignScoreToSignalInput) =>
               return yield* new ScoreAlreadyOwnedBySignalError({ scoreId: score.id })
             }
 
+            // The gate, in the one order that is cheap: the latch is re-checked
+            // under the row lock before anything is counted, because a promoted
+            // signal can hold hundreds of thousands of scores and
+            // `scores_signal_lookup_idx` does not cover `session_id`. An
+            // unpromoted signal holds at most the threshold, so counting it is
+            // trivial. Counted after the claim so the score just assigned counts.
+            //
+            // Qualifying does not stamp `promoted_at`. A signal has to be named
+            // from its whole cluster before it exists for anyone, that is a model
+            // call, and a model call cannot run in here — so the latch is stamped
+            // downstream by `promoteSignalUseCase` and this only records that the
+            // gate passed. Until then every further score re-qualifies and
+            // re-emits; the consumer's leading throttle collapses those.
+            const qualified = yield* Effect.gen(function* () {
+              if (issue.promotedAt !== null || promotion === null) return false
+
+              const sessions = yield* scoreRepository.countDistinctSessionsBySignalId({
+                projectId: ProjectId(issue.projectId),
+                signalId: issue.id,
+                since: new Date(assignedAt.getTime() - PROMOTION_WINDOW_DAYS * MILLISECONDS_PER_DAY),
+              })
+
+              yield* Effect.annotateCurrentSpan("promotion.sessions", sessions)
+              yield* Effect.annotateCurrentSpan("promotion.threshold", promotion.threshold)
+              yield* Effect.annotateCurrentSpan("promotion.volume", promotion.volume ?? -1)
+              yield* Effect.annotateCurrentSpan("promotion.volumeDegraded", promotion.volume === null)
+              yield* Effect.annotateCurrentSpan("promotion.qualified", sessions >= promotion.threshold)
+
+              return sessions >= promotion.threshold
+            })
+
             yield* signalRepository.save(updatedSignal)
             yield* outboxEventWriter.write({
               eventName: "ScoreAssignedToSignal",
@@ -196,6 +277,22 @@ export const assignScoreToSignalUseCase = (input: AssignScoreToSignalInput) =>
                 signalId: issue.id,
               },
             })
+
+            if (qualified) {
+              yield* outboxEventWriter.write({
+                eventName: "SignalQualifiedForPromotion",
+                aggregateType: "issue",
+                aggregateId: issue.id,
+                organizationId: issue.organizationId,
+                payload: {
+                  organizationId: issue.organizationId,
+                  projectId: issue.projectId,
+                  signalId: issue.id,
+                  qualifiedAt: assignedAt.toISOString(),
+                  triggerScoreId: score.id,
+                },
+              })
+            }
 
             if (isRegression) {
               yield* outboxEventWriter.write({
@@ -223,7 +320,12 @@ export const assignScoreToSignalUseCase = (input: AssignScoreToSignalInput) =>
         return assignment
       }),
     )
+    // The Postgres services stay erased like the rest of this package's
+    // use-cases, but the promotion gate's cross-store needs are declared: a
+    // caller that forgets them fails to compile instead of failing at runtime
+    // in one activity.
   }).pipe(Effect.withSpan("issues.assignScoreToSignal")) as Effect.Effect<
     AssignScoreToSignalResult,
-    AssignScoreToSignalError
+    AssignScoreToSignalError,
+    CacheStore | ChSqlClient | SessionRepository
   >

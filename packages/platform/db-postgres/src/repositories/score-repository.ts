@@ -12,7 +12,7 @@ import {
   type TraceId,
 } from "@domain/shared"
 import { createLogger } from "@repo/observability"
-import { and, desc, eq, inArray, isNotNull, isNull, type SQL, sql } from "drizzle-orm"
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import type { Operator } from "../client.ts"
 import { scores } from "../schema/scores.ts"
@@ -98,6 +98,16 @@ const applyDraftMode = (options: ScoreListOptions | undefined) => {
   return isNull(scores.draftedAt)
 }
 
+const applyAbsentEvaluationFilter = (options: ScoreListOptions | undefined) => {
+  if (!options?.omitAbsentEvaluations) return undefined
+  return or(
+    ne(scores.sourceType, "evaluation"),
+    eq(scores.passed, true),
+    eq(scores.errored, true),
+    isNotNull(scores.signalId),
+  )
+}
+
 export const ScoreRepositoryLive = Layer.effect(
   ScoreRepository,
   Effect.gen(function* () {
@@ -129,9 +139,13 @@ export const ScoreRepositoryLive = Layer.effect(
             const limit = input.options?.limit ?? 50
             const offset = input.options?.offset ?? 0
             const draftClause = applyDraftMode(input.options)
-            const whereClause = draftClause
-              ? and(eq(scores.organizationId, organizationId), input.baseWhere, draftClause)
-              : and(eq(scores.organizationId, organizationId), input.baseWhere)
+            const absentEvaluationClause = applyAbsentEvaluationFilter(input.options)
+            const whereClause = and(
+              eq(scores.organizationId, organizationId),
+              input.baseWhere,
+              draftClause,
+              absentEvaluationClause,
+            )
 
             return db
               .select()
@@ -385,18 +399,21 @@ export const ScoreRepositoryLive = Layer.effect(
         })
       },
 
-      countAnnotationsByTraceIds: ({ projectId, traceIds, options }) =>
+      countAnnotationsByTraceIds: ({ projectId, traceIds, source, options }) =>
         Effect.gen(function* () {
           if (traceIds.length === 0) return []
 
           const sqlClient = yield* resolveSqlClient()
           const draftClause = applyDraftMode(options)
           const traceIdValues = traceIds.map((traceId) => String(traceId))
-          const baseWhere = and(
-            eq(scores.projectId, projectId),
-            eq(scores.sourceType, "annotation"),
-            inArray(scores.traceId, traceIdValues),
-          )
+          const baseWhere =
+            source !== undefined
+              ? and(
+                  eq(scores.projectId, projectId),
+                  eq(scores.sourceType, source),
+                  inArray(scores.traceId, traceIdValues),
+                )
+              : and(eq(scores.projectId, projectId), inArray(scores.traceId, traceIdValues))
           const whereClause = draftClause
             ? and(eq(scores.organizationId, sqlClient.organizationId), baseWhere, draftClause)
             : and(eq(scores.organizationId, sqlClient.organizationId), baseWhere)
@@ -407,7 +424,7 @@ export const ScoreRepositoryLive = Layer.effect(
                 .select({
                   traceId: scores.traceId,
                   positiveCount: sql<number>`count(*) filter (where ${scores.passed} = true and ${scores.errored} = false)::int`,
-                  negativeCount: sql<number>`count(*) filter (where ${scores.passed} = false and ${scores.errored} = false)::int`,
+                  negativeCount: sql<number>`count(*) filter (where ${scores.passed} = false and ${scores.errored} = false and not (${scores.sourceType} = 'evaluation' and ${scores.signalId} is null))::int`,
                 })
                 .from(scores)
                 .where(whereClause)
@@ -430,15 +447,43 @@ export const ScoreRepositoryLive = Layer.effect(
             )
         }),
 
+      countDistinctSessionsBySignalId: ({ projectId, signalId, since }) =>
+        Effect.gen(function* () {
+          const sqlClient = yield* resolveSqlClient()
+
+          const rows = yield* sqlClient.query((db) =>
+            db
+              .select({
+                // Sessions are the evidence unit; a score without one stands in for
+                // itself so non-session instrumentation still counts exactly once.
+                sessions: sql<number>`count(distinct coalesce(nullif(${scores.sessionId}, ''), nullif(${scores.traceId}, ''), ${scores.id}))::int`,
+              })
+              .from(scores)
+              .where(
+                and(
+                  eq(scores.organizationId, sqlClient.organizationId),
+                  eq(scores.projectId, projectId),
+                  eq(scores.signalId, String(signalId)),
+                  isNull(scores.draftedAt),
+                  gte(scores.createdAt, since),
+                ),
+              ),
+          )
+
+          return rows[0]?.sessions ?? 0
+        }),
+
       listByTraceIds: ({
         projectId,
         traceIds,
         source,
+        signalId,
         options,
       }: {
         readonly projectId: ProjectId
         readonly traceIds: readonly TraceId[]
         readonly source?: ScoreSourceType
+        readonly signalId?: SignalId
         readonly options?: ScoreListOptions
       }) => {
         if (traceIds.length === 0) {
@@ -450,14 +495,12 @@ export const ScoreRepositoryLive = Layer.effect(
           })
         }
         const traceIdValues = traceIds.map((traceId) => String(traceId))
-        const combined =
-          source !== undefined
-            ? and(
-                eq(scores.projectId, projectId),
-                inArray(scores.traceId, traceIdValues),
-                eq(scores.sourceType, source),
-              )
-            : and(eq(scores.projectId, projectId), inArray(scores.traceId, traceIdValues))
+        const combined = and(
+          eq(scores.projectId, projectId),
+          inArray(scores.traceId, traceIdValues),
+          ...(source !== undefined ? [eq(scores.sourceType, source)] : []),
+          ...(signalId !== undefined ? [eq(scores.signalId, signalId)] : []),
+        )
         return list({
           baseWhere: combined ?? eq(scores.projectId, projectId),
           options,

@@ -20,6 +20,8 @@ export interface ScoreListOptions {
   readonly limit?: number
   readonly offset?: number
   readonly draftMode?: ScoreDraftMode
+  /** Drop failed, non-errored evaluation runs that have no stamped signal (`signalId` is null). */
+  readonly omitAbsentEvaluations?: boolean
 }
 
 export interface ScoreListPage {
@@ -87,11 +89,15 @@ export interface ScoreRepositoryShape {
     readonly projectId: ProjectId
     readonly traceIds: readonly TraceId[]
     readonly source?: ScoreSourceType
+    /** Narrows to one signal's scores, so a session with more scores than fit a page still yields them. */
+    readonly signalId?: SignalId
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
+  /** Per-trace +/- score counts. Omit `source` for all sources; pass `"annotation"` for the public API fields. Signal-less absent evaluation runs are excluded from the negative count. */
   countAnnotationsByTraceIds(input: {
     readonly projectId: ProjectId
     readonly traceIds: readonly TraceId[]
+    readonly source?: ScoreSourceType
     readonly options?: Pick<ScoreListOptions, "draftMode">
   }): Effect.Effect<readonly TraceAnnotationCounts[], RepositoryError, SqlClient>
   listBySessionId(input: {
@@ -111,6 +117,21 @@ export interface ScoreRepositoryShape {
     readonly source?: ScoreSourceType
     readonly options?: ScoreListOptions
   }): Effect.Effect<ScoreListPage, RepositoryError, SqlClient>
+  /**
+   * Distinct sessions a signal has been seen in since `since`, which is the
+   * evidence unit the promotion gate counts.
+   *
+   * Sessions, not scores: one long session can trip the same flagger many times
+   * and one trace can carry several annotations, none of which is independent
+   * evidence. A score with no `session_id` counts as its own session keyed by
+   * `trace_id`, and failing that by its own id, so annotations from
+   * non-session instrumentation still count exactly once.
+   */
+  countDistinctSessionsBySignalId(input: {
+    readonly projectId: ProjectId
+    readonly signalId: SignalId
+    readonly since: Date
+  }): Effect.Effect<number, RepositoryError, SqlClient>
   findPublishedSystemAnnotationByTraceAndFeedback(input: {
     readonly projectId: ProjectId
     readonly traceId: TraceId

@@ -1,4 +1,4 @@
-import { Button, Text, Tooltip } from "@repo/ui"
+import { Button, Icon, Text, Tooltip } from "@repo/ui"
 import { createFileRoute, Link, useParams } from "@tanstack/react-router"
 import { ArrowLeftIcon, DatabaseIcon } from "lucide-react"
 import { useMemoryStoreSnapshot } from "../../../../../../domains/memories/memories.collection.ts"
@@ -14,6 +14,7 @@ import {
 } from "../-components/store-encoding.ts"
 import { RecordContentView } from "./-components/record-content-view.tsx"
 import { RecordTreeSidebar } from "./-components/record-tree-sidebar.tsx"
+import { StoreHomeView } from "./-components/store-home-view.tsx"
 import { StoreUsersList } from "./-components/store-users-list.tsx"
 
 function StoreBreadcrumb() {
@@ -51,24 +52,27 @@ function StoreDetailPage() {
       <Layout.Header
         className="border-b px-6 py-4"
         title={
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <Tooltip
               asChild
               side="bottom"
               trigger={
-                <Button asChild variant="ghost" className="h-8 w-8 shrink-0 p-0" aria-label="Back to memory stores">
+                <Button asChild variant="ghost" size="sm" className="w-fit" aria-label="Back to stores">
                   <Link to="/projects/$projectSlug/memory" params={{ projectSlug }}>
-                    <ArrowLeftIcon className="h-4 w-4 text-muted-foreground" />
+                    <Icon icon={ArrowLeftIcon} size="sm" />
+                    Back
                   </Link>
                 </Button>
               }
             >
               Back to stores
             </Tooltip>
-            <DatabaseIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <Text.H4 className={storeId === "" ? "italic text-muted-foreground" : "font-mono"} noWrap ellipsis>
-              {storeDisplayLabel(storeId)}
-            </Text.H4>
+            <div className="flex min-w-0 items-center gap-3">
+              <DatabaseIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <Text.H4 className={storeId === "" ? "italic text-muted-foreground" : "font-mono"} noWrap ellipsis>
+                {storeDisplayLabel(storeId)}
+              </Text.H4>
+            </div>
           </div>
         }
         description={<StoreUsersList projectId={project.id} projectSlug={projectSlug} storeId={storeId} />}
@@ -83,6 +87,11 @@ function StoreDetailPage() {
               setRecordParam(encodeRecordParam(recordId))
               setChangeParam("")
             }}
+            onSelectHome={() => {
+              setRecordParam("")
+              setChangeParam("")
+            }}
+            homeActive={selectedRecordId === undefined}
           />
         </Layout.Sidebar>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -96,9 +105,13 @@ function StoreDetailPage() {
               onSelectChange={(spanId) => setChangeParam(spanId ?? "")}
             />
           ) : (
-            <div className="flex flex-1 items-center justify-center p-6">
-              <Text.H5 color="foregroundMuted">Select a record to view its contents.</Text.H5>
-            </div>
+            <StoreHomeView
+              storeId={storeId}
+              onSelectRecord={(recordId) => {
+                setRecordParam(encodeRecordParam(recordId))
+                setChangeParam("")
+              }}
+            />
           )}
         </div>
       </Layout.Body>

@@ -1,4 +1,4 @@
-import { Button, CloseTrigger, Icon, Modal, Switch, Text, Tooltip, useToast } from "@repo/ui"
+import { Button, CloseTrigger, cn, Icon, Modal, Switch, Text, Tooltip, useToast } from "@repo/ui"
 import { useParams } from "@tanstack/react-router"
 import { BellIcon, BellOffIcon, CheckIcon, EyeIcon, EyeOffIcon, LinkIcon, UndoIcon } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
@@ -182,7 +182,12 @@ export function SignalLifecycleActions({
 
   const isLifecycleDisabled = issue === null || issue === undefined || isLifecycleLoading
   const buttonSize = compact ? ("sm" as const) : undefined
-  const buttonClassName = compact ? "text-sm" : "text-foreground group-hover:text-secondary-foreground/80"
+  // `size="sm"` drops the label to `text-xs`; the row keeps `text-sm`, so every
+  // button in it has to ask for the size back — including the primary one, which
+  // only takes the outline tone below when it actually renders as an outline.
+  const compactTextClassName = compact ? "text-sm" : undefined
+  const outlineToneClassName = compact ? undefined : "text-foreground group-hover:text-secondary-foreground/80"
+  const buttonClassName = cn(compactTextClassName, outlineToneClassName)
 
   const primaryAction: LifecycleConfirmationAction = issue?.resolvedAt ? "unresolve" : "resolve"
   const secondaryAction: LifecycleConfirmationAction = issue?.ignoredAt ? "unignore" : "ignore"
@@ -192,7 +197,7 @@ export function SignalLifecycleActions({
       <Button
         size={buttonSize}
         variant={issue?.resolvedAt ? "outline" : "default"}
-        className={issue?.resolvedAt ? buttonClassName : undefined}
+        className={issue?.resolvedAt ? buttonClassName : compactTextClassName}
         disabled={isLifecycleDisabled}
         onClick={() => openConfirmation(primaryAction)}
       >
@@ -268,7 +273,7 @@ export function SignalLifecycleActions({
             </div>
           ) : lifecycleConfirmAction === "ignore" && issue?.origin === "user" ? (
             <Text.H6 color="foregroundMuted">
-              This signal's evaluation will be archived. Unignoring won't restore it — re-create it from Edit.
+              This signal's evaluation will be archived. Unignoring won't bring it back; re-create it from Edit.
             </Text.H6>
           ) : null}
         </Modal>

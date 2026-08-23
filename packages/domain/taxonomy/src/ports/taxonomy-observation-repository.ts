@@ -74,6 +74,20 @@ export interface TaxonomyScopedClusteringObservation extends TaxonomyClusteringO
   readonly sessionId: SessionId
 }
 
+/**
+ * One sampled session for facet extraction: the ids + start time the caller
+ * needs to build a `FacetExtractionSample`, plus the stored transcript summary
+ * (`projection_metadata.summary`) the extractor reads instead of refetching
+ * spans. `sessionObservationId` is the session's `taxonomy_observations`
+ * observation id — the facet-projection cache key.
+ */
+export interface TaxonomyFacetSample {
+  readonly sessionObservationId: string
+  readonly sessionId: SessionId
+  readonly startTime: Date
+  readonly transcript: string
+}
+
 export interface TaxonomyObservationCounts {
   readonly total: number
   readonly assigned: number
@@ -103,6 +117,12 @@ export interface TaxonomyObservationClusterAssignmentCount {
   readonly count: number
   readonly firstObservedAt: Date
   readonly lastObservedAt: Date
+}
+
+/** Clusterable observations per UTC day, for the lens coverage scan. */
+export interface TaxonomyObservationDayCount {
+  readonly day: Date
+  readonly count: number
 }
 
 export interface TaxonomyObservationRepositoryShape {
@@ -164,6 +184,20 @@ export interface TaxonomyObservationRepositoryShape {
     readonly filterSet: FilterSet
   }) => Effect.Effect<readonly TaxonomyScopedClusteringObservation[], RepositoryError, ChSqlClient>
   /**
+   * Facet-extraction sample over the same day-stratified `(since, limit)` window
+   * `listForCustomBehaviorSample` uses, returning each session's ids, start time,
+   * and stored transcript summary so the caller can build `FacetExtractionSample`
+   * records. An optional `filterSet` scopes it to a cohort's sessions; omit it for
+   * a whole-project facet. Reads global `taxonomy_observations`, never mutates it.
+   */
+  readonly listForFacetSample: (input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly since: Date
+    readonly limit: number
+    readonly filterSet?: FilterSet
+  }) => Effect.Effect<readonly TaxonomyFacetSample[], RepositoryError, ChSqlClient>
+  /**
    * The complete bounded live window (newest ≤ `limit`, no day-stratified
    * sampling) as slim rows carrying the current assignment — the read the
    * adaptive full-window reassignment and catch-up passes operate over. Optional
@@ -215,6 +249,18 @@ export interface TaxonomyObservationRepositoryShape {
     readonly clusterId: TaxonomyClusterId
     readonly limit: number
   }) => Effect.Effect<readonly TaxonomyMomentObservation[], RepositoryError, ChSqlClient>
+  /**
+   * Members by explicit observation id, for naming a cluster whose membership is
+   * not in `assigned_cluster_id` yet: a `staging` tree is named BEFORE the
+   * reassignment repoints ClickHouse at it, so its samples come from the staged
+   * plan's own member ids.
+   */
+  readonly listAllByObservationIds: (input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly observationIds: readonly string[]
+    readonly limit: number
+  }) => Effect.Effect<readonly TaxonomyMomentObservation[], RepositoryError, ChSqlClient>
   readonly listBySession: (input: {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
@@ -257,6 +303,18 @@ export interface TaxonomyObservationRepositoryShape {
     readonly baselineSince: Date
     readonly baselineDays: number
   }) => Effect.Effect<readonly TaxonomyObservationClusterTrendCounts[], RepositoryError, ChSqlClient>
+  /**
+   * Observations a gardening pass could have clustered on each UTC day (same
+   * eligibility as the sampling reads: a valid id and a non-empty embedding) —
+   * the denominator of the lens coverage scan. Unscoped by design: coverage is
+   * judged against the lens's own rate, so a view's filter cancels out of the
+   * comparison and stays out of this query.
+   */
+  readonly getClusterableCountsByDay: (input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly since: Date
+  }) => Effect.Effect<readonly TaxonomyObservationDayCount[], RepositoryError, ChSqlClient>
 }
 
 export class TaxonomyObservationRepository extends Context.Service<

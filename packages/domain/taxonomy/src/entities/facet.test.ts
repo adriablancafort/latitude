@@ -29,7 +29,6 @@ const makeFacet = (overrides: Partial<TaxonomyFacet> = {}): TaxonomyFacet =>
     name: "Apparent user goal",
     description: "Clusters sessions by what the user was trying to accomplish, surfacing the top goals and unmet ones.",
     instructions: "In one sentence, what was the end user ultimately trying to accomplish? Ignore pleasantries.",
-    status: "pending",
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -69,7 +68,6 @@ describe("TaxonomyFacet contracts", () => {
 
     expect(found.name).toBe("Apparent user goal")
     expect(bySlug?.id).toBe(facetId)
-    expect(await run(repository.countByProject({ projectId }))).toBe(1)
     expect(gardenedAt.get(facetId)).toEqual(gardenedTime)
     expect(rows.size).toBe(1)
   })

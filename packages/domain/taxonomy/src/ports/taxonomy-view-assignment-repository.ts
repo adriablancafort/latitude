@@ -1,18 +1,32 @@
 import type {
   ChSqlClient,
   CustomBehaviorId,
+  FacetId,
   OrganizationId,
   ProjectId,
   RepositoryError,
   TaxonomyClusterId,
 } from "@domain/shared"
 import { Context, type Effect } from "effect"
-import type { TaxonomyMomentObservation } from "../entities/observation.ts"
 import type { TaxonomyViewAssignment } from "../entities/taxonomy-view-assignment.ts"
 
 export interface TaxonomyViewAssignmentClusterCount {
   readonly clusterId: TaxonomyClusterId
   readonly count: number
+}
+
+/**
+ * The slim member row cluster naming needs: an embedding for farthest-point
+ * sampling, a `startTime` for recency ranking, and the readable text in
+ * `projectionMetadata.summary`. Topic members carry the full transcript summary
+ * from `taxonomy_observations`; facet members carry the extracted one-sentence
+ * answer from `taxonomy_facet_projections`. `TaxonomyMomentObservation` is
+ * structurally assignable, so the topic read returns full rows unchanged.
+ */
+export interface TaxonomyClusterNamingMember {
+  readonly embedding: readonly number[]
+  readonly startTime: Date
+  readonly projectionMetadata: Readonly<Record<string, unknown>>
 }
 
 /**
@@ -27,11 +41,18 @@ export interface TaxonomyViewAssignmentClusterTrendCount {
   readonly baselineDays: number
 }
 
+/** Assigned rows per UTC day, for the lens coverage scan. */
+export interface TaxonomyViewAssignmentDayCount {
+  readonly day: Date
+  readonly count: number
+}
+
 /**
  * ClickHouse-backed `taxonomy_view_assignments` slice — the shared edges table
  * for every non-online tree. It never touches global
- * `taxonomy_observations.assigned_cluster_id`. These reads target the topic slice
- * (`facet_id = ''`); the facet reads are wired in a later phase.
+ * `taxonomy_observations.assigned_cluster_id`. Each read is keyed by
+ * `(custom_behavior_id, facet_id)`: `facetId` omitted/null selects the view's
+ * topic slice (`facet_id = ''`), an id selects that facet's edges.
  */
 export interface TaxonomyViewAssignmentRepositoryShape {
   readonly upsertMany: (
@@ -47,6 +68,8 @@ export interface TaxonomyViewAssignmentRepositoryShape {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
     readonly customBehaviorId: CustomBehaviorId
+    /** Omit/null = topic slice (`facet_id = ''`); an id reads that facet's edges. */
+    readonly facetId?: FacetId | null
     /** Optional window over `start_time`; omit for the whole retained slice. */
     readonly startTimeFrom?: Date
     readonly startTimeTo?: Date
@@ -63,28 +86,58 @@ export interface TaxonomyViewAssignmentRepositoryShape {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
     readonly customBehaviorId: CustomBehaviorId
+    /** Omit/null = topic slice (`facet_id = ''`); an id reads that facet's edges. */
+    readonly facetId?: FacetId | null
     readonly clusterIds: readonly TaxonomyClusterId[]
     readonly currentSince: Date
     readonly baselineSince: Date
     readonly baselineDays: number
   }) => Effect.Effect<readonly TaxonomyViewAssignmentClusterTrendCount[], RepositoryError, ChSqlClient>
   /**
-   * Full observation rows assigned to one scoped cluster, resolved by joining
-   * the view's assignment slice back to global `taxonomy_observations` for the
-   * embeddings + summaries the naming step needs. Read-only on the global table.
+   * Rows per UTC day pointing at one of `clusterIds` — the numerator of the lens
+   * coverage scan. Only currently-active ids count: a row left behind by an
+   * earlier pass whose cluster the rebuild deprecated is orphaned, and the day it
+   * sits on is under-covered even though the slice has rows for it.
+   */
+  readonly getAssignedCountsByDay: (input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly customBehaviorId: CustomBehaviorId
+    /** Omit/null = topic slice (`facet_id = ''`); an id reads that facet's edges. */
+    readonly facetId?: FacetId | null
+    readonly clusterIds: readonly TaxonomyClusterId[]
+    readonly since: Date
+  }) => Effect.Effect<readonly TaxonomyViewAssignmentDayCount[], RepositoryError, ChSqlClient>
+  /**
+   * Member rows of one scoped cluster for the naming step, resolved by joining
+   * the view's assignment slice back to the projection source: the topic path
+   * (`facetId` omitted/null) reads global `taxonomy_observations`; a facet-scoped
+   * path reads `taxonomy_facet_projections`. Read-only on both source tables.
    */
   readonly listClusterMemberObservations: (input: {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
     readonly customBehaviorId: CustomBehaviorId
+    /** Omit/null = topic (members from `taxonomy_observations`); an id reads `taxonomy_facet_projections`. */
+    readonly facetId?: FacetId | null
     readonly clusterId: TaxonomyClusterId
     readonly limit: number
-  }) => Effect.Effect<readonly TaxonomyMomentObservation[], RepositoryError, ChSqlClient>
-  /** Purge a behavior's slice when the behavior is deleted (lightweight delete). */
+  }) => Effect.Effect<readonly TaxonomyClusterNamingMember[], RepositoryError, ChSqlClient>
+  /**
+   * Purge a scope's edges when the entity is deleted. `deleteByBehavior` drops
+   * every edge for a cohort across BOTH the topic slice AND each facet applied to
+   * it, so deleting a cohort never orphans facet-scoped edges.
+   */
   readonly deleteByBehavior: (input: {
     readonly organizationId: OrganizationId
     readonly projectId: ProjectId
     readonly customBehaviorId: CustomBehaviorId
+  }) => Effect.Effect<void, RepositoryError, ChSqlClient>
+  /** Purge a facet's edges across every scope when the facet is deleted. */
+  readonly deleteByFacet: (input: {
+    readonly organizationId: OrganizationId
+    readonly projectId: ProjectId
+    readonly facetId: FacetId
   }) => Effect.Effect<void, RepositoryError, ChSqlClient>
 }
 

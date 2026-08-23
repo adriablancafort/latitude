@@ -49,6 +49,13 @@ export type SeedSignalFixture = {
   readonly ignoredDaysAgo: number | null
   readonly regressedDaysAgo: number | null
   readonly mutedDaysAgo: number | null
+  /**
+   * Seeds a signal that was discovered but never accumulated enough evidence to
+   * be promoted. Declared as the exception rather than as a per-fixture
+   * timestamp because every other fixture is promoted at creation, which is what
+   * a project whose signals all cleared the gate looks like.
+   */
+  readonly unpromoted?: true
 }
 
 const baseSignalFixtures: SeedSignalFixture[] = [
@@ -203,6 +210,37 @@ const baseSignalFixtures: SeedSignalFixture[] = [
 ]
 
 const curatedExtraSignalBlueprints: Omit<SeedSignalFixture, "id" | "uuid">[] = [
+  // Unpromoted fixtures read as one occurrence's words, not a summary: that is what a candidate is named from.
+  {
+    name: "The agent read the customer's local time as UTC and quoted a delivery window a day early",
+    description:
+      "The agent read the customer's local time as UTC and quoted a delivery window a day early. The customer gave a time with no timezone and the agent never asked which one it was.",
+    createdDaysAgo: 4,
+    clusteredDaysAgo: 4,
+    updatedDaysAgo: 4,
+    escalatedDaysAgo: null,
+    resolvedDaysAgo: null,
+    ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
+    unpromoted: true,
+    source: "flagger",
+  },
+  {
+    name: "A one-line answer was flagged as lazy when brevity was the right call",
+    description:
+      "A one-line answer was flagged as lazy when brevity was the right call. The question had a yes or no answer and the reply gave it.",
+    createdDaysAgo: 23,
+    clusteredDaysAgo: 23,
+    updatedDaysAgo: 23,
+    escalatedDaysAgo: null,
+    resolvedDaysAgo: null,
+    ignoredDaysAgo: null,
+    regressedDaysAgo: null,
+    mutedDaysAgo: null,
+    unpromoted: true,
+    source: "flagger",
+  },
   {
     name: "Agent invents enterprise SLAs for standard support plans",
     description:

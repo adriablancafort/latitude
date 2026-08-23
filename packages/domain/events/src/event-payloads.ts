@@ -1,4 +1,4 @@
-import type { IncidentSourceType } from "@domain/shared"
+import type { OrganizationRedactionSetting, RedactionSetting } from "@domain/shared"
 
 /**
  * NOTE: The *Requested events (MagicLinkEmailRequested, InvitationEmailRequested,
@@ -58,13 +58,50 @@ export interface EventPayloads {
   }
   /**
    * Emitted by `createSignalFromScoreUseCase` after the signal row is saved.
-   * Drives discovery notifications.
+   * An audit fact with no consumers — a discovered signal is announced when it
+   * is promoted, not when its row appears (see `SignalPromoted`).
    */
   SignalCreated: {
     readonly organizationId: string
     readonly projectId: string
     readonly signalId: string
     readonly createdAt: string
+  }
+  /**
+   * Emitted when a discovered signal accumulates enough distinct sessions to
+   * deserve promotion, from the transaction that observed the evidence. It says
+   * the gate passed, nothing more: `promoted_at` is still null and the signal is
+   * still invisible.
+   *
+   * Promotion itself happens downstream, in `issues:promoteSignal`, because the
+   * signal has to be named from its whole cluster before it exists for anyone —
+   * and that is a model call, which cannot run inside this transaction. Until
+   * the latch is stamped, every further score re-qualifies and re-emits this;
+   * the consumer's leading throttle collapses those.
+   */
+  SignalQualifiedForPromotion: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly signalId: string
+    readonly qualifiedAt: string
+    readonly triggerScoreId: string
+  }
+  /**
+   * Emitted by `promoteSignalUseCase` from the transaction that stamps
+   * `promoted_at`, by which point the signal carries its generated name and
+   * description. The latch makes it exactly-once per signal.
+   *
+   * This is the fact the product acts on: the signal now exists for users, is
+   * fully formed, and is ready to be announced. It carries the
+   * `signal.discovered` notification and the `signal.discovered` agent dispatch.
+   * It is internal: not a notification kind and not a dispatch trigger, it
+   * exists only so those two fire on the fact they actually mean.
+   */
+  SignalPromoted: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly signalId: string
+    readonly promotedAt: string
   }
   /**
    * Emitted by `updateSignalTriageUseCase` whenever the signal's assignee
@@ -84,6 +121,50 @@ export interface EventPayloads {
     /** User who performed the triage edit (self-assignments never notify). */
     readonly actorUserId: string
     readonly assignedAt: string
+  }
+  /**
+   * Emitted by `updateSignalTriageUseCase` when a triage edit moves a signal
+   * *up* the priority scale. Deliberately narrower than its name: an unset
+   * priority ranks below `low`, so setting a first priority emits, while a
+   * downgrade, a clear, and a no-op re-save do not — reprioritizing downwards
+   * is not news anyone asked for, and the cheapest place to decide that is
+   * before the outbox row exists. Widening this to every change means
+   * revisiting the `signal.reprioritized` notification, whose topic copy
+   * promises escalations only.
+   *
+   * `reprioritizedAt` is the triage transaction's `now`, frozen into the
+   * outbox payload; it is the idempotency anchor for downstream notification
+   * dedupe, so each edit is a distinct event while outbox/queue redelivery of
+   * the same event replays identical data.
+   */
+  SignalReprioritized: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly signalId: string
+    /** The raised-to priority. Never null — clearing a priority is a decrease. */
+    readonly priority: string
+    /** `null` when the signal had no priority before the edit. */
+    readonly previousPriority: string | null
+    /** User who performed the triage edit (never notified about their own edit). */
+    readonly actorUserId: string
+    readonly reprioritizedAt: string
+  }
+  /**
+   * Emitted by `submitSignalFeedbackUseCase` from the transaction that claims
+   * the signal's verdict. The claim is guarded on `feedback IS NULL`, so a
+   * signal is graded at most once ever and the signal id is a sound idempotency
+   * key for the fan-out that labels the flagger generations behind it.
+   *
+   * Carries the verdict's score triple verbatim: the value the customer gave a
+   * signal is the value the flagger's generation is graded with.
+   */
+  SignalFeedbackSubmitted: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly signalId: string
+    readonly value: number
+    readonly passed: boolean
+    readonly feedback: string
   }
   /**
    * Emitted when a new occurrence reopens a manually resolved signal: the
@@ -165,7 +246,7 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly alertIncidentId: string
-    readonly sourceType: IncidentSourceType
+    readonly sourceType: "monitor" | "signal"
     readonly sourceId: string
   }
   /**
@@ -184,7 +265,7 @@ export interface EventPayloads {
     readonly organizationId: string
     readonly projectId: string
     readonly alertIncidentId: string
-    readonly sourceType: IncidentSourceType
+    readonly sourceType: "monitor" | "signal"
     readonly sourceId: string
     readonly reason?: "threshold" | "absolute-rate-drop" | "timeout" | "resolved" | "ignored"
   }
@@ -276,12 +357,94 @@ export interface EventPayloads {
     readonly enabled: boolean
     readonly sampling: number
   }
+  /**
+   * Emitted when a project's PII redaction policy changes. Audit-only: nothing
+   * consumes it. Redaction is destructive, non-retroactive, and unrecoverable,
+   * so "who turned this off, and when" has to be answerable after the fact.
+   * Both snapshots live in the payload because `projects.settings` is mutable
+   * and a delta on it cannot be reconstructed later. Scoped to `redaction`
+   * rather than whole-settings blobs so the transition is the payload rather
+   * than something a query has to dig out of one.
+   */
+  ProjectRedactionPolicyChanged: {
+    readonly organizationId: string
+    readonly actorUserId: string
+    readonly projectId: string
+    readonly fromRedaction: RedactionSetting | null
+    readonly toRedaction: RedactionSetting | null
+  }
+  /** Organization-level twin of `ProjectRedactionPolicyChanged`, including the `locked` flag. */
+  OrganizationRedactionPolicyChanged: {
+    readonly organizationId: string
+    readonly actorUserId: string
+    readonly fromRedaction: OrganizationRedactionSetting | null
+    readonly toRedaction: OrganizationRedactionSetting | null
+  }
   SavedSearchCreated: {
     readonly organizationId: string
     readonly actorUserId: string
     readonly projectId: string
     readonly searchId: string
     readonly name: string
+  }
+  /** Fired when a user confirms a brand-new historical trace import in project settings. */
+  ImportStarted: {
+    readonly organizationId: string
+    readonly actorUserId: string
+    readonly projectId: string
+    readonly importJobId: string
+    readonly source: "langfuse" | "langsmith" | "braintrust"
+    /** Trace ceiling the user accepted, already clamped to what their plan affords. */
+    readonly maxTraces: number
+    /** Width of the selected range in days, which is not the age of the data it holds. */
+    readonly rangeDays: number
+  }
+  /**
+   * Fired when a user retries a failed or cancelled import. A retry is a new job resuming
+   * the old one's cursor and counts, so this is that job's start event rather than a second
+   * event about the original — "imports begun" is `ImportStarted` plus `ImportRetried`, and
+   * the `ImportFinished` that closes this one carries `importJobId`.
+   *
+   * The `from*` fields are what make the retry worth its own event: they say whether users
+   * are recovering from our failures or restarting their own cancellations, which errors are
+   * worth retrying at all, and how much progress a resume actually saves. The config is not
+   * repeated — a retry cannot change it, so the original's `ImportStarted` still describes it.
+   */
+  ImportRetried: {
+    readonly organizationId: string
+    readonly projectId: string
+    /** The new job the retry created, not the one being retried. */
+    readonly importJobId: string
+    readonly fromJobId: string
+    /**
+     * `capped` is the interesting one to watch: it separates users continuing an import that
+     * ran out of budget from those recovering from a failure.
+     */
+    readonly fromStatus: "failed" | "cancelled" | "capped"
+    /** Why the original stopped; `null` when the user cancelled it cleanly. */
+    readonly fromError: string | null
+    /** Traces the original run imported and this one resumes on top of. */
+    readonly fromTraces: number
+  }
+  /**
+   * Fired once an import reaches a terminal state. `status` carries which one, so a funnel
+   * can separate a clean finish from a capped, cancelled or failed run, and `error` says
+   * why it did not finish cleanly — a failure reason, or which ceiling stopped a `capped`
+   * run (running out of plan usage is an upgrade signal; the user's own limit is not).
+   */
+  ImportFinished: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly importJobId: string
+    readonly source: "langfuse" | "langsmith" | "braintrust"
+    readonly status: "succeeded" | "capped" | "cancelled" | "failed"
+    readonly error: string | null
+    readonly recordsFetched: number
+    readonly sessionsImported: number
+    readonly tracesImported: number
+    readonly spansImported: number
+    readonly spansSkipped: number
+    readonly durationMs: number
   }
   /**
    * Fired when a saved search is (soft-)deleted. Drives the monitors source
@@ -346,6 +509,16 @@ export interface EventPayloads {
     readonly consumedCredits: number
     readonly overageCredits: number
     readonly reportedOverageCredits: number
+    /**
+     * Thresholds first crossed by this write (free included credits exhausted,
+     * Pro entering overage, and/or a configured Pro spend cap). Empty/omitted
+     * on ordinary increments so notification fan-out stays once-per-period
+     * per kind without re-deriving crossings from every subsequent usage
+     * event. Optional so in-flight outbox rows written before this field
+     * existed still parse. A single write may include both `overage-started`
+     * and `spend-cap` when the cap sits at the included-credit boundary.
+     */
+    readonly limitsCrossed?: readonly ("included-credits" | "overage-started" | "spend-cap")[]
   }
   /**
    * Emitted when a platform admin begins impersonating another user via
